@@ -7,7 +7,7 @@ import {
   useMemo,
 } from 'react';
 import React from 'react';
-import { useLatest, useMountedState } from 'react-use';
+import { useMountedState } from 'react-use';
 import {
   mergeStreamingMarkdownText,
   maskIncompleteMermaidBlock,
@@ -351,7 +351,7 @@ function useChatLogicHook({
 }: UseChatSessionParams): UseChatSessionResult {
   const { t, i18n, ready } = useTranslation();
   const { mobileStyle } = useContext(AppContext);
-  const isListenModeLatest = useLatest(isListenMode);
+  const isListenModeLatest = useRef(isListenMode);
 
   const { updateUserInfo } = useUserStore(
     useShallow(state => ({
@@ -1364,7 +1364,7 @@ function useChatLogicHook({
 
   // Use react-use hooks for safer state management
   const isMounted = useMountedState();
-  const chatBoxBottomRefLatest = useLatest(chatBoxBottomRef);
+  const chatBoxBottomRefLatest = useRef(chatBoxBottomRef);
 
   /**
    * Auto scroll to bottom when history records are loaded and rendered
