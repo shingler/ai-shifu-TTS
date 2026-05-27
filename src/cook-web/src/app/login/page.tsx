@@ -36,6 +36,7 @@ export default function AuthPage() {
   const [authMode, setAuthMode] = useState<'login' | 'feedback'>('login');
   const [isI18nReady, setIsI18nReady] = useState(false);
   const userInfo = useUserStore(state => state.userInfo);
+  const isLoggedIn = useUserStore(state => state.isLoggedIn);
   const [logoSrc, setLogoSrc] = useState<string | StaticImageData>(
     environment.logoWideUrl || logoHorizontal,
   );
@@ -255,16 +256,16 @@ export default function AuthPage() {
     document.title = t('module.auth.title');
   }, [language, ready, t]);
 
-  // useEffect(() => {
-  //   if (!isInitialized || !isLoggedIn) {
-  //     return;
-  //   }
+  useEffect(() => {
+    if (!isInitialized || !isLoggedIn) {
+      return;
+    }
 
-  // const target = resolveRedirectPath();
-  // if (window.location.pathname !== target) {
-  //   router.replace(target);
-  // }
-  // }, [isInitialized, isLoggedIn, resolveRedirectPath, router]);
+    const target = resolveRedirectPath();
+    if (window.location.pathname !== target) {
+      router.replace(target);
+    }
+  }, [isInitialized, isLoggedIn, resolveRedirectPath, router]);
 
   const [googleTermsAccepted, setGoogleTermsAccepted] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
