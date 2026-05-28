@@ -9,6 +9,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useMemo,
 } from 'react';
 import clsx from 'clsx';
 
@@ -17,6 +18,7 @@ import NavHeader from './NavHeader';
 import NavBody from './NavBody';
 import NavFooter from './NavFooter';
 import CourseCatalogList from '../CourseCatalog/CourseCatalogList';
+import MyCourseList from './MyCourseList';
 
 import FeedbackModal from '../FeedbackModal/FeedbackModal';
 import { useTracking, EVENT_NAMES } from '@/c-common/hooks/useTracking';
@@ -68,6 +70,9 @@ const NavDrawer = ({
   // showType = NAV_SHOW_TYPE_NORMAL,
   courseName = '',
   courseAvatar = '',
+  courseBid = '',
+  userCourses = [] as Array<{ shifu_bid: string; title: string; avatar: string; description: string; is_owned: boolean }>,
+  onCourseSelect,
   onLoginClick = () => {},
   lessonTree,
   selectedLessonId = '',
@@ -91,6 +96,14 @@ const NavDrawer = ({
 
   const [feedbackModalOpen, setFeedbackModalOpen] = useState(false);
   // const alwaysShowLessonTree = getBoolEnv('alwaysShowLessonTree');
+
+  // When inside a specific course, only show that course; otherwise show all
+  const visibleCourses = useMemo(() => {
+    if (courseBid) {
+      return userCourses.filter(c => c.shifu_bid === courseBid);
+    }
+    return userCourses;
+  }, [userCourses, courseBid]);
   const footerRef = useRef(null);
   const bodyRef = useRef(null);
 
@@ -167,22 +180,29 @@ const NavDrawer = ({
           >
             {!isCollapse &&
               (delayedIsLoggedIn || alwaysShowLessonTree ? (
-                <CourseCatalogList
-                  courseAvatar={courseAvatar}
-                  courseName={courseName}
-                  hideCourseHeader
-                  selectedLessonId={selectedLessonId}
-                  catalogs={lessonTree?.catalogs || []}
-                  // @ts-expect-error EXPECT
-                  catalogCount={lessonTree?.catalogCount || 0}
-                  onChapterCollapse={onChapterCollapse}
-                  onLessonSelect={onLessonSelect}
-                  onTryLessonSelect={onTryLessonSelect}
-                  containerScrollTop={bodyScrollTop}
-                  // @ts-expect-error EXPECT
-                  containerHeight={bodyRef.current?.clientHeight || 0}
-                  bannerInfo={lessonTree?.bannerInfo}
-                />
+                <>
+                  <MyCourseList
+                    courses={visibleCourses}
+                    currentCourseBid={courseBid}
+                    onCourseSelect={onCourseSelect}
+                  />
+                  <CourseCatalogList
+                    courseAvatar={courseAvatar}
+                    courseName={courseName}
+                    hideCourseHeader
+                    selectedLessonId={selectedLessonId}
+                    catalogs={lessonTree?.catalogs || []}
+                    // @ts-expect-error EXPECT
+                    catalogCount={lessonTree?.catalogCount || 0}
+                    onChapterCollapse={onChapterCollapse}
+                    onLessonSelect={onLessonSelect}
+                    onTryLessonSelect={onTryLessonSelect}
+                    containerScrollTop={bodyScrollTop}
+                    // @ts-expect-error EXPECT
+                    containerHeight={bodyRef.current?.clientHeight || 0}
+                    bannerInfo={lessonTree?.bannerInfo}
+                  />
+                </>
               ) : (
                 <NavBody onLoginClick={onLoginClick} />
               ))}

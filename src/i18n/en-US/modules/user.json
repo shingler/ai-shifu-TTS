@@ -11,5 +11,6 @@
   "login": "Login",
   "loginMainButton": "Login/Register",
   "logout": "Logout",
+  "myCourses": "My Courses",
   "notLogin": "Not Logged In"
 }

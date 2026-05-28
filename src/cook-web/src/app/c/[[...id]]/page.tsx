@@ -34,6 +34,7 @@ import {
 } from './lessonNavigation';
 import { updateWxcode } from '@/c-api/user';
 import { shifu } from '@/c-service/Shifu';
+import apiService from '@/api';
 import {
   buildLoginRedirectPath,
   getLessonIdFromQuery,
@@ -331,6 +332,39 @@ export default function ChatPage() {
     };
     updateCourse();
   }, [courseId]);
+
+  /**
+   * User courses part
+   */
+  const [userCourses, setUserCourses] = useState<
+    Array<{ shifu_bid: string; title: string; avatar: string; description: string; is_owned: boolean }>
+  >([]);
+
+  useEffect(() => {
+    if (!initialized || !isLoggedIn) {
+      return;
+    }
+    apiService
+      .getUserCourses({})
+      .then((res: any) => {
+        if (res && Array.isArray(res)) {
+          setUserCourses(res);
+        }
+      })
+      .catch(() => {
+        setUserCourses([]);
+      });
+  }, [initialized, isLoggedIn]);
+
+  const onCourseSelect = useCallback(
+    (bid: string) => {
+      if (bid === courseId) {
+        return;
+      }
+      window.location.href = `/c/${bid}`;
+    },
+    [courseId],
+  );
 
   const {
     tree,
@@ -780,6 +814,9 @@ export default function ChatPage() {
           <NavDrawer
             courseName={courseName}
             courseAvatar={courseAvatar}
+            courseBid={courseId}
+            userCourses={userCourses}
+            onCourseSelect={onCourseSelect}
             onLoginClick={() => {
               // setLoginModalOpen(true)
               gotoLogin();

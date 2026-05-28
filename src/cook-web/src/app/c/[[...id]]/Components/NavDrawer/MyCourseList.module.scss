@@ -1,0 +1,101 @@
+.myCourseList {
+  padding: 8px 8px 0 8px;
+}
+
+.sectionHeader {
+  padding: 4px 8px;
+  margin-bottom: 4px;
+}
+
+.sectionTitle {
+  font-size: 11px;
+  font-weight: 600;
+  color: #999;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 0;
+}
+
+.courseList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid #eee;
+  padding-bottom: 8px;
+}
+
+.courseItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  transition: background-color 0.15s;
+
+  &:hover {
+    background-color: rgba(0, 0, 0, 0.05);
+  }
+}
+
+.courseItemActive {
+  background-color: rgba(0, 0, 0, 0.08);
+}
+
+.courseIcon {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #e8e8e8;
+}
+
+.courseAvatar {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.courseIconDefault {
+  color: #999;
+}
+
+.courseInfo {
+  flex: 1;
+  min-width: 0;
+}
+
+.courseTitle {
+  font-size: 13px;
+  font-weight: 500;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+  line-height: 1.3;
+}
+
+.ownedBadge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: #ff4d4f;
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  line-height: 1.4;
+  flex-shrink: 0;
+}

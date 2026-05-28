@@ -2294,6 +2294,7 @@ export type I18nKey =
   | 'module.user.login'
   | 'module.user.loginMainButton'
   | 'module.user.logout'
+  | 'module.user.myCourses'
   | 'module.user.notLogin'
   | 'server.api.alibabaCloudNotConfigured'
   | 'server.banner.bannerPopUpCancelText'

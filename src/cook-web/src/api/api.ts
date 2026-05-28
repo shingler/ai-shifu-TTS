@@ -81,6 +81,7 @@ const api = {
   getProfileItemDefinitions: 'GET /profiles/get-profile-item-definitions',
   addProfileItem: 'POST /profiles/add-profile-item-quick',
   getUserInfo: 'GET /user/info',
+  getUserCourses: 'GET /user/courses',
   updateUserInfo: 'POST /user/update_info',
   updateChapterOrder: 'POST /shifu/update-chapter-order',
 

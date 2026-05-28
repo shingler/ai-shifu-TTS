@@ -46,6 +46,9 @@ from ..service.common.dtos import OAuthStartDTO
 from .common import make_common_response, bypass_token_validation, by_pass_login_func
 from flaskr.dao import db
 from flaskr.i18n import set_language
+from flaskr.service.shifu.models import PublishedShifu
+from flaskr.service.order.models import Order
+from flaskr.service.order.consts import ORDER_STATUS_SUCCESS
 
 
 def _extract_request_language(payload: dict | None = None) -> str | None:
@@ -604,6 +607,98 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         return make_common_response(
             get_user_profile_labels(app, request.user.user_id, course_id)
         )
+
+    @app.route(path_prefix + "/courses", methods=["GET"])
+    def get_user_courses():
+        """
+        Get all courses that the current user has access to (purchased/shared + owned).
+        ---
+        tags:
+            - user
+        responses:
+            200:
+                description: Return list of user-accessible courses
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                code:
+                                    type: integer
+                                message:
+                                    type: string
+                                data:
+                                    type: array
+                                    items:
+                                        type: object
+                                        properties:
+                                            shifu_bid:
+                                                type: string
+                                            title:
+                                                type: string
+                                            avatar:
+                                                type: string
+                                            description:
+                                                type: string
+        """
+        user_id = request.user.user_id
+        with app.app_context():
+            # Build set of shifu_bids the user can access
+            accessible_bid_set = set()
+
+            # 1. Courses purchased via order_orders (paid status)
+            order_rows = (
+                db.session.query(Order.shifu_bid)
+                .filter(
+                    Order.user_bid == user_id,
+                    Order.status == ORDER_STATUS_SUCCESS,
+                    Order.deleted == 0,
+                )
+                .distinct()
+                .all()
+            )
+            for row in order_rows:
+                accessible_bid_set.add(row.shifu_bid)
+
+            # 2. Courses created by this user
+            creator_courses = (
+                db.session.query(PublishedShifu.shifu_bid)
+                .filter(
+                    PublishedShifu.created_user_bid == user_id,
+                    PublishedShifu.deleted == 0,
+                )
+                .all()
+            )
+            for row in creator_courses:
+                accessible_bid_set.add(row.shifu_bid)
+
+            creator_bid_set = set(row.shifu_bid for row in creator_courses)
+
+            # 3. Fetch published course details for all accessible bids
+            if not accessible_bid_set:
+                return make_common_response([])
+
+            courses = (
+                PublishedShifu.query.filter(
+                    PublishedShifu.shifu_bid.in_(accessible_bid_set),
+                    PublishedShifu.deleted == 0,
+                )
+                .order_by(PublishedShifu.updated_at.desc())
+                .all()
+            )
+
+            result = []
+            for course in courses:
+                result.append(
+                    {
+                        "shifu_bid": course.shifu_bid,
+                        "title": course.title or "",
+                        "avatar": course.avatar_res_bid or "",
+                        "description": course.description or "",
+                        "is_owned": course.shifu_bid in creator_bid_set,
+                    }
+                )
+
+            return make_common_response(result)
 
     @app.route(path_prefix + "/update_profile", methods=["POST"])
     def update_profile():
