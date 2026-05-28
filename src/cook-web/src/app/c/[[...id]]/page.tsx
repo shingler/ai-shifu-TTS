@@ -338,16 +338,12 @@ export default function ChatPage() {
       .then((res: any) => {
         if (res && Array.isArray(res)) {
           setUserCourses(res);
-          // If no courseId in URL and user has courses, redirect to the first one
-          if (!courseId && res.length > 0) {
-            window.location.href = `/c/${res[0].shifu_bid}`;
-          }
         }
       })
       .catch(() => {
         setUserCourses([]);
       });
-  }, [initialized, isLoggedIn, courseId]);
+  }, [initialized, isLoggedIn]);
 
   const { updateCourseId } = useEnvStore.getState();
 
