@@ -49,6 +49,7 @@ from flaskr.i18n import set_language
 from flaskr.service.shifu.models import PublishedShifu
 from flaskr.service.order.models import Order
 from flaskr.service.order.consts import ORDER_STATUS_SUCCESS
+from flaskr.service.shifu.models import ShifuUserArchive
 
 
 def _extract_request_language(payload: dict | None = None) -> str | None:
@@ -673,7 +674,18 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
 
             creator_bid_set = set(row.shifu_bid for row in creator_courses)
 
-            # 3. Fetch published course details for all accessible bids
+            # 3. Exclude courses archived by this user
+            archived = (
+                ShifuUserArchive.query.filter(
+                    ShifuUserArchive.user_bid == user_id,
+                    ShifuUserArchive.archived == 1,
+                )
+                .all()
+            )
+            archived_set = set(row.shifu_bid for row in archived)
+            accessible_bid_set -= archived_set
+
+            # 4. Fetch published course details for all accessible bids
             if not accessible_bid_set:
                 return make_common_response([])
 

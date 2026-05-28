@@ -139,6 +139,9 @@ export const useLessonTree = () => {
   const loadTreeInner = useCallback(async () => {
     setSelectedLessonId(null);
     const courseId = useEnvStore.getState().courseId;
+    if (!courseId) {
+      return null;
+    }
     debugInfo('[lesson-tree] request start', {
       courseId,
       previewMode,

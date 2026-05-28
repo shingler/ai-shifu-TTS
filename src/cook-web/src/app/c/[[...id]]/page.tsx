@@ -322,17 +322,6 @@ export default function ChatPage() {
     courseId = params.id[0];
   }
 
-  const { updateCourseId } = useEnvStore.getState();
-
-  useEffect(() => {
-    const updateCourse = async () => {
-      if (courseId) {
-        await updateCourseId(courseId);
-      }
-    };
-    updateCourse();
-  }, [courseId]);
-
   /**
    * User courses part
    */
@@ -349,12 +338,27 @@ export default function ChatPage() {
       .then((res: any) => {
         if (res && Array.isArray(res)) {
           setUserCourses(res);
+          // If no courseId in URL and user has courses, redirect to the first one
+          if (!courseId && res.length > 0) {
+            window.location.href = `/c/${res[0].shifu_bid}`;
+          }
         }
       })
       .catch(() => {
         setUserCourses([]);
       });
-  }, [initialized, isLoggedIn]);
+  }, [initialized, isLoggedIn, courseId]);
+
+  const { updateCourseId } = useEnvStore.getState();
+
+  useEffect(() => {
+    const updateCourse = async () => {
+      if (courseId) {
+        await updateCourseId(courseId);
+      }
+    };
+    updateCourse();
+  }, [courseId]);
 
   const onCourseSelect = useCallback(
     (bid: string) => {
@@ -497,11 +501,11 @@ export default function ChatPage() {
   }, [urlLessonId]);
 
   useEffect(() => {
-    if (initialized && loadedChapterId !== chapterId) {
+    if (initialized && loadedChapterId !== chapterId && courseId) {
       loadData();
       setLoadedChapterId(chapterId);
     }
-  }, [chapterId, initialized, loadData, loadedChapterId]);
+  }, [chapterId, initialized, loadData, loadedChapterId, courseId]);
 
   const resolvedLessonId = selectedLessonId || lessonId;
   const syncLessonUrl = useCallback((nextLessonId: string) => {

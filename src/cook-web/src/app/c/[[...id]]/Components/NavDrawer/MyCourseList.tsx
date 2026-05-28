@@ -59,7 +59,9 @@ export const MyCourseList = memo(function MyCourseList({
               <div className={styles.courseInfo}>
                 <span className={styles.courseTitle}>{course.title}</span>
                 {course.is_owned && (
-                  <span className={styles.ownedBadge}>own</span>
+                  <span className={styles.ownedBadge}>
+                    {t('module.user.owned')}
+                  </span>
                 )}
               </div>
             </button>
