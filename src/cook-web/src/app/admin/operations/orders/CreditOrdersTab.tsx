@@ -2,13 +2,13 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { ChevronDown, ChevronUp } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import api from '@/api';
 import AdminDateRangeFilter from '@/app/admin/components/AdminDateRangeFilter';
+import AdminClearableInput from '@/app/admin/components/AdminClearableInput';
+import AdminFilter from '@/app/admin/components/AdminFilter';
 import AdminTableShell from '@/app/admin/components/AdminTableShell';
-import { AdminPagination } from '@/app/admin/components/AdminPagination';
-import { formatAdminUtcDateTime } from '@/app/admin/lib/dateTime';
+import { formatAdminNaiveDateTime } from '@/app/admin/lib/dateTime';
 import {
   ADMIN_TABLE_HEADER_CELL_CENTER_CLASS,
   ADMIN_TABLE_RESIZE_HANDLE_CLASS,
@@ -63,7 +63,6 @@ import OrderOverviewSection from './OrderOverviewSection';
 import CreditOrderDetailDialog from './CreditOrderDetailDialog';
 import {
   ALL_OPTION_VALUE,
-  ClearableTextInput,
   EMPTY_STATE_LABEL,
   renderTooltipText,
 } from './orderUiShared';
@@ -527,7 +526,7 @@ export default function CreditOrdersTab() {
       key: 'creator_keyword',
       label: tOperationsOrder('creditOrders.filters.creatorKeyword'),
       component: (
-        <ClearableTextInput
+        <AdminClearableInput
           value={draftFilters.creator_keyword}
           placeholder={creatorKeywordPlaceholder}
           clearLabel={t('common.core.close')}
@@ -608,7 +607,7 @@ export default function CreditOrdersTab() {
       key: 'product_keyword',
       label: tOperationsOrder('creditOrders.filters.productKeyword'),
       component: (
-        <ClearableTextInput
+        <AdminClearableInput
           value={draftFilters.product_keyword}
           placeholder={tOperationsOrder(
             'creditOrders.filters.productKeywordPlaceholder',
@@ -719,115 +718,24 @@ export default function CreditOrdersTab() {
           />
 
           <div className='mb-5 rounded-xl border border-border bg-white p-4 shadow-sm transition-all'>
-            <div className='space-y-4'>
-              <div
-                className={cn(
-                  'grid gap-4',
-                  expanded
-                    ? 'grid-cols-1 xl:grid-cols-3'
-                    : 'grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]',
-                )}
-              >
-                {(expanded
-                  ? expandedFilterItems.slice(0, 3)
-                  : primaryFilterItems
-                ).map(item => (
-                  <div
-                    key={item.key}
-                    className='flex items-center'
-                  >
-                    <span
-                      className={cn(
-                        "mr-2 shrink-0 whitespace-nowrap text-right text-sm font-medium text-foreground after:ml-0.5 after:content-[':']",
-                        'w-24',
-                      )}
-                    >
-                      {item.label}
-                    </span>
-                    <div className={filterControlClassName}>
-                      {item.component}
-                    </div>
-                  </div>
-                ))}
-
-                {!expanded ? (
-                  <div className='flex items-center justify-end gap-2'>
-                    <Button
-                      size='sm'
-                      variant='outline'
-                      onClick={handleReset}
-                    >
-                      {tOperationsOrder('filters.reset')}
-                    </Button>
-                    <Button
-                      size='sm'
-                      onClick={handleSearch}
-                    >
-                      {tOperationsOrder('filters.search')}
-                    </Button>
-                    <Button
-                      size='sm'
-                      variant='ghost'
-                      className='px-2 text-primary'
-                      onClick={() => setExpanded(true)}
-                    >
-                      {t('common.core.expand')}
-                      <ChevronDown className='ml-1 h-4 w-4' />
-                    </Button>
-                  </div>
-                ) : null}
-              </div>
-
-              {expanded ? (
-                <div className='space-y-4'>
-                  <div className='grid gap-4 xl:grid-cols-3'>
-                    {expandedFilterItems.slice(3).map(item => (
-                      <div
-                        key={item.key}
-                        className='flex items-center'
-                      >
-                        <span
-                          className={cn(
-                            "mr-2 shrink-0 whitespace-nowrap text-right text-sm font-medium text-foreground after:ml-0.5 after:content-[':']",
-                            'w-24',
-                          )}
-                        >
-                          {item.label}
-                        </span>
-                        <div className={filterControlClassName}>
-                          {item.component}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className='flex items-center justify-end gap-2'>
-                    <Button
-                      size='sm'
-                      variant='outline'
-                      onClick={handleReset}
-                    >
-                      {tOperationsOrder('filters.reset')}
-                    </Button>
-                    <Button
-                      size='sm'
-                      onClick={handleSearch}
-                    >
-                      {tOperationsOrder('filters.search')}
-                    </Button>
-                    <Button
-                      size='sm'
-                      variant='ghost'
-                      className='px-2 text-primary'
-                      onClick={() => setExpanded(false)}
-                    >
-                      {t('common.core.collapse')}
-                      <ChevronUp className='ml-1 h-4 w-4' />
-                    </Button>
-                  </div>
-                </div>
-              ) : null}
-            </div>
+            <AdminFilter
+              items={expandedFilterItems}
+              expanded={expanded}
+              onExpandedChange={setExpanded}
+              onReset={handleReset}
+              onSearch={handleSearch}
+              resetLabel={tOperationsOrder('filters.reset')}
+              searchLabel={tOperationsOrder('filters.search')}
+              expandLabel={t('common.core.expand')}
+              collapseLabel={t('common.core.collapse')}
+              collapsedCount={3}
+              className='bg-transparent'
+              contentClassName={filterControlClassName}
+              labelClassName='w-24 text-right'
+              collapsedGridClassName='gap-x-5 xl:grid-cols-3'
+              expandedGridClassName='gap-x-5 xl:grid-cols-3'
+              labelColon
+            />
           </div>
 
           <div className='mb-3 text-sm text-muted-foreground'>
@@ -838,7 +746,7 @@ export default function CreditOrdersTab() {
             loading={loading}
             isEmpty={orders.length === 0}
             emptyContent={tOperationsOrder('creditOrders.emptyList')}
-            emptyColSpan={11}
+            emptyColSpan={Object.keys(DEFAULT_COLUMN_WIDTHS).length}
             withTooltipProvider
             tableWrapperClassName='max-h-[calc(100vh-21rem)] overflow-auto'
             table={emptyRow => (
@@ -988,7 +896,7 @@ export default function CreditOrdersTab() {
                           style={getColumnStyle('createdAt')}
                         >
                           {renderTooltipText(
-                            formatAdminUtcDateTime(order.created_at) ||
+                            formatAdminNaiveDateTime(order.created_at) ||
                               EMPTY_STATE_LABEL,
                           )}
                         </TableCell>
@@ -1088,21 +996,16 @@ export default function CreditOrdersTab() {
                 </TableBody>
               </Table>
             )}
-            footer={
-              pageCount > 1 ? (
-                <AdminPagination
-                  pageIndex={pageIndex}
-                  pageCount={pageCount}
-                  onPageChange={handlePageChange}
-                  prevLabel={t('module.order.paginationPrev')}
-                  nextLabel={t('module.order.paginationNext')}
-                  prevAriaLabel={t('module.order.paginationPrevAriaLabel')}
-                  nextAriaLabel={t('module.order.paginationNextAriaLabel')}
-                  className='mx-0 w-auto justify-end'
-                  hideWhenSinglePage
-                />
-              ) : null
-            }
+            pagination={{
+              pageIndex,
+              pageCount,
+              onPageChange: handlePageChange,
+              prevLabel: t('module.order.paginationPrev'),
+              nextLabel: t('module.order.paginationNext'),
+              prevAriaLabel: t('module.order.paginationPrevAriaLabel'),
+              nextAriaLabel: t('module.order.paginationNextAriaLabel'),
+              hideWhenSinglePage: true,
+            }}
             footerClassName='mt-3'
           />
         </div>

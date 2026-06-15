@@ -109,6 +109,21 @@ describe('AdminTooltipText', () => {
     expect(screen.queryByTestId('tooltip-content')).not.toBeInTheDocument();
   });
 
+  test('can render tooltip content even when text does not overflow', () => {
+    render(
+      <AdminTooltipText
+        text='Short value'
+        emptyValue='--'
+        alwaysShowTooltip
+      />,
+    );
+
+    expect(screen.getAllByText('Short value')).toHaveLength(2);
+    expect(screen.getByTestId('tooltip-content')).toHaveTextContent(
+      'Short value',
+    );
+  });
+
   test('trims surrounding whitespace before rendering', () => {
     render(
       <AdminTooltipText
@@ -120,6 +135,20 @@ describe('AdminTooltipText', () => {
     expect(screen.getByText('Course One')).toBeInTheDocument();
     expect(screen.queryByTestId('tooltip-content')).not.toBeInTheDocument();
     expect(screen.queryByText('  Course One  ')).not.toBeInTheDocument();
+  });
+
+  test('can force tooltip rendering when table clipping happens outside the trigger', () => {
+    render(
+      <AdminTooltipText
+        text='Short content'
+        emptyValue='--'
+        forceTooltip
+      />,
+    );
+
+    expect(screen.getByTestId('tooltip-content')).toHaveTextContent(
+      'Short content',
+    );
   });
 
   test('updates overflow state when display text changes without changing value', async () => {

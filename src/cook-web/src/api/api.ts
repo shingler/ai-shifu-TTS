@@ -104,6 +104,19 @@ const api = {
   getAdminOrderDetail: 'GET /order/admin/orders/{order_bid}',
   getAdminOrderShifus: 'GET /order/admin/orders/shifus',
   importActivationOrder: 'POST /order/admin/orders/import-activation',
+  getCreatorCourseRedemptionCodes: 'GET /order/admin/orders/redemption-codes',
+  createCreatorCourseRedemptionCode:
+    'POST /order/admin/orders/redemption-codes',
+  getCreatorCourseRedemptionCodeDetail:
+    'GET /order/admin/orders/redemption-codes/{coupon_bid}',
+  updateCreatorCourseRedemptionCode:
+    'POST /order/admin/orders/redemption-codes/{coupon_bid}',
+  updateCreatorCourseRedemptionCodeStatus:
+    'POST /order/admin/orders/redemption-codes/{coupon_bid}/status',
+  getCreatorCourseRedemptionCodeUsages:
+    'GET /order/admin/orders/redemption-codes/{coupon_bid}/usages',
+  getCreatorCourseRedemptionCodeCodes:
+    'GET /order/admin/orders/redemption-codes/{coupon_bid}/codes',
   getAdminOperationUsersOverview: 'GET /shifu/admin/operations/users/overview',
   getAdminOperationUsers: 'GET /shifu/admin/operations/users',
   getAdminOperationOrdersOverview:
@@ -146,6 +159,8 @@ const api = {
     'GET /shifu/admin/operations/users/{user_bid}/detail',
   getAdminOperationUserCredits:
     'GET /shifu/admin/operations/users/{user_bid}/credits',
+  getAdminOperationUserCreditUsageDetail:
+    'GET /shifu/admin/operations/users/{user_bid}/credits/usages/{usage_bid}/detail',
   getAdminOperationUserGrantBootstrap:
     'GET /shifu/admin/operations/users/{user_bid}/credit-grant/bootstrap',
   grantAdminOperationUserCredits:
@@ -154,12 +169,18 @@ const api = {
     'POST /shifu/admin/operations/users/{user_bid}/packages/grant',
   getAdminOperationCreditNotifications:
     'GET /shifu/admin/operations/credit-notifications',
+  getAdminOperationCreditNotificationsOverview:
+    'GET /shifu/admin/operations/credit-notifications/overview',
+  getAdminOperationCreditNotificationDetail:
+    'GET /shifu/admin/operations/credit-notifications/{notification_bid}',
   getAdminOperationCreditNotificationConfig:
     'GET /shifu/admin/operations/credit-notifications/config',
   updateAdminOperationCreditNotificationConfig:
     'POST /shifu/admin/operations/credit-notifications/config',
   syncAdminOperationCreditNotificationTemplate:
     'POST /shifu/admin/operations/credit-notifications/templates/sync',
+  getAdminOperationCreditNotificationTemplates:
+    'GET /shifu/admin/operations/credit-notifications/templates',
   dryRunAdminOperationCreditNotifications:
     'POST /shifu/admin/operations/credit-notifications/dry-run',
   requeueAdminOperationCreditNotification:
@@ -175,6 +196,8 @@ const api = {
     'GET /shifu/admin/operations/courses/{shifu_bid}/users',
   getAdminOperationCourseCreditUsages:
     'GET /shifu/admin/operations/courses/{shifu_bid}/credit-usages',
+  getAdminOperationCourseCreditUsageDetails:
+    'GET /shifu/admin/operations/courses/{shifu_bid}/credit-usages/details',
   getAdminOperationCourseRatings:
     'GET /shifu/admin/operations/courses/{shifu_bid}/ratings',
   getAdminOperationCourseFollowUps:
@@ -226,6 +249,13 @@ const api = {
 
   // billing admin api
   getAdminBillingSubscriptions: 'GET /admin/billing/subscriptions',
+  getAdminBillingCampaignProductOptions: 'GET /admin/billing/products/options',
+  getAdminBillingCampaigns: 'GET /admin/billing/campaigns',
+  createAdminBillingCampaign: 'POST /admin/billing/campaigns',
+  getAdminBillingCampaignDetail: 'GET /admin/billing/campaigns/{campaign_bid}',
+  updateAdminBillingCampaign: 'POST /admin/billing/campaigns/{campaign_bid}',
+  updateAdminBillingCampaignStatus:
+    'POST /admin/billing/campaigns/{campaign_bid}/status',
   getAdminBillingOrders: 'GET /admin/billing/orders',
   getAdminBillingEntitlements: 'GET /admin/billing/entitlements',
   getAdminBillingDomainAudits: 'GET /admin/billing/domain-audits',

@@ -28,14 +28,31 @@ jest.mock('@/api', () => ({
 
 const mockGetBillingLedger = api.getBillingLedger as jest.Mock;
 
-function renderSection() {
+const createLedgerItem = (index: number) => ({
+  ledger_bid: `ledger-${index}`,
+  wallet_bucket_bid: 'bucket-topup',
+  entry_type: 'grant',
+  source_type: 'topup',
+  source_bid: `topup-${index}`,
+  idempotency_key: `topup-${index}-bucket-topup`,
+  amount: index,
+  balance_after: 100 + index,
+  expires_at: null,
+  consumable_from: null,
+  metadata: {},
+  created_at: '2026-04-07T10:00:00Z',
+});
+
+function renderSection(
+  props?: React.ComponentProps<typeof BillingRecentActivitySection>,
+) {
   return render(
     <SWRConfig
       value={{
         provider: () => new Map(),
       }}
     >
-      <BillingRecentActivitySection />
+      <BillingRecentActivitySection {...props} />
     </SWRConfig>,
   );
 }
@@ -132,7 +149,7 @@ describe('BillingRecentActivitySection', () => {
   });
 
   test('renders the credit usage details table from recent ledger entries', async () => {
-    renderSection();
+    const { container } = renderSection();
 
     await waitFor(() => {
       expect(mockGetBillingLedger).toHaveBeenCalledWith({
@@ -160,8 +177,13 @@ describe('BillingRecentActivitySection', () => {
         'module.billing.ledger.usageScene.debug - Debug Course 1 - 15811237246',
       ),
     ).toBeInTheDocument();
-    expect(await screen.findAllByText(/Apr 6, 2026/)).toHaveLength(2);
-    expect(await screen.findByText('-2.50')).toBeInTheDocument();
+    const dateCells = await screen.findAllByText(/Apr 6, 2026/);
+    expect(dateCells).toHaveLength(2);
+    expect(dateCells[0].tagName).toBe('TD');
+    const amountValue = await screen.findByText('-2.50');
+    expect(amountValue).toBeInTheDocument();
+    expect(amountValue).toHaveClass('justify-end');
+    expect(amountValue.closest('td')).toBeInTheDocument();
     expect(
       screen.queryByText('module.billing.orders.title'),
     ).not.toBeInTheDocument();
@@ -172,6 +194,16 @@ describe('BillingRecentActivitySection', () => {
     expect(screen.getByRole('link', { name: '1' })).toBeInTheDocument();
     const scrollContainer = screen.getByTestId('billing-usage-table-scroll');
     expect(scrollContainer).toHaveClass('overflow-auto');
+    const columns = Array.from(container.querySelectorAll('col'));
+    expect(columns.map(column => column.className)).toEqual([
+      'w-[64%]',
+      'w-[24%]',
+      'w-[12%]',
+    ]);
+    const amountHeader = screen.getByRole('columnheader', {
+      name: 'module.billing.ledger.table.amount',
+    });
+    expect(amountHeader.firstElementChild).toHaveClass('justify-end');
     expect(
       within(scrollContainer).getByText(
         'module.billing.details.usageTable.columns.scene',
@@ -212,6 +244,28 @@ describe('BillingRecentActivitySection', () => {
     expect(await screen.findByText('+5.00')).toBeInTheDocument();
   });
 
+  test('keeps one full page height when a full usage page is available', async () => {
+    mockGetBillingLedger.mockResolvedValueOnce({
+      items: Array.from({ length: 10 }, (_, index) =>
+        createLedgerItem(index + 1),
+      ),
+      page: 1,
+      page_count: 3,
+      page_size: 10,
+      total: 30,
+    });
+
+    renderSection({ stretchToFill: true });
+
+    expect(await screen.findByText('+1.00')).toBeInTheDocument();
+    const scrollContainer = screen.getByTestId('billing-usage-table-scroll');
+    expect(scrollContainer).toHaveClass('flex-1');
+    expect(scrollContainer.style.minHeight).toBe('570px');
+    expect(scrollContainer.parentElement).toHaveStyle({
+      minHeight: '570px',
+    });
+  });
+
   test('does not render an empty pagination footer for a single page result', async () => {
     mockGetBillingLedger.mockResolvedValueOnce({
       items: [
@@ -242,6 +296,9 @@ describe('BillingRecentActivitySection', () => {
     renderSection();
 
     expect(await screen.findByText('-2.50')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('billing-usage-table-scroll').style.minHeight,
+    ).toBe('');
     expect(
       screen.queryByRole('navigation', { name: 'pagination' }),
     ).not.toBeInTheDocument();
@@ -348,8 +405,11 @@ describe('BillingRecentActivitySection', () => {
 
     const skeleton = await screen.findByTestId('billing-usage-table-skeleton');
     expect(skeleton).toBeInTheDocument();
-    expect(screen.getAllByTestId('billing-usage-skeleton-row')).toHaveLength(
-      10,
+    const skeletonRows = screen.getAllByTestId('billing-usage-skeleton-row');
+    expect(skeletonRows).toHaveLength(10);
+    expect(skeletonRows[0]).toHaveClass('hover:!bg-transparent');
+    expect(skeletonRows[0].querySelector('td:last-child > div')).toHaveClass(
+      'ml-auto',
     );
 
     await act(async () => {

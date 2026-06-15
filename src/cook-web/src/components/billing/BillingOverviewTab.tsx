@@ -19,15 +19,21 @@ import type {
   BillingPingxxChannel,
   BillingPlan,
   BillingProvider,
+  BillingSyncResult,
   BillingSubscription,
+  BillingSubscriptionCheckoutAction,
   BillingTopupProduct,
 } from '@/types/billing';
 import {
   buildBillingSwrKey,
   extractBillingPingxxQrCode,
   formatBillingCredits,
+  formatBillingDateTime,
   formatBillingPrice,
+  getBillingProductCampaignBonusCredits,
+  hasBillingProductBonusCampaign,
   openBillingCheckoutUrl,
+  resolveBillingProductPayableAmount,
   registerBillingTranslationUsage,
   resolveBillingPingxxChannelLabel,
   resolveBillingProductTitle,
@@ -36,7 +42,6 @@ import {
 } from '@/lib/billing';
 import { BillingAlertsBanner } from './BillingAlertsBanner';
 import { BillingCheckoutDialog } from './BillingCheckoutDialog';
-import { BillingOverviewHero } from './BillingOverviewHero';
 import { BillingOverviewShowcase } from './BillingOverviewShowcase';
 import { BillingPingxxQrDialog } from './BillingPingxxQrDialog';
 import type { ShowcaseTab } from './BillingOverviewCards';
@@ -55,6 +60,7 @@ type CheckoutTarget =
       kind: 'plan';
       product: BillingPlan;
       provider: BillingProvider;
+      action?: BillingSubscriptionCheckoutAction;
     }
   | {
       kind: 'topup';
@@ -72,6 +78,7 @@ type PingxxCheckoutState = {
   provider: BillingProvider;
   qrUrl: string;
   selectedChannel: BillingPingxxChannel;
+  prepaidOffsetAmount?: number;
 };
 
 const QR_BILLING_PROVIDERS = new Set<BillingProvider>([
@@ -144,6 +151,22 @@ function resolveCheckoutChannelLabel(
   return resolveBillingProviderLabel(t, target.provider);
 }
 
+function resolvePlanCheckoutDescriptionKey(
+  action?: BillingSubscriptionCheckoutAction,
+  hasPrepaidOffset = false,
+): string {
+  if (action === 'preorder') {
+    return 'module.billing.checkout.preorderDescription';
+  }
+  if (action === 'upgrade_immediate') {
+    if (hasPrepaidOffset) {
+      return 'module.billing.checkout.upgradeWithPreorderDescription';
+    }
+    return 'module.billing.checkout.upgradeDescription';
+  }
+  return 'module.billing.checkout.planDescription';
+}
+
 export function BillingOverviewTab({
   onOpenOrdersTab,
 }: BillingOverviewTabProps = {}) {
@@ -195,12 +218,7 @@ export function BillingOverviewTab({
     open: Boolean(pingxxCheckout),
     billingOrderBid: pingxxCheckout?.billingOrderBid || '',
     onResolved: async result => {
-      await Promise.all([
-        mutateOverview(),
-        mutateSWRCache(
-          buildBillingSwrKey(BILLING_WALLET_BUCKETS_SWR_KEY, timezone),
-        ),
-      ]);
+      await refreshBillingData();
       if (result.status !== 'pending') {
         setPingxxCheckout(null);
         setCheckoutAgreed(false);
@@ -223,6 +241,10 @@ export function BillingOverviewTab({
   const currentPlan =
     plans.find(
       item => item.product_bid === overview?.subscription?.product_bid,
+    ) || null;
+  const pendingPreorderPlan =
+    plans.find(
+      item => item.product_bid === overview?.subscription?.next_product_bid,
     ) || null;
   const monthlyPlans = plans.filter(
     product => product.billing_interval === 'month',
@@ -251,13 +273,28 @@ export function BillingOverviewTab({
       })()
     : null;
 
+  async function refreshBillingData() {
+    await Promise.all([
+      mutateOverview(),
+      mutateSWRCache(
+        buildBillingSwrKey(BILLING_WALLET_BUCKETS_SWR_KEY, timezone),
+      ),
+    ]);
+  }
+
   async function handleCheckout() {
     if (!checkoutTarget) {
       return;
     }
 
     const loadingKey = `${checkoutTarget.kind}:${checkoutTarget.provider}:${checkoutTarget.product.product_bid}`;
-    setCheckoutLoadingKey(loadingKey);
+    const planAction =
+      checkoutTarget.kind === 'plan' ? checkoutTarget.action : undefined;
+    const loadingKeyWithAction =
+      checkoutTarget.kind === 'plan'
+        ? `${loadingKey}:${planAction || 'subscription'}`
+        : loadingKey;
+    setCheckoutLoadingKey(loadingKeyWithAction);
     try {
       let result: BillingCheckoutResult;
       const checkoutChannel = isQrBillingProvider(checkoutTarget.provider)
@@ -268,6 +305,7 @@ export function BillingOverviewTab({
 
       if (checkoutTarget.kind === 'plan') {
         result = (await api.checkoutBillingSubscription({
+          action: checkoutTarget.action,
           channel: checkoutChannel,
           payment_provider: checkoutTarget.provider,
           product_bid: checkoutTarget.product.product_bid,
@@ -284,6 +322,16 @@ export function BillingOverviewTab({
         toast({
           title: t('module.billing.checkout.unsupported'),
           variant: 'destructive',
+        });
+        setCheckoutTarget(null);
+        setCheckoutAgreed(false);
+        return;
+      }
+
+      if (result.status === 'paid') {
+        await refreshBillingData();
+        toast({
+          title: t('module.billing.checkout.completed'),
         });
         setCheckoutTarget(null);
         setCheckoutAgreed(false);
@@ -314,18 +362,24 @@ export function BillingOverviewTab({
         }
 
         setPingxxCheckout({
-          amountInMinor: checkoutTarget.product.price_amount,
+          amountInMinor:
+            result.payable_amount ??
+            resolveBillingProductPayableAmount(checkoutTarget.product),
           billingOrderBid: result.bill_order_bid,
-          currency: checkoutTarget.product.currency,
+          currency: result.currency || checkoutTarget.product.currency,
           description: t(
             checkoutTarget.kind === 'plan'
-              ? 'module.billing.checkout.planDescription'
+              ? resolvePlanCheckoutDescriptionKey(
+                  checkoutTarget.action,
+                  (result.prepaid_offset_amount || 0) > 0,
+                )
               : 'module.billing.checkout.topupDescription',
           ),
           productName: resolveBillingProductTitle(t, checkoutTarget.product),
           provider: checkoutTarget.provider,
           qrUrl: qrCode.url,
           selectedChannel: qrCode.channel,
+          prepaidOffsetAmount: result.prepaid_offset_amount || 0,
         });
         setSelectedPingxxChannel(qrCode.channel);
         setCheckoutTarget(null);
@@ -349,6 +403,21 @@ export function BillingOverviewTab({
       `pingxx:${pingxxCheckout.billingOrderBid}:${channel}`,
     );
     try {
+      const syncResult = (await api.syncBillingOrder({
+        bill_order_bid: pingxxCheckout.billingOrderBid,
+      })) as BillingSyncResult;
+      if (syncResult.status !== 'pending') {
+        await refreshBillingData();
+        if (syncResult.status === 'paid') {
+          toast({
+            title: t('module.billing.checkout.completed'),
+          });
+        }
+        setPingxxCheckout(null);
+        setCheckoutAgreed(false);
+        return;
+      }
+
       const result = (await api.checkoutBillingOrder({
         bill_order_bid: pingxxCheckout.billingOrderBid,
         channel,
@@ -454,16 +523,44 @@ export function BillingOverviewTab({
 
   const dialogPriceLabel = checkoutTarget
     ? formatBillingPrice(
-        checkoutTarget.product.price_amount,
+        resolveBillingProductPayableAmount(checkoutTarget.product),
         checkoutTarget.product.currency,
         i18n.language,
       )
     : '';
   const dialogCreditsLabel = checkoutTarget
-    ? formatBillingCredits(checkoutTarget.product.credit_amount, i18n.language)
+    ? hasBillingProductBonusCampaign(checkoutTarget.product)
+      ? t('module.billing.checkout.bonusCreditsLabel', {
+          baseCredits: formatBillingCredits(
+            checkoutTarget.product.credit_amount,
+            i18n.language,
+          ),
+          bonusCredits: formatBillingCredits(
+            getBillingProductCampaignBonusCredits(checkoutTarget.product),
+            i18n.language,
+          ),
+        })
+      : formatBillingCredits(
+          checkoutTarget.product.credit_amount,
+          i18n.language,
+        )
     : '';
   const dialogProviderLabel = checkoutTarget
     ? resolveCheckoutChannelLabel(t, checkoutTarget, selectedPingxxChannel)
+    : '';
+  const dialogHasPrepaidOffset =
+    checkoutTarget?.kind === 'plan' &&
+    checkoutTarget.action === 'upgrade_immediate' &&
+    Boolean(overview?.subscription?.next_product_bid);
+  const dialogDescription = checkoutTarget
+    ? t(
+        checkoutTarget.kind === 'plan'
+          ? resolvePlanCheckoutDescriptionKey(
+              checkoutTarget.action,
+              dialogHasPrepaidOffset,
+            )
+          : 'module.billing.checkout.topupDescription',
+      )
     : '';
   const loadError = overviewError || catalogError;
   // Trial column hidden in the comparison table; keep trial data wiring so the
@@ -475,8 +572,6 @@ export function BillingOverviewTab({
       className='space-y-8'
       data-testid='billing-overview-tab'
     >
-      <BillingOverviewHero />
-
       {loadError ? (
         <div className='rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700'>
           {t('module.billing.overview.loadError')}
@@ -503,9 +598,26 @@ export function BillingOverviewTab({
         onAlertAction={handleAlertAction}
       />
 
+      {overview?.subscription?.next_product_bid && pendingPreorderPlan ? (
+        <div
+          className='rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800'
+          data-testid='billing-pending-preorder-banner'
+        >
+          {t('module.billing.package.preorder.pending', {
+            plan: resolveBillingProductTitle(t, pendingPreorderPlan),
+            date:
+              formatBillingDateTime(
+                overview.subscription.current_period_end_at,
+                i18n.language,
+              ) || t('module.billing.common.empty'),
+          })}
+        </div>
+      ) : null}
+
       <BillingOverviewShowcase
         checkoutLoadingKey={checkoutLoadingKey}
         currentPlan={currentPlan}
+        currentSubscription={overview?.subscription || null}
         hasActiveSubscription={hasActiveSubscription}
         isTrialCurrentPlan={isTrialCurrentPlan}
         isLoading={overviewLoading || catalogLoading}
@@ -520,7 +632,7 @@ export function BillingOverviewTab({
         trialOffer={trialOffer}
         wechatpayAvailable={wechatpayAvailable}
         yearlyPlans={yearlyPlans}
-        onSelectPlanCheckout={(plan, provider) => {
+        onSelectPlanCheckout={(plan, provider, action) => {
           if (isQrBillingProvider(provider)) {
             setSelectedPingxxChannel(resolveDefaultBillingQrChannel(provider));
           }
@@ -529,6 +641,7 @@ export function BillingOverviewTab({
             kind: 'plan',
             product: plan,
             provider,
+            action,
           });
         }}
         onSelectTopupCheckout={(product, provider) => {
@@ -547,11 +660,7 @@ export function BillingOverviewTab({
 
       <BillingCheckoutDialog
         creditsLabel={dialogCreditsLabel}
-        description={t(
-          checkoutTarget?.kind === 'plan'
-            ? 'module.billing.checkout.planDescription'
-            : 'module.billing.checkout.topupDescription',
-        )}
+        description={dialogDescription}
         isLoading={Boolean(checkoutLoadingKey)}
         open={Boolean(checkoutTarget)}
         pingxxChannel={
@@ -586,11 +695,13 @@ export function BillingOverviewTab({
         provider={pingxxCheckout?.provider || 'pingxx'}
         qrUrl={pingxxCheckout?.qrUrl || ''}
         selectedChannel={pingxxCheckout?.selectedChannel || 'wx_pub_qr'}
+        prepaidOffsetAmount={pingxxCheckout?.prepaidOffsetAmount || 0}
         agreed={checkoutAgreed}
         onChannelChange={channel => void handlePingxxQrChannelChange(channel)}
         onAgreedChange={setCheckoutAgreed}
         onOpenChange={open => {
           if (!open) {
+            void refreshBillingData();
             setPingxxCheckout(null);
             setCheckoutAgreed(false);
           }

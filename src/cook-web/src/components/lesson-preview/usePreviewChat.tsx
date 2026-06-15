@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { SSE } from 'sse.js';
-import { v4 as uuidv4 } from 'uuid';
 import { OnSendContentParams } from 'markdown-flow-ui/renderer';
 import { createInteractionParser } from 'remark-flow';
 import {
@@ -35,11 +34,14 @@ import { useShifu, useUserStore } from '@/store';
 import { toast } from '@/hooks/useToast';
 import { attachSseBusinessResponseFallback } from '@/lib/request';
 import type { ErrorWithCode } from '@/lib/request';
+import { buildTraceHeaders } from '@/lib/request-trace';
 import { useTranslation } from 'react-i18next';
 import { PreviewVariablesMap, savePreviewVariables } from './variableStorage';
 import {
   buildPreviewInteractionUserInput,
   resolvePreviewGeneratedBlockBid,
+  resolvePreviewRegenerateFallbackBlockIndex,
+  resolvePreviewRegenerateStartIndex,
   resolvePreviewRequestBlockIndex,
 } from './preview-submission';
 
@@ -62,6 +64,35 @@ interface StartPreviewParams {
   systemVariableKeys?: string[];
   visual_mode?: boolean;
 }
+
+export const buildInteractionContinuationPreviewParams = ({
+  currentParams,
+  latestMdflow,
+  blockIndex,
+  variables,
+  userInput,
+}: {
+  currentParams: StartPreviewParams;
+  latestMdflow: string;
+  blockIndex: number;
+  variables: PreviewVariablesMap;
+  userInput?: Record<string, string[]>;
+}): StartPreviewParams => {
+  const nextParams: StartPreviewParams = {
+    ...currentParams,
+    mdflow: latestMdflow,
+    block_index: blockIndex,
+    variables,
+  };
+
+  if (userInput) {
+    nextParams.user_input = userInput;
+  } else if ('user_input' in nextParams) {
+    delete nextParams.user_input;
+  }
+
+  return nextParams;
+};
 
 enum PREVIEW_SSE_OUTPUT_TYPE {
   ELEMENT = 'element',
@@ -235,6 +266,17 @@ const resolveElementType = (
     return null;
   }
   return rawElementType.toLowerCase() as ElementType;
+};
+
+const resolveElementIndex = (
+  elementRecord: Partial<StudyRecordItem> | null,
+): number | undefined => {
+  if (!elementRecord) {
+    return undefined;
+  }
+  return typeof elementRecord.element_index === 'number'
+    ? elementRecord.element_index
+    : undefined;
 };
 
 const buildVariablesSnapshot = (
@@ -875,6 +917,7 @@ export function usePreviewChat() {
         responseGeneratedBlockBid: response.generated_block_bid,
         fallbackBid: itemBid,
       });
+      const elementIndex = resolveElementIndex(elementRecord);
       const elementContent =
         typeof elementRecord?.content === 'string' ? elementRecord.content : '';
       const isInteractionElement = elementType === ELEMENT_TYPE.INTERACTION;
@@ -946,6 +989,7 @@ export function usePreviewChat() {
           readonly: false,
           type: nextItemType,
           element_type: elementType || undefined,
+          element_index: elementIndex,
           is_final: Boolean(elementRecord?.is_final),
           sequence_number:
             typeof elementRecord?.sequence_number === 'number'
@@ -1333,14 +1377,15 @@ export function usePreviewChat() {
 
       try {
         const tokenValue = useUserStore.getState().getToken();
-        const headers: Record<string, string> = {
+        const traceHeaders = buildTraceHeaders({
           'Content-Type': 'application/json',
-          'X-Request-ID': uuidv4().replace(/-/g, ''),
-        };
-        if (tokenValue) {
-          headers.Authorization = `Bearer ${tokenValue}`;
-          headers.Token = tokenValue;
-        }
+          ...(tokenValue
+            ? {
+                Authorization: `Bearer ${tokenValue}`,
+                Token: tokenValue,
+              }
+            : {}),
+        });
         const payload: Record<string, unknown> = {
           block_index: finalBlockIndex,
           content: finalMdflow,
@@ -1350,16 +1395,22 @@ export function usePreviewChat() {
         if (normalizedUserInput) {
           payload.user_input = normalizedUserInput;
         }
-        const source = new SSE(
-          `${resolvedBaseUrl}/api/learn/shifu/${finalShifuBid}/preview/${finalOutlineBid}`,
-          {
-            headers,
-            payload: JSON.stringify(payload),
-            method: 'POST',
-          },
-        );
+        const url = `${resolvedBaseUrl}/api/learn/shifu/${finalShifuBid}/preview/${finalOutlineBid}`;
+        const source = new SSE(url, {
+          headers: traceHeaders.headers,
+          payload: JSON.stringify(payload),
+          method: 'POST',
+        });
         sseRef.current = source;
         attachSseBusinessResponseFallback(source, {
+          requestToken: tokenValue || '',
+          meta: {
+            url,
+            method: 'POST',
+            requestToken: tokenValue || '',
+            requestId: traceHeaders.requestId,
+            harnessRunId: traceHeaders.harnessRunId,
+          },
           onHandled: error => {
             if (sseRef.current !== source) {
               return;
@@ -1628,19 +1679,16 @@ export function usePreviewChat() {
       const targetGeneratedBlockBid =
         getPreviewItemGeneratedBlockBid(targetItem) || blockBid;
 
-      const nextParams: StartPreviewParams = {
-        ...sseParams.current,
-        block_index: resolvePreviewRequestBlockIndex(
+      const nextParams = buildInteractionContinuationPreviewParams({
+        currentParams: sseParams.current,
+        latestMdflow: resolveLatestMdflow(),
+        blockIndex: resolvePreviewRequestBlockIndex(
           targetGeneratedBlockBid,
           sseParams.current.block_index ?? 0,
         ),
         variables: requestVariables,
-      };
-      if (userInputPayload) {
-        nextParams.user_input = userInputPayload;
-      } else if ('user_input' in nextParams) {
-        delete nextParams.user_input;
-      }
+        userInput: userInputPayload,
+      });
       startPreview(nextParams);
       return true;
     },
@@ -1652,6 +1700,7 @@ export function usePreviewChat() {
       updateContentListWithUserOperate,
       prefillInteractionBlock,
       resolveLastActionableBlockBid,
+      resolveLatestMdflow,
     ],
   );
 
@@ -1671,24 +1720,38 @@ export function usePreviewChat() {
         return;
       }
 
-      const targetItem = newList[needChangeItemIndex];
+      const blockStartIndex = resolvePreviewRegenerateStartIndex(
+        newList,
+        needChangeItemIndex,
+      );
+      if (blockStartIndex === -1) {
+        return;
+      }
+
+      const targetItem = newList[blockStartIndex];
       const targetGeneratedBlockBid =
-        getPreviewItemGeneratedBlockBid(targetItem) || elementBid;
+        getPreviewItemGeneratedBlockBid(targetItem) ||
+        getPreviewItemGeneratedBlockBid(newList[needChangeItemIndex]) ||
+        elementBid;
+      const fallbackBlockIndex = resolvePreviewRegenerateFallbackBlockIndex(
+        newList,
+        blockStartIndex,
+      );
 
       const nextBlockIndex = resolvePreviewRequestBlockIndex(
         targetGeneratedBlockBid,
-        needChangeItemIndex,
+        fallbackBlockIndex,
       );
 
       const removedBlockIds = originalList
-        .slice(needChangeItemIndex)
+        .slice(blockStartIndex)
         .map(item => resolvePreviewItemBid(item))
         .filter((item): item is string => Boolean(item));
       if (removedBlockIds.length) {
         removeAutoSubmittedBlocks(removedBlockIds);
       }
 
-      newList.length = needChangeItemIndex;
+      newList.length = blockStartIndex;
       setTrackedContentList(newList);
       const latestMdflow = resolveLatestMdflow();
       startPreview({
@@ -1835,26 +1898,33 @@ export function usePreviewChat() {
 
       const resolvedBaseUrl = await resolveBaseUrl();
       const tokenValue = useUserStore.getState().getToken();
-      const headers: Record<string, string> = {
+      const traceHeaders = buildTraceHeaders({
         'Content-Type': 'application/json',
-        'X-Request-ID': uuidv4().replace(/-/g, ''),
-      };
-      if (tokenValue) {
-        headers.Authorization = `Bearer ${tokenValue}`;
-        headers.Token = tokenValue;
-      }
+        ...(tokenValue
+          ? {
+              Authorization: `Bearer ${tokenValue}`,
+              Token: tokenValue,
+            }
+          : {}),
+      });
 
       return new Promise((resolve, reject) => {
-        const source = new SSE(
-          `${resolvedBaseUrl}/api/learn/shifu/${shifuBid}/tts/preview?preview_mode=true`,
-          {
-            headers,
-            payload: JSON.stringify({ text: text || '' }),
-            method: 'POST',
-          },
-        );
+        const url = `${resolvedBaseUrl}/api/learn/shifu/${shifuBid}/tts/preview?preview_mode=true`;
+        const source = new SSE(url, {
+          headers: traceHeaders.headers,
+          payload: JSON.stringify({ text: text || '' }),
+          method: 'POST',
+        });
         ttsSseRef.current[blockId] = source;
         attachSseBusinessResponseFallback(source, {
+          requestToken: tokenValue || '',
+          meta: {
+            url,
+            method: 'POST',
+            requestToken: tokenValue || '',
+            requestId: traceHeaders.requestId,
+            harnessRunId: traceHeaders.harnessRunId,
+          },
           onHandled: error => {
             setTrackedContentList(prevState =>
               ensureAudioItem(

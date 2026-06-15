@@ -30,6 +30,10 @@ export type BillingCapabilityStatus =
 
 export type BillingPaymentMode = 'subscription' | 'one_time';
 
+export type BillingSubscriptionCheckoutAction =
+  | 'upgrade_immediate'
+  | 'preorder';
+
 export type BillingPlanInterval = 'day' | 'month' | 'year';
 
 export type BillingOrderStatus =
@@ -66,7 +70,8 @@ export type BillingBucketSourceType =
   | 'gift'
   | 'refund'
   | 'manual'
-  | 'usage';
+  | 'usage'
+  | 'campaign_bonus';
 
 export type BillingBucketStatus =
   | 'active'
@@ -166,6 +171,16 @@ export type BillingBootstrap = {
   notes: string[];
 };
 
+export type BillingCatalogCampaign = {
+  campaign_bid: string;
+  benefit_type: 'discount' | 'bonus';
+  discount_type?: 'fixed' | 'percent' | null;
+  discount_amount: number;
+  discount_percent: number;
+  campaign_price_amount: number;
+  bonus_credit_amount: number;
+};
+
 export type BillingPlan = {
   product_bid: string;
   product_code: string;
@@ -177,9 +192,11 @@ export type BillingPlan = {
   currency: string;
   price_amount: number;
   credit_amount: number;
+  plan_tier?: number | null;
   auto_renew_enabled: boolean;
   highlights?: string[];
   status_badge_key?: string;
+  campaign?: BillingCatalogCampaign | null;
 };
 
 export type BillingTopupProduct = {
@@ -193,6 +210,7 @@ export type BillingTopupProduct = {
   credit_amount: number;
   highlights?: string[];
   status_badge_key?: string;
+  campaign?: BillingCatalogCampaign | null;
 };
 
 export type BillingSubscription = {
@@ -362,6 +380,15 @@ export type BillingCheckoutResult = {
   provider: BillingProvider;
   payment_mode: BillingPaymentMode;
   status: 'init' | 'pending' | 'paid' | 'failed' | 'unsupported';
+  checkout_type?: string | null;
+  effective_mode?: 'immediate' | 'cycle_end' | string | null;
+  current_product_bid?: string | null;
+  target_product_bid?: string | null;
+  preorder_order_bid?: string | null;
+  prepaid_offset_amount?: number;
+  payable_amount?: number | null;
+  currency?: string;
+  campaign?: BillingCatalogCampaign | null;
   redirect_url?: string;
   checkout_session_id?: string;
   payment_payload?: Record<string, unknown>;

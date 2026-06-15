@@ -1,6 +1,16 @@
-import { render, screen } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import type React from 'react';
 import ListenModeSlideRenderer from './ListenModeSlideRenderer';
+import {
+  readListenPlaybackSpeedFromStorage,
+  writeListenPlaybackSpeedToStorage,
+} from './listenPlaybackSpeed';
 import {
   isListenLessonFeedbackPromptReady,
   shouldDelayListenFeedbackPromptForTailInteraction,
@@ -8,6 +18,21 @@ import {
 
 const mockIsLessonFeedbackInteractionContent = jest.fn(
   (content?: string) => content?.includes('lesson_feedback') ?? false,
+);
+const mockAskBlock = jest.fn(
+  ({
+    element_bid,
+    isExpanded,
+  }: {
+    element_bid?: string;
+    isExpanded?: boolean;
+  }) => (
+    <div
+      data-element-bid={element_bid ?? ''}
+      data-expanded={isExpanded ? 'true' : 'false'}
+      data-testid='ask-block'
+    />
+  ),
 );
 
 jest.mock('react-i18next', () => ({
@@ -27,9 +52,37 @@ jest.mock('next/image', () => ({
   ),
 }));
 
-jest.mock('markdown-flow-ui/slide', () => ({
-  Slide: jest.fn(() => null),
-}));
+jest.mock('markdown-flow-ui/slide', () => {
+  const slideCustomActionContext = {
+    currentElement: {
+      blockBid: 'content-1',
+      type: 'content',
+    },
+    currentIndex: 0,
+    isActive: false,
+    setActive: jest.fn(),
+    toggleActive: jest.fn(),
+  };
+
+  return {
+    Slide: jest.fn(
+      (props: {
+        playerCustomActions?:
+          | React.ReactNode
+          | ((context: typeof slideCustomActionContext) => React.ReactNode);
+      }) => (
+        <div data-testid='mock-slide'>
+          <audio data-testid='slide-audio' />
+          <div data-testid='slide-custom-actions'>
+            {typeof props.playerCustomActions === 'function'
+              ? props.playerCustomActions(slideCustomActionContext)
+              : props.playerCustomActions}
+          </div>
+        </div>
+      ),
+    ),
+  };
+});
 
 jest.mock('./useChatLogicHook', () => ({
   ChatContentItemType: {
@@ -43,7 +96,8 @@ jest.mock('./useChatLogicHook', () => ({
 
 jest.mock('./AskBlock', () => ({
   __esModule: true,
-  default: () => <div data-testid='ask-block' />,
+  default: (props: { element_bid?: string; isExpanded?: boolean }) =>
+    mockAskBlock(props),
 }));
 
 jest.mock('@/c-utils/lesson-feedback-interaction-defaults', () => ({
@@ -73,8 +127,14 @@ const getMockSlide = () =>
 
 describe('ListenModeSlideRenderer', () => {
   beforeEach(() => {
+    window.localStorage.clear();
     getMockSlide().mockClear();
+    mockAskBlock.mockClear();
     mockIsLessonFeedbackInteractionContent.mockClear();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   it('does not show the audio preparation text for normal loading', () => {
@@ -187,6 +247,194 @@ describe('ListenModeSlideRenderer', () => {
         readonly: true,
       }),
     );
+  });
+
+  it('keeps the mobile ask block mounted and collapsed after closing the listen panel', async () => {
+    render(
+      <ListenModeSlideRenderer
+        items={[
+          {
+            type: 'content',
+            content: 'Hello',
+            element_bid: 'content-1',
+            is_speakable: true,
+          },
+        ]}
+        mobileStyle={true}
+        chatRef={createChatRef()}
+      />,
+    );
+
+    const askButton = screen.getByText('module.chat.ask').closest('button');
+
+    expect(askButton).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(askButton as HTMLButtonElement);
+    });
+    expect(screen.getByTestId('ask-block')).toHaveAttribute(
+      'data-expanded',
+      'true',
+    );
+
+    await act(async () => {
+      fireEvent.click(askButton as HTMLButtonElement);
+    });
+    expect(screen.getByTestId('ask-block')).toHaveAttribute(
+      'data-expanded',
+      'false',
+    );
+    expect(screen.getByTestId('ask-block')).toHaveAttribute(
+      'data-element-bid',
+      'content-1',
+    );
+  });
+
+  it('applies the stored course playback speed to slide audio', async () => {
+    writeListenPlaybackSpeedToStorage('course-1', 1.5);
+
+    render(
+      <ListenModeSlideRenderer
+        items={[
+          {
+            type: 'content',
+            content: 'Hello',
+            element_bid: 'content-1',
+            is_speakable: true,
+          },
+        ]}
+        mobileStyle={false}
+        chatRef={createChatRef()}
+        shifuBid='course-1'
+      />,
+    );
+
+    const audioElement = screen.getByTestId('slide-audio') as HTMLAudioElement;
+
+    await waitFor(() => {
+      expect(audioElement.defaultPlaybackRate).toBe(1.5);
+      expect(audioElement.playbackRate).toBe(1.5);
+    });
+  });
+
+  it('renders the current playback speed as text in the trigger control', () => {
+    writeListenPlaybackSpeedToStorage('course-1', 2);
+
+    render(
+      <ListenModeSlideRenderer
+        items={[
+          {
+            type: 'content',
+            content: 'Hello',
+            element_bid: 'content-1',
+            is_speakable: true,
+          },
+        ]}
+        mobileStyle={false}
+        chatRef={createChatRef()}
+        shifuBid='course-1'
+      />,
+    );
+
+    const speedButton = screen.getByRole('button', {
+      name: 'module.chat.listenPlaybackSpeedAriaLabel',
+    });
+
+    expect(speedButton).toHaveTextContent('2x');
+    expect(speedButton.querySelector('img')).not.toBeInTheDocument();
+  });
+
+  it('renders playback speed options as text labels', async () => {
+    render(
+      <ListenModeSlideRenderer
+        items={[
+          {
+            type: 'content',
+            content: 'Hello',
+            element_bid: 'content-1',
+            is_speakable: true,
+          },
+        ]}
+        mobileStyle={false}
+        chatRef={createChatRef()}
+        shifuBid='course-1'
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'module.chat.listenPlaybackSpeedAriaLabel',
+      }),
+    );
+
+    for (const label of ['0.75x', '1x', '1.25x', '1.5x', '2x']) {
+      const option = await screen.findByRole('radio', { name: label });
+
+      expect(option).toHaveTextContent(label);
+      expect(option.querySelector('img')).not.toBeInTheDocument();
+    }
+  });
+
+  it('updates current audio and local storage when selecting another playback speed', async () => {
+    render(
+      <ListenModeSlideRenderer
+        items={[
+          {
+            type: 'content',
+            content: 'Hello',
+            element_bid: 'content-1',
+            is_speakable: true,
+          },
+        ]}
+        mobileStyle={false}
+        chatRef={createChatRef()}
+        shifuBid='course-1'
+      />,
+    );
+
+    const audioElement = screen.getByTestId('slide-audio') as HTMLAudioElement;
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'module.chat.listenPlaybackSpeedAriaLabel',
+      }),
+    );
+    fireEvent.click(await screen.findByRole('radio', { name: '2x' }));
+
+    await waitFor(() => {
+      expect(audioElement.defaultPlaybackRate).toBe(2);
+      expect(audioElement.playbackRate).toBe(2);
+      expect(readListenPlaybackSpeedFromStorage('course-1')).toBe(2);
+    });
+  });
+
+  it('keeps the current course playback speed for audio created after slide changes', async () => {
+    writeListenPlaybackSpeedToStorage('course-1', 1.25);
+
+    render(
+      <ListenModeSlideRenderer
+        items={[
+          {
+            type: 'content',
+            content: 'Hello',
+            element_bid: 'content-1',
+            is_speakable: true,
+          },
+        ]}
+        mobileStyle={false}
+        chatRef={createChatRef()}
+        shifuBid='course-1'
+      />,
+    );
+
+    const newAudioElement = document.createElement('audio');
+    await act(async () => {
+      screen.getByTestId('mock-slide').appendChild(newAudioElement);
+    });
+
+    await waitFor(() => {
+      expect(newAudioElement.defaultPlaybackRate).toBe(1.25);
+      expect(newAudioElement.playbackRate).toBe(1.25);
+    });
   });
 
   it('keeps lesson feedback pending until the trailing visible interaction settles', () => {

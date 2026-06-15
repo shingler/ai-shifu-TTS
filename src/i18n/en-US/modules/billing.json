@@ -125,6 +125,7 @@
       "description": "Inspect creator subscriptions, wallet balances, and renewal context.",
       "empty": "No subscriptions yet.",
       "loadError": "Admin subscription data could not be loaded.",
+      "preorderTarget": "Preorder: {product}",
       "table": {
         "availableCredits": "Available credits",
         "creator": "Creator",
@@ -313,10 +314,14 @@
   "checkout": {
     "agreementLink": "Credit Purchase Agreement",
     "agreementPrefix": "I have read and agreed to the",
+    "bonusCreditsLabel": "{baseCredits} + {bonusCredits} bonus",
     "cancel": "Cancel",
+    "completed": "Payment completed.",
     "confirm": "Continue to payment",
     "creditsLabel": "Credits",
     "planDescription": "Here are the payment details for your credit subscription plan.",
+    "preorderDescription": "This package will be prepaid now and take effect when the current cycle ends.",
+    "prepaidOffsetLabel": "Prepaid offset",
     "priceLabel": "Price",
     "processing": "Processing...",
     "productLabel": "Product",
@@ -330,7 +335,9 @@
     },
     "title": "Confirm purchase",
     "topupDescription": "You are about to open a one-time credit top-up checkout.",
-    "unsupported": "This payment method is not available right now."
+    "unsupported": "This payment method is not available right now.",
+    "upgradeDescription": "This upgrade takes effect immediately.",
+    "upgradeWithPreorderDescription": "This upgrade takes effect immediately. Any active preorder payment is applied as an offset."
   },
   "common": {
     "empty": "Not available"
@@ -426,6 +433,7 @@
       "page": "Page {page} / {pageCount} · {total} entries"
     },
     "source": {
+      "campaignBonus": "Campaign bonus credits",
       "gift": "Gift credits",
       "manual": "Manual adjustment",
       "refund": "Refund return",
@@ -494,9 +502,19 @@
       "downgradeDisabled": "Downgrade unavailable",
       "freeTrial": "Inactive",
       "nonMemberTooltip": "You are currently on the non-member plan. No action is needed.",
+      "preorderDowngrade": "Preorder downgrade",
+      "preorderLocked": "Preorder locked",
+      "preorderLockedTooltip": "A package preorder is already pending. Only immediate upgrades are available.",
+      "preorderProviderUnsupportedTooltip": "Package preorder is available only for the current self-managed payment channel.",
+      "preorderRenewal": "Prepay renewal",
+      "preorderScheduled": "Preorder scheduled",
       "subscribeNow": "Subscribe now",
       "upgradeNow": "Upgrade now",
       "upgradeOnlyTooltip": "The current subscription is still active. Only upgrades to a higher-tier plan are allowed."
+    },
+    "campaign": {
+      "bonusBadge": "{credits} bonus credits",
+      "discountBadge": "Limited offer"
     },
     "creditPeriod": {
       "oneTime": "One-time"
@@ -591,6 +609,9 @@
       "topup": "Credit Packs",
       "yearly": "Yearly Plans"
     },
+    "preorder": {
+      "pending": "Pending preorder: {plan} will take effect at {date}."
+    },
     "scale": {
       "advanced": {
         "students": "250 - 750 learner sessions"
@@ -647,7 +668,8 @@
     "tabs": {
       "ledger": "Credit Details",
       "plans": "Buy Credits"
-    }
+    },
+    "title": "Membership and Credits"
   },
   "renewal": {
     "eventType": {

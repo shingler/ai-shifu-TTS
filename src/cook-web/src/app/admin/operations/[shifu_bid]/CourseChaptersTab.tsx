@@ -37,6 +37,8 @@ type ChapterColumnKey =
   | 'ratingScore'
   | 'ratingCount';
 
+const CHAPTER_TABLE_COLUMN_COUNT = 11;
+
 type CourseChaptersTabProps = {
   rows: FlattenedChapterRow[];
   emptyValue: string;
@@ -50,7 +52,7 @@ type CourseChaptersTabProps = {
     secondary: string;
   };
   formatCount: (value: number, locale: string) => string;
-  formatAdminUtcDateTime: (value?: string) => string;
+  formatAdminNaiveDateTime: (value?: string) => string;
   getColumnStyle: (key: ChapterColumnKey) => {
     width: number;
     minWidth: number;
@@ -73,7 +75,7 @@ export default function CourseChaptersTab({
   resolveContentStatusLabel,
   resolveModifierDisplay,
   formatCount,
-  formatAdminUtcDateTime,
+  formatAdminNaiveDateTime,
   getColumnStyle,
   getResizeHandleProps,
   tOperations,
@@ -92,7 +94,7 @@ export default function CourseChaptersTab({
           loading={false}
           isEmpty={rows.length === 0}
           emptyContent={tOperations('detail.chaptersTable.empty')}
-          emptyColSpan={11}
+          emptyColSpan={CHAPTER_TABLE_COLUMN_COUNT}
           withTooltipProvider
           tableWrapperClassName='overflow-auto'
           table={emptyRow => (
@@ -307,7 +309,7 @@ export default function CourseChaptersTab({
                       >
                         <AdminTooltipText
                           text={
-                            formatAdminUtcDateTime(chapter.updated_at) ||
+                            formatAdminNaiveDateTime(chapter.updated_at) ||
                             emptyValue
                           }
                           emptyValue={emptyValue}

@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 import os
 import secrets
+import sys
+import time as time_module
 from types import SimpleNamespace
 
 from flask import Flask
@@ -20,6 +22,8 @@ from flaskr.service.billing.consts import (
     CREDIT_NOTIFICATION_STATUS_PENDING,
     CREDIT_NOTIFICATION_STATUS_SENT,
     CREDIT_NOTIFICATION_STATUS_SKIPPED_NO_MOBILE,
+    CREDIT_NOTIFICATION_STATUS_SKIPPED_OPT_OUT,
+    CREDIT_NOTIFICATION_STATUS_SUPPRESSED_DUPLICATE,
     CREDIT_NOTIFICATION_TYPE_EXPIRING,
     CREDIT_NOTIFICATION_TYPE_GRANTED,
     CREDIT_NOTIFICATION_TYPE_LOW_BALANCE,
@@ -30,7 +34,10 @@ from flaskr.service.billing.credit_notifications import (
     _is_quiet_hours,
     assert_creator_debug_allowed,
     deliver_credit_notification,
+    get_credit_notification_detail,
+    list_credit_notification_templates,
     list_credit_notifications,
+    load_credit_notification_policy_for_operator,
     requeue_credit_notification,
     resolve_creator_limit_state,
     save_credit_notification_policy,
@@ -52,6 +59,7 @@ from flaskr.service.billing.tasks import (
     send_credit_notification_task,
 )
 from flaskr.service.common.models import AppException
+from flaskr.service.config.models import Config
 from flaskr.service.user.consts import USER_STATE_REGISTERED, USER_STATE_UNREGISTERED
 from flaskr.service.user.repository import (
     create_user_entity,
@@ -95,6 +103,7 @@ def _seed_creator(
     *,
     creator_bid: str = "creator-1",
     mobile: str | None = "13800000000",
+    nickname: str = "Creator",
     state: int = USER_STATE_REGISTERED,
     is_creator: bool = True,
 ) -> None:
@@ -103,7 +112,7 @@ def _seed_creator(
         create_user_entity(
             user_bid=creator_bid,
             identify=identify,
-            nickname="Creator",
+            nickname=nickname,
             state=state,
         )
         if is_creator:
@@ -127,6 +136,8 @@ def _enable_policy(
     *,
     softlimit: dict | None = None,
     low_balance_thresholds: list[dict[str, object]] | None = None,
+    blacklist: dict | None = None,
+    opt_out: dict | None = None,
 ) -> None:
     _seed_default_notification_templates(app)
     save_credit_notification_policy(
@@ -160,6 +171,8 @@ def _enable_policy(
                 "threshold": {"kind": "fixed", "value": "0"},
                 "disable_debug": True,
             },
+            "blacklist": blacklist or {"creator_bids": [], "mobiles": []},
+            "opt_out": opt_out or {"creator_bids": [], "mobiles": []},
         },
     )
 
@@ -211,15 +224,17 @@ def _seed_bucket(
     creator_bid: str = "creator-1",
     effective_to: datetime,
     available_credits: str = "5",
+    wallet_bucket_bid: str | None = None,
 ) -> None:
+    resolved_wallet_bucket_bid = wallet_bucket_bid or f"bucket-{creator_bid}"
     dao.db.session.add(
         CreditWalletBucket(
-            wallet_bucket_bid=f"bucket-{creator_bid}",
+            wallet_bucket_bid=resolved_wallet_bucket_bid,
             wallet_bid=f"wallet-{creator_bid}",
             creator_bid=creator_bid,
             bucket_category=CREDIT_BUCKET_CATEGORY_TOPUP,
             source_type=CREDIT_SOURCE_TYPE_MANUAL,
-            source_bid=f"source-{creator_bid}",
+            source_bid=f"source-{resolved_wallet_bucket_bid}",
             priority=10,
             original_credits=Decimal(available_credits),
             available_credits=Decimal(available_credits),
@@ -312,7 +327,7 @@ def _seed_default_notification_templates(app: Flask) -> None:
     _seed_notification_template(
         app,
         template_code="TPL-LOW",
-        placeholders=["available_credits", "threshold"],
+        placeholders=["available_credits"],
     )
 
 
@@ -375,7 +390,7 @@ def test_credit_granted_notification_stages_once_and_delivers_sms(
             "template_code": "TPL-GRANT",
             "template_params": {
                 "credits": "12.50",
-                "expires_at": "2026-06-30T00:00:00+00:00",
+                "expires_at": "2026-06-30 00:00:00",
                 "source": "operator",
             },
         }
@@ -386,6 +401,119 @@ def test_credit_granted_notification_stages_once_and_delivers_sms(
         ).one()
         assert notification.status == CREDIT_NOTIFICATION_STATUS_SENT
         assert notification.mobile_snapshot == "13800000000"
+
+
+def test_credit_notification_policy_blocks_creator_by_email_identifier(
+    credit_notifications_app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = credit_notifications_app
+    _seed_creator(app)
+    with app.app_context():
+        upsert_credential(
+            app,
+            user_bid="creator-1",
+            provider_name="email",
+            subject_id="creator@example.com",
+            subject_format="email",
+            identifier="creator@example.com",
+            metadata={},
+            verified=True,
+        )
+        dao.db.session.commit()
+    _enable_policy(
+        app,
+        blacklist={"creator_bids": ["creator@example.com"], "mobiles": []},
+    )
+    monkeypatch.setattr(
+        "flaskr.service.billing.credit_notifications.send_sms_ali",
+        lambda *args, **kwargs: pytest.fail("blocked notification should not send"),
+    )
+    with app.app_context():
+        _seed_credit_ledger()
+
+    staged = stage_credit_granted_notification(
+        app,
+        ledger_bid="ledger-1",
+        enqueue=False,
+    )
+    delivered = deliver_credit_notification(
+        app,
+        notification_bid=str(staged["notification_bid"]),
+    )
+
+    assert delivered["status"] == CREDIT_NOTIFICATION_STATUS_SKIPPED_OPT_OUT
+    assert delivered["reason"] == "blacklisted"
+    with app.app_context():
+        notification = NotificationRecord.query.filter_by(
+            notification_bid=staged["notification_bid"]
+        ).one()
+        assert notification.error_code == "blacklisted"
+
+
+def test_credit_notification_delivery_normalizes_legacy_iso_expires_at(
+    credit_notifications_app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = credit_notifications_app
+    _seed_creator(app)
+    _enable_policy(app)
+    captured: list[dict[str, object]] = []
+
+    with app.app_context():
+        _seed_credit_ledger()
+
+    staged = stage_credit_granted_notification(
+        app,
+        ledger_bid="ledger-1",
+        enqueue=False,
+    )
+    with app.app_context():
+        notification = NotificationRecord.query.filter_by(
+            notification_bid=staged["notification_bid"]
+        ).one()
+        notification.template_params_json = {
+            "credits": "12.50",
+            "expires_at": "2026-06-30T00:00:00+00:00",
+            "source": "operator",
+        }
+        dao.db.session.commit()
+
+    monkeypatch.setattr(
+        "flaskr.service.billing.credit_notifications.send_sms_ali",
+        lambda app, mobile, *, template_code, template_params, sign_name=None: (
+            captured.append(dict(template_params))
+            or SimpleNamespace(
+                body=SimpleNamespace(
+                    code="OK",
+                    message="accepted",
+                    request_id="req-legacy",
+                    biz_id="biz-legacy",
+                )
+            )
+        ),
+    )
+
+    delivered = deliver_credit_notification(
+        app,
+        notification_bid=str(staged["notification_bid"]),
+    )
+
+    assert delivered["status"] == CREDIT_NOTIFICATION_STATUS_SENT
+    assert captured == [
+        {
+            "credits": "12.50",
+            "expires_at": "2026-06-30 00:00:00",
+            "source": "operator",
+        }
+    ]
+    with app.app_context():
+        notification = NotificationRecord.query.filter_by(
+            notification_bid=staged["notification_bid"]
+        ).one()
+        assert notification.template_params_json["expires_at"] == (
+            "2026-06-30 00:00:00"
+        )
 
 
 def test_credit_notification_policy_rejects_invalid_windows(
@@ -452,6 +580,127 @@ def test_credit_notification_policy_accepts_estimated_days_threshold(
     ]
 
 
+def test_credit_notification_policy_can_preserve_opt_out_list(
+    credit_notifications_app: Flask,
+) -> None:
+    app = credit_notifications_app
+
+    save_credit_notification_policy(
+        app,
+        {
+            "enabled": False,
+            "opt_out": {
+                "creator_bids": ["creator-opted-out"],
+                "mobiles": ["13800000000"],
+            },
+        },
+    )
+
+    policy = save_credit_notification_policy(
+        app,
+        {
+            "enabled": False,
+            "blacklist": {
+                "creator_bids": ["creator-blocked"],
+                "mobiles": ["13900000000"],
+            },
+            "opt_out": {
+                "creator_bids": ["should-not-save"],
+                "mobiles": ["13700000000"],
+            },
+        },
+        preserve_opt_out=True,
+    )
+
+    assert policy["blacklist"] == {
+        "creator_bids": ["creator-blocked"],
+        "mobiles": ["13900000000"],
+    }
+    assert policy["opt_out"] == {
+        "creator_bids": ["creator-opted-out"],
+        "mobiles": ["13800000000"],
+    }
+
+
+def test_credit_notification_policy_persists_operator_updated_by(
+    credit_notifications_app: Flask,
+) -> None:
+    app = credit_notifications_app
+
+    save_credit_notification_policy(
+        app,
+        {"enabled": False},
+        updated_by="operator-audit-1",
+    )
+
+    with app.app_context():
+        config = (
+            Config.query.filter(
+                Config.key == "BILL_CREDIT_NOTIFICATION_SMS_CONFIG",
+                Config.deleted == 0,
+            )
+            .order_by(Config.id.desc())
+            .first()
+        )
+        assert config is not None
+        assert config.updated_by == "operator-audit-1"
+
+
+def test_credit_notification_policy_truncates_operator_updated_by(
+    credit_notifications_app: Flask,
+) -> None:
+    app = credit_notifications_app
+    updated_by = "operator-audit-" + ("x" * 40)
+
+    save_credit_notification_policy(
+        app,
+        {"enabled": False},
+        updated_by=updated_by,
+    )
+
+    with app.app_context():
+        config = (
+            Config.query.filter(
+                Config.key == "BILL_CREDIT_NOTIFICATION_SMS_CONFIG",
+                Config.deleted == 0,
+            )
+            .order_by(Config.id.desc())
+            .first()
+        )
+        assert config is not None
+        assert config.updated_by == updated_by[:36]
+
+
+def test_credit_notification_policy_resolves_list_creator_details(
+    credit_notifications_app: Flask,
+) -> None:
+    app = credit_notifications_app
+    _seed_creator(app, creator_bid="creator-detail", nickname="Detail Creator")
+
+    save_credit_notification_policy(
+        app,
+        {
+            "enabled": False,
+            "blacklist": {
+                "creator_bids": [],
+                "mobiles": ["13800000000"],
+            },
+        },
+    )
+
+    policy = load_credit_notification_policy_for_operator()
+
+    assert policy["resolved_lists"]["blacklist"]["items"] == [
+        {
+            "identifier": "13800000000",
+            "creator_bid": "creator-detail",
+            "mobile": "13800000000",
+            "email": "",
+            "nickname": "Detail Creator",
+        }
+    ]
+
+
 def test_sync_credit_notification_template_persists_aliyun_template(
     credit_notifications_app: Flask,
     monkeypatch: pytest.MonkeyPatch,
@@ -495,6 +744,7 @@ def test_sync_credit_notification_template_persists_aliyun_template(
     assert payload["placeholders"] == ["available_credits", "bad_variable"]
     assert payload["unsupported_placeholders"] == ["bad_variable"]
     assert payload["compatible"] is False
+    assert payload["last_synced_at"].endswith("Z")
     with app.app_context():
         template = NotificationTemplate.query.filter_by(
             template_code="TPL-LOW-SYNC"
@@ -519,6 +769,73 @@ def test_sync_credit_notification_template_reports_missing_credentials(
     assert payload["sync_status"] == "missing_credentials"
     assert payload["error_code"] == "missing_credentials"
     assert payload["compatible"] is False
+
+
+def test_list_credit_notification_templates_falls_back_to_local_cache(
+    credit_notifications_app: Flask,
+) -> None:
+    app = credit_notifications_app
+    _seed_notification_template(
+        app,
+        template_code="TPL-CACHED",
+        placeholders=["credits"],
+    )
+
+    payload = list_credit_notification_templates(app)
+
+    assert payload["source"] == "local"
+    assert payload["provider_available"] is False
+    assert payload["error_code"] == "missing_credentials"
+    assert [item["template_code"] for item in payload["items"]] == ["TPL-CACHED"]
+    assert payload["items"][0]["source"] == "local"
+    assert payload["items"][0]["last_synced_at"] == "2026-05-22T00:00:00Z"
+
+
+def test_list_credit_notification_templates_syncs_provider_list(
+    credit_notifications_app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = credit_notifications_app
+    app.config.update(
+        ALIBABA_CLOUD_SMS_ACCESS_KEY_ID=f"test-key-{secrets.token_hex(4)}",
+        ALIBABA_CLOUD_SMS_ACCESS_KEY_SECRET=secrets.token_urlsafe(24),
+    )
+    monkeypatch.setattr(
+        "flaskr.service.billing.credit_notifications.query_sms_template_list_ali",
+        lambda app, *, page_index, page_size: SimpleNamespace(
+            body=SimpleNamespace(
+                code="OK",
+                message="OK",
+                request_id="req-list-1",
+                sms_template_list=[
+                    SimpleNamespace(
+                        template_code="TPL-PROVIDER",
+                        template_name="Provider Template",
+                        template_content="Credits ${credits}",
+                        audit_status="AUDIT_STATE_PASS",
+                        template_type="0",
+                        create_date="2026-05-22 00:00:00",
+                        order_id="order-1",
+                        reason={},
+                    )
+                ],
+            )
+        ),
+    )
+
+    payload = list_credit_notification_templates(app)
+
+    assert payload["source"] == "provider"
+    assert payload["provider_available"] is True
+    assert payload["items"][0]["template_code"] == "TPL-PROVIDER"
+    assert payload["items"][0]["source"] == "provider"
+    assert payload["items"][0]["last_synced_at"].endswith("Z")
+    with app.app_context():
+        template = NotificationTemplate.query.filter_by(
+            template_code="TPL-PROVIDER"
+        ).one()
+        assert template.template_name == "Provider Template"
+        assert template.placeholders_json == ["credits"]
 
 
 def test_sync_credit_notification_template_records_provider_exception(
@@ -581,6 +898,53 @@ def test_credit_notification_policy_allows_synced_template_missing_variables(
     assert policy["types"][CREDIT_NOTIFICATION_TYPE_GRANTED]["template_code"] == (
         "TPL-GRANT-PARTIAL"
     )
+
+
+def test_credit_notification_policy_revalidates_cached_template_with_provider(
+    credit_notifications_app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = credit_notifications_app
+    app.config.update(
+        ALIBABA_CLOUD_SMS_ACCESS_KEY_ID=f"test-key-{secrets.token_hex(4)}",
+        ALIBABA_CLOUD_SMS_ACCESS_KEY_SECRET=secrets.token_urlsafe(24),
+    )
+    _seed_notification_template(
+        app,
+        template_code="TPL-DELETED",
+        placeholders=["credits"],
+    )
+    monkeypatch.setattr(
+        "flaskr.service.billing.credit_notifications.get_sms_template_ali",
+        lambda app, *, template_code: SimpleNamespace(
+            body=SimpleNamespace(
+                code="isv.SMS_TEMPLATE_ILLEGAL",
+                message="template not found",
+                request_id="req-deleted",
+            )
+        ),
+    )
+
+    with pytest.raises(AppException):
+        save_credit_notification_policy(
+            app,
+            {
+                "enabled": True,
+                "types": {
+                    CREDIT_NOTIFICATION_TYPE_GRANTED: {
+                        "enabled": True,
+                        "template_code": "TPL-DELETED",
+                    }
+                },
+            },
+        )
+
+    with app.app_context():
+        template = NotificationTemplate.query.filter_by(
+            template_code="TPL-DELETED"
+        ).one()
+        assert template.sync_status == "failed_provider"
+        assert template.error_code == "isv.SMS_TEMPLATE_ILLEGAL"
 
 
 def test_credit_notification_policy_rejects_unknown_template_variables(
@@ -817,6 +1181,35 @@ def test_credit_notification_quiet_hours_uses_policy_timezone() -> None:
     )
 
 
+def test_credit_notification_quiet_hours_converts_naive_process_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not hasattr(time_module, "tzset"):
+        pytest.skip("tzset is unavailable on this platform")
+
+    previous_tz = os.environ.get("TZ")
+    monkeypatch.setenv("TZ", "UTC")
+    time_module.tzset()
+    try:
+        policy = {
+            "quiet_hours": {
+                "enabled": True,
+                "start": "22:00",
+                "end": "09:00",
+                "timezone": "Asia/Shanghai",
+            }
+        }
+
+        assert not _is_quiet_hours(policy, now=datetime(2026, 5, 23, 8, 0, 0))
+        assert _is_quiet_hours(policy, now=datetime(2026, 5, 23, 15, 30, 0))
+    finally:
+        if previous_tz is None:
+            monkeypatch.delenv("TZ", raising=False)
+        else:
+            monkeypatch.setenv("TZ", previous_tz)
+        time_module.tzset()
+
+
 def test_credit_notification_list_handles_invalid_pagination(
     credit_notifications_app: Flask,
 ) -> None:
@@ -826,6 +1219,312 @@ def test_credit_notification_list_handles_invalid_pagination(
 
     assert payload["page"] == 1
     assert payload["page_size"] == 20
+
+
+def test_credit_notification_list_filters_delivery_status_and_skip_reason(
+    credit_notifications_app: Flask,
+) -> None:
+    app = credit_notifications_app
+    records = [
+        (
+            "notification-contact",
+            CREDIT_NOTIFICATION_STATUS_SKIPPED_NO_MOBILE,
+            "missing_mobile",
+        ),
+        (
+            "notification-policy",
+            CREDIT_NOTIFICATION_STATUS_SKIPPED_OPT_OUT,
+            "quiet_hours",
+        ),
+        (
+            "notification-template-params",
+            CREDIT_NOTIFICATION_STATUS_SKIPPED_OPT_OUT,
+            "missing_template_params",
+        ),
+        (
+            "notification-policy-stale",
+            CREDIT_NOTIFICATION_STATUS_SKIPPED_OPT_OUT,
+            "expiry_extended",
+        ),
+        (
+            "notification-duplicate",
+            CREDIT_NOTIFICATION_STATUS_SUPPRESSED_DUPLICATE,
+            "suppressed_duplicate",
+        ),
+        ("notification-stale", "skipped", "expiry_extended"),
+        (
+            "notification-failed",
+            CREDIT_NOTIFICATION_STATUS_FAILED_PROVIDER,
+            "provider_failed",
+        ),
+    ]
+    with app.app_context():
+        for index, (notification_bid, status, error_code) in enumerate(records):
+            dao.db.session.add(
+                NotificationRecord(
+                    notification_bid=notification_bid,
+                    notification_type=CREDIT_NOTIFICATION_TYPE_GRANTED,
+                    channel="sms",
+                    creator_bid=f"creator-{index}",
+                    target_user_bid=f"creator-{index}",
+                    mobile_snapshot="13800000000",
+                    source_type="ledger",
+                    source_bid=f"ledger-{index}",
+                    dedupe_key=f"credit_granted:ledger-{index}",
+                    status=status,
+                    template_code="TPL-GRANT",
+                    template_params_json={},
+                    policy_snapshot_json={},
+                    provider_response_json={},
+                    error_code=error_code,
+                    error_message=error_code,
+                    metadata_json={},
+                    deleted=0,
+                    created_at=datetime(2026, 5, 21, 8, index, 0),
+                    updated_at=datetime(2026, 5, 21, 8, index, 0),
+                )
+            )
+        dao.db.session.commit()
+
+    not_sent_payload = list_credit_notifications(
+        app,
+        filters={"delivery_status": "not_sent"},
+    )
+    assert not_sent_payload["total"] == 6
+    assert {item["delivery_status"] for item in not_sent_payload["items"]} == {
+        "not_sent"
+    }
+    assert {item["skip_reason"] for item in not_sent_payload["items"]} == {
+        "contact",
+        "policy",
+        "template_params",
+        "duplicate",
+        "stale",
+    }
+
+    assert (
+        list_credit_notifications(app, filters={"skip_reason": "contact"})["total"] == 1
+    )
+    assert (
+        list_credit_notifications(app, filters={"skip_reason": "policy"})["items"][0][
+            "notification_bid"
+        ]
+        == "notification-policy"
+    )
+    assert (
+        list_credit_notifications(app, filters={"skip_reason": "template_params"})[
+            "items"
+        ][0]["notification_bid"]
+        == "notification-template-params"
+    )
+    assert (
+        list_credit_notifications(app, filters={"skip_reason": "duplicate"})["items"][
+            0
+        ]["notification_bid"]
+        == "notification-duplicate"
+    )
+    assert {
+        item["notification_bid"]
+        for item in list_credit_notifications(
+            app,
+            filters={"skip_reason": "stale"},
+        )["items"]
+    } == {"notification-policy-stale", "notification-stale"}
+    assert list_credit_notifications(app, filters={"status": "skipped"})["total"] == 6
+
+
+def test_credit_notification_list_matches_google_email_credential(
+    credit_notifications_app: Flask,
+) -> None:
+    app = credit_notifications_app
+    _seed_creator(app, creator_bid="google-creator", mobile=None)
+    with app.app_context():
+        upsert_credential(
+            app,
+            user_bid="google-creator",
+            provider_name="google",
+            subject_id="google-creator@example.com",
+            subject_format="email",
+            identifier="google-creator@example.com",
+            metadata={},
+            verified=True,
+        )
+        dao.db.session.add(
+            NotificationRecord(
+                notification_bid="notification-google-creator",
+                notification_type=CREDIT_NOTIFICATION_TYPE_GRANTED,
+                channel="sms",
+                creator_bid="google-creator",
+                target_user_bid="google-creator",
+                mobile_snapshot="",
+                source_type="ledger",
+                source_bid="ledger-google",
+                dedupe_key="credit_granted:ledger-google",
+                status=CREDIT_NOTIFICATION_STATUS_PENDING,
+                template_code="TPL-GRANT",
+                template_params_json={},
+                policy_snapshot_json={},
+                provider_response_json={},
+                metadata_json={},
+                deleted=0,
+                created_at=datetime(2026, 5, 21, 8, 0, 0),
+                updated_at=datetime(2026, 5, 21, 8, 0, 0),
+            )
+        )
+        dao.db.session.commit()
+
+    payload = list_credit_notifications(
+        app,
+        filters={"creator_keyword": "google-creator@example.com"},
+    )
+
+    assert payload["total"] == 1
+    assert payload["items"][0]["notification_bid"] == "notification-google-creator"
+
+
+def test_credit_notification_list_ignores_unverified_credentials(
+    credit_notifications_app: Flask,
+) -> None:
+    app = credit_notifications_app
+    _seed_creator(app, creator_bid="unverified-creator", mobile=None)
+    with app.app_context():
+        upsert_credential(
+            app,
+            user_bid="unverified-creator",
+            provider_name="email",
+            subject_id="unverified-creator@example.com",
+            subject_format="email",
+            identifier="unverified-creator@example.com",
+            metadata={},
+            verified=False,
+        )
+        dao.db.session.add(
+            NotificationRecord(
+                notification_bid="notification-unverified-creator",
+                notification_type=CREDIT_NOTIFICATION_TYPE_GRANTED,
+                channel="sms",
+                creator_bid="unverified-creator",
+                target_user_bid="unverified-creator",
+                mobile_snapshot="",
+                source_type="ledger",
+                source_bid="ledger-unverified",
+                dedupe_key="credit_granted:ledger-unverified",
+                status=CREDIT_NOTIFICATION_STATUS_PENDING,
+                template_code="TPL-GRANT",
+                template_params_json={},
+                policy_snapshot_json={},
+                provider_response_json={},
+                metadata_json={},
+                deleted=0,
+                created_at=datetime(2026, 5, 21, 8, 0, 0),
+                updated_at=datetime(2026, 5, 21, 8, 0, 0),
+            )
+        )
+        dao.db.session.commit()
+
+    payload = list_credit_notifications(
+        app,
+        filters={"creator_keyword": "unverified-creator@example.com"},
+    )
+
+    assert payload["total"] == 0
+
+
+def test_credit_notification_list_omits_detail_payloads(
+    credit_notifications_app: Flask,
+) -> None:
+    app = credit_notifications_app
+    _seed_creator(app)
+    _seed_notification_template(app, template_code="TPL-LOW")
+    with app.app_context():
+        dao.db.session.add(
+            NotificationRecord(
+                notification_bid="notification-list-summary",
+                notification_type=CREDIT_NOTIFICATION_TYPE_LOW_BALANCE,
+                channel="sms",
+                creator_bid="creator-1",
+                target_user_bid="creator-1",
+                mobile_snapshot="13800000000",
+                source_type="wallet",
+                source_bid="creator-1",
+                dedupe_key="low_balance:creator-1:5.00:2026-05-21",
+                status=CREDIT_NOTIFICATION_STATUS_FAILED_PROVIDER,
+                template_code="TPL-LOW",
+                template_params_json={"available_credits": "2.00"},
+                policy_snapshot_json={"enabled": True},
+                provider_response_json={"code": "FAIL"},
+                error_code="provider_failed",
+                error_message="Provider failed.",
+                metadata_json={"reason": "demo"},
+                deleted=0,
+                created_at=datetime(2026, 5, 21, 8, 0, 0),
+                updated_at=datetime(2026, 5, 21, 8, 0, 0),
+            )
+        )
+        dao.db.session.commit()
+
+    payload = list_credit_notifications(app)
+
+    item = payload["items"][0]
+    assert item["notification_bid"] == "notification-list-summary"
+    assert item["creator_nickname"] == "Creator"
+    assert item["template_name"] == "Template TPL-LOW"
+    assert item["created_at"] == "2026-05-21T08:00:00Z"
+    assert item["updated_at"] == "2026-05-21T08:00:00Z"
+    assert "template_params" not in item
+    assert "policy_snapshot" not in item
+    assert "provider_response" not in item
+    assert "metadata" not in item
+    assert "dedupe_key" not in item
+
+
+def test_credit_notification_detail_includes_diagnostic_payloads(
+    credit_notifications_app: Flask,
+) -> None:
+    app = credit_notifications_app
+    _seed_creator(app)
+    _seed_notification_template(app, template_code="TPL-LOW")
+    with app.app_context():
+        dao.db.session.add(
+            NotificationRecord(
+                notification_bid="notification-detail",
+                notification_type=CREDIT_NOTIFICATION_TYPE_LOW_BALANCE,
+                channel="sms",
+                creator_bid="creator-1",
+                target_user_bid="creator-1",
+                mobile_snapshot="13800000000",
+                source_type="wallet",
+                source_bid="creator-1",
+                dedupe_key="low_balance:creator-1:5.00:2026-05-21",
+                status=CREDIT_NOTIFICATION_STATUS_FAILED_PROVIDER,
+                template_code="TPL-LOW",
+                template_params_json={"available_credits": "2.00"},
+                policy_snapshot_json={"enabled": True},
+                provider_response_json={"code": "FAIL"},
+                error_code="provider_failed",
+                error_message="Provider failed.",
+                metadata_json={"reason": "demo"},
+                deleted=0,
+                created_at=datetime(2026, 5, 21, 8, 0, 0),
+                updated_at=datetime(2026, 5, 21, 8, 0, 0),
+            )
+        )
+        dao.db.session.commit()
+
+    payload = get_credit_notification_detail(
+        app,
+        notification_bid="notification-detail",
+    )
+
+    assert payload["template_params"] == {"available_credits": "2.00"}
+    assert payload["policy_snapshot"] == {"enabled": True}
+    assert payload["provider_response"] == {"code": "FAIL"}
+    assert payload["metadata"] == {"reason": "demo"}
+    assert payload["dedupe_key"] == "low_balance:creator-1:5.00:2026-05-21"
+    assert payload["creator_nickname"] == "Creator"
+    assert payload["template_name"] == "Template TPL-LOW"
+    assert payload["created_at"] == "2026-05-21T08:00:00Z"
+    assert payload["updated_at"] == "2026-05-21T08:00:00Z"
 
 
 def test_credit_notifications_skip_non_creator_billing_facts(
@@ -932,7 +1631,7 @@ def test_expiring_and_low_balance_scans_stage_deduped_notifications(
     assert expiring_first["created_count"] == 1
     assert expiring_first["enqueued_count"] == 1
     assert expiring_first["notifications"][0]["dedupe_key"] == (
-        "credit_expiring:bucket-creator-1:1d"
+        "credit_expiring:creator-1:1d:2026-05-21"
     )
     assert expiring_second["created_count"] == 0
     assert expiring_second["notifications"][0]["status"] == "suppressed_duplicate"
@@ -942,6 +1641,132 @@ def test_expiring_and_low_balance_scans_stage_deduped_notifications(
 
     with app.app_context():
         assert NotificationRecord.query.count() == 2
+        expiring_notification = NotificationRecord.query.filter_by(
+            notification_type=CREDIT_NOTIFICATION_TYPE_EXPIRING
+        ).one()
+        assert expiring_notification.template_params_json == {
+            "credits": "5.00",
+            "expires_at": "2026-05-22 02:00:00",
+            "window": "1d",
+        }
+
+
+def test_expiring_scan_merges_same_creator_buckets(
+    credit_notifications_app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = credit_notifications_app
+    now = datetime(2026, 5, 21, 0, 0, 0)
+    _seed_creator(app)
+    _enable_policy(app)
+    monkeypatch.setattr(
+        "flaskr.service.billing.credit_notifications.enqueue_credit_notification",
+        lambda app, *, notification_bid: {
+            "status": "enqueued",
+            "notification_bid": notification_bid,
+            "enqueued": True,
+        },
+    )
+
+    with app.app_context():
+        _seed_wallet()
+        _seed_bucket(
+            wallet_bucket_bid="bucket-creator-1-a",
+            effective_to=now + timedelta(days=1, hours=2),
+            available_credits="2",
+        )
+        _seed_bucket(
+            wallet_bucket_bid="bucket-creator-1-b",
+            effective_to=now + timedelta(days=1, hours=2),
+            available_credits="3.5",
+        )
+        dao.db.session.commit()
+
+    payload = scan_credit_expiring_notifications(app, now=now)
+    second_payload = scan_credit_expiring_notifications(app, now=now)
+
+    assert payload["created_count"] == 1
+    assert payload["enqueued_count"] == 1
+    assert payload["notifications"][0]["dedupe_key"] == (
+        "credit_expiring:creator-1:1d:2026-05-21"
+    )
+    assert second_payload["created_count"] == 0
+    assert second_payload["notifications"][0]["status"] == "suppressed_duplicate"
+    with app.app_context():
+        notification = NotificationRecord.query.filter_by(
+            notification_type=CREDIT_NOTIFICATION_TYPE_EXPIRING
+        ).one()
+        assert notification.template_params_json == {
+            "credits": "5.50",
+            "expires_at": "2026-05-22 02:00:00",
+            "window": "1d",
+        }
+        assert notification.metadata_json["merged_bucket_count"] == 2
+        assert notification.metadata_json["wallet_bucket_bids"] == [
+            "bucket-creator-1-a",
+            "bucket-creator-1-b",
+        ]
+
+
+def test_expiring_merge_suppresses_existing_bucket_level_record(
+    credit_notifications_app: Flask,
+) -> None:
+    app = credit_notifications_app
+    now = datetime(2026, 5, 21, 0, 0, 0)
+    _seed_creator(app)
+    _enable_policy(app)
+
+    with app.app_context():
+        _seed_wallet()
+        _seed_bucket(
+            wallet_bucket_bid="bucket-creator-1-a",
+            effective_to=now + timedelta(days=1, hours=2),
+            available_credits="2",
+        )
+        _seed_bucket(
+            wallet_bucket_bid="bucket-creator-1-b",
+            effective_to=now + timedelta(days=1, hours=2),
+            available_credits="3.5",
+        )
+        dao.db.session.add(
+            NotificationRecord(
+                notification_bid="legacy-expiring-record",
+                notification_type=CREDIT_NOTIFICATION_TYPE_EXPIRING,
+                channel="sms",
+                creator_bid="creator-1",
+                target_user_bid="creator-1",
+                mobile_snapshot="13800000000",
+                source_type="wallet_bucket",
+                source_bid="bucket-creator-1-a",
+                dedupe_key="credit_expiring:bucket-creator-1-a:1d",
+                status=CREDIT_NOTIFICATION_STATUS_SENT,
+                template_code="TPL-EXPIRING",
+                template_params_json={
+                    "credits": "2.00",
+                    "expires_at": "2026-05-22 02:00:00",
+                    "window": "1d",
+                },
+                policy_snapshot_json={},
+                provider_response_json={},
+                requested_at=now,
+                attempted_at=now,
+                sent_at=now,
+                metadata_json={
+                    "wallet_bucket_bid": "bucket-creator-1-a",
+                    "window": "1d",
+                },
+                deleted=0,
+            )
+        )
+        dao.db.session.commit()
+
+    payload = scan_credit_expiring_notifications(app, now=now)
+
+    assert payload["created_count"] == 0
+    assert payload["notifications"][0]["status"] == "suppressed_duplicate"
+    assert payload["notifications"][0]["notification_bid"] == "legacy-expiring-record"
+    with app.app_context():
+        assert NotificationRecord.query.count() == 1
 
 
 def test_low_balance_estimated_days_scan_uses_daily_ledger_summary(
@@ -1132,6 +1957,234 @@ def test_low_balance_estimated_days_skips_when_valid_daily_consumption_is_missin
         assert NotificationRecord.query.count() == 0
 
 
+def test_low_balance_scan_skips_zero_balance_without_estimated_remaining_days(
+    credit_notifications_app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = credit_notifications_app
+    now = datetime(2026, 5, 21, 8, 0, 0)
+    _seed_creator(app)
+    _enable_policy(
+        app,
+        low_balance_thresholds=[{"kind": "fixed", "value": "0"}],
+    )
+    enqueue_calls: list[str] = []
+    monkeypatch.setattr(
+        "flaskr.service.billing.credit_notifications.enqueue_credit_notification",
+        lambda app, *, notification_bid: enqueue_calls.append(notification_bid),
+    )
+
+    with app.app_context():
+        _seed_wallet(available_credits="0")
+        dao.db.session.commit()
+
+    payload = scan_low_balance_notifications(app, now=now)
+    dry_run_payload = scan_low_balance_notifications(app, now=now, dry_run=True)
+
+    assert payload["candidate_count"] == 0
+    assert payload["created_count"] == 0
+    assert payload["enqueued_count"] == 0
+    assert payload["notifications"] == []
+    assert enqueue_calls == []
+    assert dry_run_payload["candidate_count"] == 0
+    assert dry_run_payload["notifications"][0]["reason"] == (
+        "zero_balance_missing_estimated_remaining_days"
+    )
+    with app.app_context():
+        assert NotificationRecord.query.count() == 0
+
+
+def test_low_balance_scan_skips_template_params_missing_for_mode(
+    credit_notifications_app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = credit_notifications_app
+    now = datetime(2026, 5, 21, 8, 0, 0)
+    _seed_creator(app)
+    _enable_policy(
+        app,
+        low_balance_thresholds=[{"kind": "fixed", "value": "5"}],
+    )
+    _seed_notification_template(
+        app,
+        template_code="TPL-LOW",
+        placeholders=["available_credits", "estimated_remaining_days"],
+    )
+    enqueue_calls: list[str] = []
+    monkeypatch.setattr(
+        "flaskr.service.billing.credit_notifications.enqueue_credit_notification",
+        lambda app, *, notification_bid: enqueue_calls.append(notification_bid),
+    )
+
+    with app.app_context():
+        _seed_wallet(available_credits="2")
+        dao.db.session.commit()
+
+    payload = scan_low_balance_notifications(app, now=now)
+    dry_run_payload = scan_low_balance_notifications(app, now=now, dry_run=True)
+
+    assert payload["candidate_count"] == 0
+    assert payload["created_count"] == 0
+    assert payload["enqueued_count"] == 0
+    assert payload["notifications"] == []
+    assert enqueue_calls == []
+    assert dry_run_payload["candidate_count"] == 0
+    assert dry_run_payload["notifications"][0]["reason"] == "missing_template_params"
+    assert dry_run_payload["notifications"][0]["missing_template_params"] == [
+        "estimated_remaining_days"
+    ]
+    with app.app_context():
+        assert NotificationRecord.query.count() == 0
+
+
+def test_low_balance_delivery_skips_zero_balance_without_estimated_remaining_days(
+    credit_notifications_app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = credit_notifications_app
+    _seed_creator(app)
+    _enable_policy(app)
+    send_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "flaskr.service.billing.credit_notifications.send_sms_ali",
+        lambda app, mobile, *, template_code, template_params, sign_name=None: (
+            send_calls.append(
+                {
+                    "mobile": mobile,
+                    "template_code": template_code,
+                    "template_params": dict(template_params),
+                }
+            )
+            or SimpleNamespace(body=SimpleNamespace(code="OK"))
+        ),
+    )
+
+    with app.app_context():
+        notification = NotificationRecord(
+            notification_bid="notification-zero-missing-days",
+            notification_type=CREDIT_NOTIFICATION_TYPE_LOW_BALANCE,
+            channel="sms",
+            creator_bid="creator-1",
+            target_user_bid="creator-1",
+            mobile_snapshot="13800000000",
+            source_type="wallet",
+            source_bid="creator-1",
+            dedupe_key="low_balance:creator-1:0.00:2026-05-21",
+            status=CREDIT_NOTIFICATION_STATUS_PENDING,
+            template_code="TPL-LOW",
+            template_params_json={
+                "available_credits": "0.00",
+                "threshold": "0.00",
+                "threshold_kind": "fixed",
+                "trigger_days": "",
+                "lookback_days": "",
+                "avg_daily_consumption": "",
+                "estimated_remaining_days": "",
+            },
+            policy_snapshot_json={},
+            provider_response_json={},
+            metadata_json={},
+            deleted=0,
+            created_at=datetime(2026, 5, 21, 8, 0, 0),
+            updated_at=datetime(2026, 5, 21, 8, 0, 0),
+        )
+        dao.db.session.add(notification)
+        dao.db.session.commit()
+
+    delivered = deliver_credit_notification(
+        app,
+        notification_bid="notification-zero-missing-days",
+    )
+
+    assert delivered["status"] == CREDIT_NOTIFICATION_STATUS_SKIPPED_OPT_OUT
+    assert delivered["reason"] == "zero_balance_missing_estimated_remaining_days"
+    assert send_calls == []
+    with app.app_context():
+        notification = NotificationRecord.query.filter_by(
+            notification_bid="notification-zero-missing-days"
+        ).one()
+        assert notification.status == CREDIT_NOTIFICATION_STATUS_SKIPPED_OPT_OUT
+        assert notification.error_code == (
+            "zero_balance_missing_estimated_remaining_days"
+        )
+
+
+def test_low_balance_delivery_skips_template_params_missing_for_mode(
+    credit_notifications_app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = credit_notifications_app
+    _seed_creator(app)
+    _enable_policy(app)
+    _seed_notification_template(
+        app,
+        template_code="TPL-LOW",
+        placeholders=["available_credits", "estimated_remaining_days"],
+    )
+    send_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "flaskr.service.billing.credit_notifications.send_sms_ali",
+        lambda app, mobile, *, template_code, template_params, sign_name=None: (
+            send_calls.append(
+                {
+                    "mobile": mobile,
+                    "template_code": template_code,
+                    "template_params": dict(template_params),
+                }
+            )
+            or SimpleNamespace(body=SimpleNamespace(code="OK"))
+        ),
+    )
+
+    with app.app_context():
+        notification = NotificationRecord(
+            notification_bid="notification-missing-template-param",
+            notification_type=CREDIT_NOTIFICATION_TYPE_LOW_BALANCE,
+            channel="sms",
+            creator_bid="creator-1",
+            target_user_bid="creator-1",
+            mobile_snapshot="13800000000",
+            source_type="wallet",
+            source_bid="creator-1",
+            dedupe_key="low_balance:creator-1:5.00:2026-05-21",
+            status=CREDIT_NOTIFICATION_STATUS_PENDING,
+            template_code="TPL-LOW",
+            template_params_json={
+                "available_credits": "2.00",
+                "threshold": "5.00",
+                "threshold_kind": "fixed",
+                "trigger_days": "",
+                "lookback_days": "",
+                "avg_daily_consumption": "",
+                "estimated_remaining_days": "",
+            },
+            policy_snapshot_json={},
+            provider_response_json={},
+            metadata_json={},
+            deleted=0,
+            created_at=datetime(2026, 5, 21, 8, 0, 0),
+            updated_at=datetime(2026, 5, 21, 8, 0, 0),
+        )
+        dao.db.session.add(notification)
+        dao.db.session.commit()
+
+    delivered = deliver_credit_notification(
+        app,
+        notification_bid="notification-missing-template-param",
+    )
+
+    assert delivered["status"] == CREDIT_NOTIFICATION_STATUS_SKIPPED_OPT_OUT
+    assert delivered["reason"] == "missing_template_params"
+    assert delivered["missing_template_params"] == ["estimated_remaining_days"]
+    assert send_calls == []
+    with app.app_context():
+        notification = NotificationRecord.query.filter_by(
+            notification_bid="notification-missing-template-param"
+        ).one()
+        assert notification.status == CREDIT_NOTIFICATION_STATUS_SKIPPED_OPT_OUT
+        assert notification.error_code == "missing_template_params"
+
+
 def test_failed_provider_notification_can_be_requeued(
     credit_notifications_app: Flask,
     monkeypatch: pytest.MonkeyPatch,
@@ -1149,10 +2202,13 @@ def test_failed_provider_notification_can_be_requeued(
         "flaskr.service.billing.credit_notifications.send_sms_ali",
         lambda app, mobile, *, template_code, template_params, sign_name=None: None,
     )
-    monkeypatch.setattr(
-        "flaskr.common.celery_app.get_celery_app",
-        lambda flask_app=None: SimpleNamespace(
-            tasks={"billing.send_credit_notification": FakeTask()}
+    monkeypatch.setitem(
+        sys.modules,
+        "flaskr.common.celery_app",
+        SimpleNamespace(
+            get_celery_app=lambda flask_app=None: SimpleNamespace(
+                tasks={"billing.send_credit_notification": FakeTask()}
+            )
         ),
     )
 
@@ -1224,6 +2280,50 @@ def test_requeue_keeps_failed_status_when_enqueue_fails(
             notification_bid=staged["notification_bid"]
         ).one()
         assert notification.status == CREDIT_NOTIFICATION_STATUS_FAILED_PROVIDER
+
+
+def test_requeue_records_operator_audit_metadata(
+    credit_notifications_app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = credit_notifications_app
+    _seed_creator(app)
+    _enable_policy(app)
+    monkeypatch.setattr(
+        "flaskr.service.billing.credit_notifications.send_sms_ali",
+        lambda app, mobile, *, template_code, template_params, sign_name=None: None,
+    )
+    monkeypatch.setattr(
+        "flaskr.service.billing.credit_notifications.enqueue_credit_notification",
+        lambda app, *, notification_bid: {
+            "status": "enqueued",
+            "notification_bid": notification_bid,
+            "enqueued": True,
+        },
+    )
+
+    with app.app_context():
+        _seed_credit_ledger(ledger_bid="ledger-requeue-audit")
+
+    staged = stage_credit_granted_notification(
+        app,
+        ledger_bid="ledger-requeue-audit",
+        enqueue=False,
+    )
+    deliver_credit_notification(app, notification_bid=str(staged["notification_bid"]))
+    requeue_credit_notification(
+        app,
+        notification_bid=str(staged["notification_bid"]),
+        operator_user_bid="operator-audit-2",
+    )
+
+    with app.app_context():
+        notification = NotificationRecord.query.filter_by(
+            notification_bid=staged["notification_bid"]
+        ).one()
+        assert notification.metadata_json["last_requeued_by"] == "operator-audit-2"
+        assert notification.metadata_json["last_requeued_at"]
+        assert notification.metadata_json["last_requeued_at"].endswith("Z")
 
 
 def test_provider_exception_marks_notification_failed(

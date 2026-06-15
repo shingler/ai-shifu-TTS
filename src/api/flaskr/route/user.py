@@ -285,7 +285,7 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         parsed_payload = request.get_json(silent=True)
         payload = parsed_payload if isinstance(parsed_payload, dict) else {}
         tmp_id = payload.get("temp_id", None)
-        source = "web"
+        source = str(payload.get("source") or "web").strip() or "web"
         wx_code = payload.get("wxcode", None)
         language = payload.get("language") or "en-US"
         masked_wx_code = None
@@ -462,9 +462,17 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
             course_id = payload.get("course_id", None)
             language = payload.get("language", None)
             login_context = payload.get("login_context", None)
-            user_id = (
-                None if getattr(request, "user", None) is None else request.user.user_id
-            )
+            current_user = getattr(request, "user", None)
+            # Only pass an anonymous/guest token through SMS login so temporary
+            # learning records can be claimed. If a real authenticated account
+            # reaches the login page and verifies another phone number, this
+            # endpoint must behave as login, not implicit phone rebinding.
+            user_id = None
+            if current_user is not None and not (
+                getattr(current_user, "mobile", "")
+                or getattr(current_user, "email", "")
+            ):
+                user_id = current_user.user_id
             if not mobile:
                 raise_param_error("mobile")
             if not sms_code:

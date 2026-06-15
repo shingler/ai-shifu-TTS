@@ -1,12 +1,13 @@
 'use client';
 
-import { ChevronDown, ChevronUp, X } from 'lucide-react';
+import { ChevronDown, ChevronUp } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import api from '@/api';
+import AdminClearableInput from '@/app/admin/components/AdminClearableInput';
 import AdminDateRangeFilter from '@/app/admin/components/AdminDateRangeFilter';
-import { AdminPagination } from '@/app/admin/components/AdminPagination';
+import AdminTitle from '@/app/admin/components/AdminTitle';
 import AdminTableShell from '@/app/admin/components/AdminTableShell';
 import AdminTooltipText from '@/app/admin/components/AdminTooltipText';
 import {
@@ -14,14 +15,13 @@ import {
   ADMIN_TABLE_RESIZE_HANDLE_CLASS,
 } from '@/app/admin/components/adminTableStyles';
 import { useAdminResizableColumns } from '@/app/admin/hooks/useAdminResizableColumns';
-import { formatAdminUtcDateTime } from '@/app/admin/lib/dateTime';
+import { formatAdminNaiveDateTime } from '@/app/admin/lib/dateTime';
 import { formatAdminCount } from '@/app/admin/lib/numberFormat';
 import { useEnvStore } from '@/c-store';
 import ErrorDisplay from '@/components/ErrorDisplay';
 import Loading from '@/components/loading';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Input } from '@/components/ui/Input';
 import {
   Select,
   SelectContent,
@@ -203,53 +203,6 @@ const resolvePrimaryAccount = ({
   const preferred = contactMode === 'email' ? email : mobile;
   return formatValue(preferred, emptyValue);
 };
-
-function ClearableTextInput({
-  id,
-  value,
-  placeholder,
-  clearLabel,
-  onChange,
-  onSubmit,
-}: {
-  id?: string;
-  value: string;
-  placeholder: string;
-  clearLabel: string;
-  onChange: (value: string) => void;
-  onSubmit: () => void;
-}) {
-  const hasValue = value.trim().length > 0;
-
-  return (
-    <div className='relative'>
-      <Input
-        id={id}
-        value={value}
-        onChange={event => onChange(event.target.value)}
-        onKeyDown={event => {
-          if (event.key === 'Enter') {
-            event.preventDefault();
-            onSubmit();
-          }
-        }}
-        placeholder={placeholder}
-        className={cn('h-9', hasValue && 'pr-9')}
-      />
-      {hasValue ? (
-        <button
-          type='button'
-          aria-label={clearLabel}
-          className='absolute right-2 top-1/2 -translate-y-1/2 rounded-sm p-0.5 text-muted-foreground transition-colors hover:text-foreground'
-          onMouseDown={event => event.preventDefault()}
-          onClick={() => onChange('')}
-        >
-          <X className='h-3.5 w-3.5' />
-        </button>
-      ) : null}
-    </div>
-  );
-}
 
 /*
  * Translation usage markers for scripts/check_translation_usage.py:
@@ -490,7 +443,7 @@ export default function AdminOperationCourseRatingsPage() {
         key: 'latestRatedAt',
         label: tOperations('detail.ratings.summary.latestRatedAt'),
         value:
-          formatAdminUtcDateTime(fullSummary.latest_rated_at) || emptyValue,
+          formatAdminNaiveDateTime(fullSummary.latest_rated_at) || emptyValue,
         tone: 'timestamp' as const,
       },
     ],
@@ -568,7 +521,7 @@ export default function AdminOperationCourseRatingsPage() {
       key: 'keyword',
       label: tOperations('detail.ratings.filters.userKeyword'),
       component: (
-        <ClearableTextInput
+        <AdminClearableInput
           id={userKeywordInputId}
           value={filtersDraft.keyword}
           placeholder={userKeywordPlaceholder}
@@ -587,7 +540,7 @@ export default function AdminOperationCourseRatingsPage() {
       key: 'chapterKeyword',
       label: outlineFilterLabel,
       component: (
-        <ClearableTextInput
+        <AdminClearableInput
           id={outlineKeywordInputId}
           value={filtersDraft.chapterKeyword}
           placeholder={outlineFilterPlaceholder}
@@ -779,24 +732,20 @@ export default function AdminOperationCourseRatingsPage() {
   return (
     <div className='h-full min-h-0 overflow-hidden bg-stone-50 p-0 overscroll-none'>
       <div className='mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col overflow-hidden'>
-        <div className='mb-5 shrink-0 space-y-3 pt-6'>
-          <AdminOperationsBreadcrumb
-            items={[
-              {
-                label: tOperations('title'),
-                href: '/admin/operations',
-              },
-              {
-                label: tOperations('detail.title'),
-                href: detailPageUrl || undefined,
-              },
-              { label: tOperations('detail.ratings.title') },
-            ]}
-          />
-          <h1 className='text-2xl font-semibold text-gray-900'>
-            {tOperations('detail.ratings.title')}
-          </h1>
-        </div>
+        <AdminOperationsBreadcrumb
+          items={[
+            {
+              label: tOperations('title'),
+              href: '/admin/operations',
+            },
+            {
+              label: tOperations('detail.title'),
+              href: detailPageUrl || undefined,
+            },
+            { label: tOperations('detail.ratings.title') },
+          ]}
+        />
+        <AdminTitle title={tOperations('detail.ratings.title')} />
 
         <div className='min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain pr-1'>
           <div className='space-y-5 pb-6'>
@@ -941,7 +890,7 @@ export default function AdminOperationCourseRatingsPage() {
                     loading={loading}
                     isEmpty={rows.length === 0}
                     emptyContent={tOperations('detail.ratings.table.empty')}
-                    emptyColSpan={6}
+                    emptyColSpan={Object.keys(COLUMN_DEFAULT_WIDTHS).length}
                     withTooltipProvider
                     tableWrapperClassName='overflow-auto'
                     loadingClassName='min-h-[240px]'
@@ -1044,7 +993,7 @@ export default function AdminOperationCourseRatingsPage() {
                                       style={getColumnStyle('ratedAt')}
                                     >
                                       <AdminTooltipText
-                                        text={formatAdminUtcDateTime(
+                                        text={formatAdminNaiveDateTime(
                                           item.rated_at,
                                         )}
                                         emptyValue={emptyValue}
@@ -1134,23 +1083,16 @@ export default function AdminOperationCourseRatingsPage() {
                         </TableBody>
                       </Table>
                     )}
-                    footer={
-                      <AdminPagination
-                        pageIndex={currentPage}
-                        pageCount={pageCount}
-                        onPageChange={handlePageChange}
-                        prevLabel={t('module.order.paginationPrev')}
-                        nextLabel={t('module.order.paginationNext')}
-                        prevAriaLabel={t(
-                          'module.order.paginationPrevAriaLabel',
-                        )}
-                        nextAriaLabel={t(
-                          'module.order.paginationNextAriaLabel',
-                        )}
-                        className='mx-0 w-auto justify-end'
-                        hideWhenSinglePage
-                      />
-                    }
+                    pagination={{
+                      pageIndex: currentPage,
+                      pageCount,
+                      onPageChange: handlePageChange,
+                      prevLabel: t('module.order.paginationPrev'),
+                      nextLabel: t('module.order.paginationNext'),
+                      prevAriaLabel: t('module.order.paginationPrevAriaLabel'),
+                      nextAriaLabel: t('module.order.paginationNextAriaLabel'),
+                      hideWhenSinglePage: true,
+                    }}
                   />
                 )}
               </CardContent>

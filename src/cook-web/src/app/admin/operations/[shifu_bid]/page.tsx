@@ -1,11 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import api from '@/api';
+import AdminTitle from '@/app/admin/components/AdminTitle';
 import { useAdminResizableColumns } from '@/app/admin/hooks/useAdminResizableColumns';
-import { formatAdminUtcDateTime } from '@/app/admin/lib/dateTime';
+import { formatAdminNaiveDateTime } from '@/app/admin/lib/dateTime';
 import { formatAdminCount } from '@/app/admin/lib/numberFormat';
 import { useEnvStore } from '@/c-store';
 import { copyText } from '@/c-utils/textutils';
@@ -22,8 +23,11 @@ import {
   buildAdminOperationsCourseRatingsUrl,
 } from '../operation-course-routes';
 import type {
+  AdminOperationCourseCreditUsageDetailListResponse,
   AdminOperationCourseCreditUsageFilters,
+  AdminOperationCourseCreditUsageItem,
   AdminOperationCourseCreditUsageListResponse,
+  AdminOperationCourseCreditUsageSceneFilter,
   AdminOperationCourseChapterDetailResponse,
   AdminOperationCourseDetailChapter,
   AdminOperationCourseDetailResponse,
@@ -106,6 +110,8 @@ const EMPTY_COURSE_CREDIT_USAGE_RESPONSE: AdminOperationCourseCreditUsageListRes
     total: 0,
   };
 
+const COURSE_CREDIT_USAGE_DETAIL_PAGE_SIZE = 10;
+
 const EMPTY_DETAIL: AdminOperationCourseDetailResponse = {
   basic_info: {
     shifu_bid: '',
@@ -125,6 +131,11 @@ const EMPTY_DETAIL: AdminOperationCourseDetailResponse = {
     order_amount: '0',
     follow_up_count: 0,
     rating_score: '',
+    credit_consumed_total: 0,
+    credit_usage_count: 0,
+    credit_user_count: 0,
+    completed_credit_user_count: 0,
+    completed_user_avg_credits: null,
   },
   chapters: [],
 };
@@ -154,6 +165,7 @@ const formatLearningProgress = (
 const createCourseCreditUsageFilters =
   (): AdminOperationCourseCreditUsageFilters => ({
     keyword: '',
+    usageScene: FILTER_ALL_OPTION,
     mode: FILTER_ALL_OPTION,
     startTime: '',
     endTime: '',
@@ -177,6 +189,10 @@ const createCourseCreditUsageFilters =
  * t('module.operationsCourse.detail.metricsLabels.orderAmount')
  * t('module.operationsCourse.detail.metricsLabels.followUpCount')
  * t('module.operationsCourse.detail.metricsLabels.ratingScore')
+ * t('module.operationsCourse.detail.metricsLabels.creditConsumedTotal')
+ * t('module.operationsCourse.detail.metricsLabels.creditUsageCount')
+ * t('module.operationsCourse.detail.metricsLabels.creditUserCount')
+ * t('module.operationsCourse.detail.metricsLabels.completedUserAvgCredits')
  * t('module.operationsCourse.detail.orders.openMetric')
  * t('module.operationsCourse.detail.followUps.openMetric')
  * t('module.operationsCourse.detail.ratings.openMetric')
@@ -250,11 +266,17 @@ const createCourseCreditUsageFilters =
  * t('module.operationsCourse.detail.creditUsage.filters.userKeyword')
  * t('module.operationsCourse.detail.creditUsage.filters.userKeywordPlaceholderPhone')
  * t('module.operationsCourse.detail.creditUsage.filters.userKeywordPlaceholderEmail')
+ * t('module.operationsCourse.detail.creditUsage.filters.scene')
+ * t('module.operationsCourse.detail.creditUsage.filters.sceneAll')
  * t('module.operationsCourse.detail.creditUsage.filters.mode')
  * t('module.operationsCourse.detail.creditUsage.filters.modeAll')
  * t('module.operationsCourse.detail.creditUsage.filters.time')
  * t('module.operationsCourse.detail.creditUsage.filters.timePlaceholder')
  * t('module.operationsCourse.detail.creditUsage.filters.reset')
+ * t('module.operationsCourse.detail.creditUsage.scenes.learning')
+ * t('module.operationsCourse.detail.creditUsage.scenes.preview')
+ * t('module.operationsCourse.detail.creditUsage.scenes.debug')
+ * t('module.operationsCourse.detail.creditUsage.scenes.unknown')
  * t('module.operationsCourse.detail.creditUsage.modes.learn')
  * t('module.operationsCourse.detail.creditUsage.modes.listen')
  * t('module.operationsCourse.detail.creditUsage.modes.ask')
@@ -263,6 +285,7 @@ const createCourseCreditUsageFilters =
  * t('module.operationsCourse.detail.creditUsage.modelSummary.multiple')
  * t('module.operationsCourse.detail.creditUsage.table.createdAt')
  * t('module.operationsCourse.detail.creditUsage.table.nickname')
+ * t('module.operationsCourse.detail.creditUsage.table.scene')
  * t('module.operationsCourse.detail.creditUsage.table.mode')
  * t('module.operationsCourse.detail.creditUsage.table.chapter')
  * t('module.operationsCourse.detail.creditUsage.table.lesson')
@@ -284,6 +307,7 @@ const createCourseCreditUsageFilters =
 export default function AdminOperationCourseDetailPage() {
   const router = useRouter();
   const params = useParams<{ shifu_bid?: string }>();
+  const searchParams = useSearchParams();
   const { t, i18n } = useTranslation();
   const { t: tOperations } = useTranslation('module.operationsCourse');
   const { isReady } = useOperatorGuard();
@@ -332,6 +356,7 @@ export default function AdminOperationCourseDetailPage() {
     useState<ErrorState | null>(null);
   const [courseCreditUsagePage, setCourseCreditUsagePage] = useState(1);
   const courseCreditUsagesRequestIdRef = useRef(0);
+  const detailTabsRef = useRef<HTMLDivElement | null>(null);
   const {
     setColumnWidths: setChapterColumnWidths,
     getColumnStyle: getChapterColumnStyle,
@@ -373,6 +398,20 @@ export default function AdminOperationCourseDetailPage() {
   );
   const emptyValue = '--';
   const unknownErrorMessage = t('common.core.unknownError');
+  useEffect(() => {
+    const tab = searchParams.get('tab');
+    if (tab === 'chapters' || tab === 'users' || tab === 'creditUsage') {
+      setActiveTab(tab);
+      if (tab === 'creditUsage') {
+        window.requestAnimationFrame(() => {
+          detailTabsRef.current?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start',
+          });
+        });
+      }
+    }
+  }, [searchParams]);
   const contactMode = useMemo(
     () => resolveContactMode(loginMethodsEnabled, defaultLoginMethod),
     [defaultLoginMethod, loginMethodsEnabled],
@@ -498,6 +537,10 @@ export default function AdminOperationCourseDetailPage() {
           page_size: COURSE_CREDIT_USAGE_PAGE_SIZE,
           view: 'grouped',
           keyword: resolvedFilters.keyword.trim(),
+          usage_scene:
+            resolvedFilters.usageScene === FILTER_ALL_OPTION
+              ? ''
+              : resolvedFilters.usageScene,
           mode:
             resolvedFilters.mode === FILTER_ALL_OPTION
               ? ''
@@ -535,6 +578,24 @@ export default function AdminOperationCourseDetailPage() {
       }
     },
     [courseCreditUsageFilters, shifuBid, unknownErrorMessage],
+  );
+
+  const fetchCourseCreditUsageDetails = useCallback(
+    async (row: AdminOperationCourseCreditUsageItem, page: number) => {
+      if (!shifuBid.trim()) {
+        throw new Error(unknownErrorMessage);
+      }
+      return (await api.getAdminOperationCourseCreditUsageDetails({
+        shifu_bid: shifuBid,
+        page,
+        page_size: COURSE_CREDIT_USAGE_DETAIL_PAGE_SIZE,
+        user_bid: row.user_bid,
+        outline_item_bid: row.lesson_outline_item_bid,
+        usage_scene: row.usage_scene,
+        mode: row.usage_mode === 'mixed' ? '' : row.usage_mode,
+      })) as AdminOperationCourseCreditUsageDetailListResponse;
+    },
+    [shifuBid, unknownErrorMessage],
   );
 
   useEffect(() => {
@@ -687,10 +748,6 @@ export default function AdminOperationCourseDetailPage() {
   const metricCards = useMemo(
     () => [
       {
-        label: tOperations('detail.metricsLabels.visitCount30d'),
-        value: formatCount(detail.metrics.visit_count_30d, i18n.language),
-      },
-      {
         label: tOperations('detail.metricsLabels.learnerCount'),
         value: formatCount(detail.metrics.learner_count, i18n.language),
       },
@@ -717,6 +774,38 @@ export default function AdminOperationCourseDetailPage() {
         value: detail.metrics.rating_score || emptyValue,
         onClick: ratingsPageUrl ? () => router.push(ratingsPageUrl) : undefined,
         actionLabel: tOperations('detail.ratings.openMetric'),
+      },
+      {
+        label: tOperations('detail.metricsLabels.creditConsumedTotal'),
+        value: formatCount(
+          detail.metrics.credit_consumed_total || 0,
+          i18n.language,
+        ),
+      },
+      {
+        label: tOperations('detail.metricsLabels.creditUsageCount'),
+        value: formatCount(
+          detail.metrics.credit_usage_count || 0,
+          i18n.language,
+        ),
+      },
+      {
+        label: tOperations('detail.metricsLabels.creditUserCount'),
+        value: formatCount(
+          detail.metrics.credit_user_count || 0,
+          i18n.language,
+        ),
+      },
+      {
+        label: tOperations('detail.metricsLabels.completedUserAvgCredits'),
+        value:
+          detail.metrics.completed_user_avg_credits === null ||
+          detail.metrics.completed_user_avg_credits === undefined
+            ? emptyValue
+            : formatCount(
+                detail.metrics.completed_user_avg_credits,
+                i18n.language,
+              ),
       },
     ],
     [
@@ -835,6 +924,23 @@ export default function AdminOperationCourseDetailPage() {
       setCourseUserPage(nextPage);
     },
     [courseUserPageCount, currentCourseUserPage],
+  );
+
+  const handleCourseCreditUsageSceneChange = useCallback(
+    (value: AdminOperationCourseCreditUsageSceneFilter) => {
+      const nextDraftFilters = {
+        ...courseCreditUsageFiltersDraft,
+        usageScene: value,
+      };
+      setCourseCreditUsageFiltersDraft(nextDraftFilters);
+      setCourseCreditUsageFilters(prevFilters => ({
+        ...prevFilters,
+        usageScene: value,
+        keyword: prevFilters.keyword.trim(),
+      }));
+      setCourseCreditUsagePage(1);
+    },
+    [courseCreditUsageFiltersDraft],
   );
 
   const handleCourseCreditUsageSearch = useCallback(() => {
@@ -1319,12 +1425,15 @@ export default function AdminOperationCourseDetailPage() {
       {
         label: tOperations('detail.fields.createdAt'),
         value:
-          formatAdminUtcDateTime(detail.basic_info.created_at) || emptyValue,
+          // Course metadata timestamps currently come from backend payloads as
+          // wall-clock values, so preserve them without browser-timezone
+          // conversion until those fields migrate to timezone-qualified ISO.
+          formatAdminNaiveDateTime(detail.basic_info.created_at) || emptyValue,
       },
       {
         label: tOperations('detail.fields.updatedAt'),
         value:
-          formatAdminUtcDateTime(detail.basic_info.updated_at) || emptyValue,
+          formatAdminNaiveDateTime(detail.basic_info.updated_at) || emptyValue,
       },
     ],
     [
@@ -1373,20 +1482,16 @@ export default function AdminOperationCourseDetailPage() {
   return (
     <div className='h-full min-h-0 overflow-hidden bg-stone-50 p-0 overscroll-none'>
       <div className='mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col overflow-hidden'>
-        <div className='mb-5 shrink-0 space-y-3 pt-6'>
-          <AdminOperationsBreadcrumb
-            items={[
-              {
-                label: tOperations('title'),
-                href: '/admin/operations',
-              },
-              { label: tOperations('detail.title') },
-            ]}
-          />
-          <h1 className='text-2xl font-semibold text-gray-900'>
-            {tOperations('detail.title')}
-          </h1>
-        </div>
+        <AdminOperationsBreadcrumb
+          items={[
+            {
+              label: tOperations('title'),
+              href: '/admin/operations',
+            },
+            { label: tOperations('detail.title') },
+          ]}
+        />
+        <AdminTitle title={tOperations('detail.title')} />
 
         <div className='min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain pr-1'>
           <div className='space-y-5 pb-6'>
@@ -1405,7 +1510,10 @@ export default function AdminOperationCourseDetailPage() {
               onValueChange={value => setActiveTab(value as CourseDetailTab)}
               className='space-y-4'
             >
-              <div className='overflow-x-auto'>
+              <div
+                ref={detailTabsRef}
+                className='overflow-x-auto'
+              >
                 <TabsList>
                   <TabsTrigger value='chapters'>
                     {tOperations('detail.chapters')}
@@ -1435,7 +1543,7 @@ export default function AdminOperationCourseDetailPage() {
                   resolveContentStatusLabel={resolveContentStatusLabel}
                   resolveModifierDisplay={resolveModifierDisplay}
                   formatCount={formatCount}
-                  formatAdminUtcDateTime={formatAdminUtcDateTime}
+                  formatAdminNaiveDateTime={formatAdminNaiveDateTime}
                   getColumnStyle={getChapterColumnStyle}
                   getResizeHandleProps={getChapterResizeHandleProps}
                   tOperations={tOperations}
@@ -1511,6 +1619,7 @@ export default function AdminOperationCourseDetailPage() {
                       keyword: value,
                     }))
                   }
+                  onSceneChange={handleCourseCreditUsageSceneChange}
                   onModeChange={value =>
                     setCourseCreditUsageFiltersDraft(prev => ({
                       ...prev,
@@ -1527,6 +1636,7 @@ export default function AdminOperationCourseDetailPage() {
                   onSearch={handleCourseCreditUsageSearch}
                   onReset={handleCourseCreditUsageReset}
                   onPageChange={handleCourseCreditUsagePageChange}
+                  onFetchDetails={fetchCourseCreditUsageDetails}
                 />
               </TabsContent>
             </Tabs>

@@ -10,6 +10,7 @@ import sys
 from flaskr.dao import db
 from flaskr.service.common.models import AppException, ERROR_CODE
 from flaskr.service.shifu import admin as admin_module
+from flaskr.service.shifu.admin_operations import user_credits as user_credits_module
 from flaskr.service.metering.consts import (
     BILL_USAGE_SCENE_PREVIEW,
     BILL_USAGE_SCENE_PROD,
@@ -19,6 +20,7 @@ from flaskr.service.metering.consts import (
 from flaskr.service.billing.consts import (
     BILLING_ORDER_STATUS_PAID,
     BILLING_ORDER_TYPE_SUBSCRIPTION_START,
+    BILLING_ORDER_TYPE_SUBSCRIPTION_UPGRADE,
     BILLING_SUBSCRIPTION_STATUS_ACTIVE,
     CREDIT_BUCKET_CATEGORY_SUBSCRIPTION,
     CREDIT_BUCKET_CATEGORY_TOPUP,
@@ -33,6 +35,10 @@ from flaskr.service.billing.consts import (
     CREDIT_SOURCE_TYPE_TOPUP,
     CREDIT_SOURCE_TYPE_USAGE,
 )
+from flaskr.service.billing import (
+    referral_reward_grants as referral_reward_grants_module,
+)
+from flaskr.service.billing.bucket_categories import resolve_credit_bucket_priority
 from flaskr.service.billing.models import CreditWallet, CreditWalletBucket
 from flaskr.service.billing.models import (
     BillingOrder,
@@ -40,7 +46,11 @@ from flaskr.service.billing.models import (
     BillingSubscription,
     CreditLedgerEntry,
 )
-from flaskr.service.learn.models import LearnProgressRecord
+from flaskr.service.learn.models import (
+    LearnGeneratedBlock,
+    LearnGeneratedElement,
+    LearnProgressRecord,
+)
 from flaskr.service.order.consts import (
     LEARN_STATUS_COMPLETED,
     LEARN_STATUS_IN_PROGRESS,
@@ -48,14 +58,17 @@ from flaskr.service.order.consts import (
 )
 from flaskr.service.order.models import Order
 from flaskr.service.metering.models import BillUsageRecord
-from flaskr.service.shifu.admin import (
+from flaskr.service.shifu.admin_operations.users import (
+    get_operator_user_detail,
+    get_operator_user_overview,
+    list_operator_users,
+)
+from flaskr.service.shifu.admin_operations.user_credits import (
     get_operator_user_grant_bootstrap,
     grant_operator_user_credits,
     grant_operator_user_package,
-    get_operator_user_overview,
+    get_operator_user_credit_usage_detail,
     get_operator_user_credits,
-    get_operator_user_detail,
-    list_operator_users,
 )
 from flaskr.service.shifu.admin_dtos import (
     AdminOperationUserCreditGrantRequestDTO,
@@ -105,6 +118,8 @@ def _isolate_tables(app):
     with app.app_context():
         db.session.query(CreditLedgerEntry).delete()
         db.session.query(BillUsageRecord).delete()
+        db.session.query(LearnGeneratedElement).delete()
+        db.session.query(LearnGeneratedBlock).delete()
         db.session.query(BillingOrder).delete()
         db.session.query(BillingSubscription).delete()
         db.session.query(BillingProduct).delete()
@@ -125,6 +140,8 @@ def _isolate_tables(app):
     with app.app_context():
         db.session.query(CreditLedgerEntry).delete()
         db.session.query(BillUsageRecord).delete()
+        db.session.query(LearnGeneratedElement).delete()
+        db.session.query(LearnGeneratedBlock).delete()
         db.session.query(BillingOrder).delete()
         db.session.query(BillingSubscription).delete()
         db.session.query(BillingProduct).delete()
@@ -344,15 +361,18 @@ def _seed_billing_subscription(
     current_period_end_at: datetime,
     product_bid: str = "product-1",
     status: int = BILLING_SUBSCRIPTION_STATUS_ACTIVE,
+    billing_provider: str = "manual",
+    provider_subscription_id: str = "",
+    provider_customer_id: str = "",
 ):
     subscription = BillingSubscription(
         subscription_bid=subscription_bid,
         creator_bid=creator_bid,
         product_bid=product_bid,
         status=status,
-        billing_provider="manual",
-        provider_subscription_id="",
-        provider_customer_id="",
+        billing_provider=billing_provider,
+        provider_subscription_id=provider_subscription_id,
+        provider_customer_id=provider_customer_id,
         current_period_start_at=current_period_start_at,
         current_period_end_at=current_period_end_at,
         cancel_at_period_end=0,
@@ -449,23 +469,40 @@ def _seed_bill_usage_record(
     usage_scene: int,
     created_at: datetime,
     extra: dict | None = None,
+    generated_block_bid: str = "",
+    parent_usage_bid: str = "",
+    record_level: int = 0,
+    total: int = 0,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    word_count: int = 0,
+    duration_ms: int = 0,
+    segment_index: int = 0,
+    segment_count: int = 0,
 ):
     usage = BillUsageRecord(
         usage_bid=usage_bid,
-        parent_usage_bid="",
+        parent_usage_bid=parent_usage_bid,
         user_bid=user_bid,
         shifu_bid=shifu_bid,
         outline_item_bid=outline_item_bid,
         progress_record_bid=progress_record_bid,
-        generated_block_bid="",
+        generated_block_bid=generated_block_bid,
         audio_bid="",
         request_id=f"request-{usage_bid}",
         trace_id=f"trace-{usage_bid}",
         usage_type=usage_type,
-        record_level=0,
+        record_level=record_level,
         usage_scene=usage_scene,
         provider="openai",
         model="gpt-4o-mini",
+        input=input_tokens,
+        output=output_tokens,
+        total=total,
+        word_count=word_count,
+        duration_ms=duration_ms,
+        segment_index=segment_index,
+        segment_count=segment_count,
         billable=1,
         status=0,
         extra=extra or {},
@@ -476,6 +513,69 @@ def _seed_bill_usage_record(
     db.session.commit()
     db.session.remove()
     return usage
+
+
+def _seed_generated_block(
+    *,
+    generated_block_bid: str,
+    progress_record_bid: str,
+    user_bid: str,
+    shifu_bid: str,
+    outline_item_bid: str,
+    generated_content: str,
+    created_at: datetime,
+):
+    block = LearnGeneratedBlock(
+        generated_block_bid=generated_block_bid,
+        progress_record_bid=progress_record_bid,
+        user_bid=user_bid,
+        shifu_bid=shifu_bid,
+        outline_item_bid=outline_item_bid,
+        generated_content=generated_content,
+        status=1,
+    )
+    block.created_at = created_at
+    block.updated_at = created_at
+    db.session.add(block)
+    db.session.commit()
+    db.session.remove()
+    return block
+
+
+def _seed_generated_element(
+    *,
+    element_bid: str,
+    generated_block_bid: str,
+    progress_record_bid: str,
+    user_bid: str,
+    shifu_bid: str,
+    outline_item_bid: str,
+    content_text: str,
+    audio_segments: str,
+    sequence_number: int,
+    created_at: datetime,
+):
+    element = LearnGeneratedElement(
+        element_bid=element_bid,
+        generated_block_bid=generated_block_bid,
+        progress_record_bid=progress_record_bid,
+        user_bid=user_bid,
+        shifu_bid=shifu_bid,
+        outline_item_bid=outline_item_bid,
+        event_type="element",
+        element_type="text",
+        is_speakable=1,
+        content_text=content_text,
+        audio_segments=audio_segments,
+        sequence_number=sequence_number,
+        status=1,
+    )
+    element.created_at = created_at
+    element.updated_at = created_at
+    db.session.add(element)
+    db.session.commit()
+    db.session.remove()
+    return element
 
 
 def _seed_learn_progress(
@@ -1084,6 +1184,48 @@ def test_list_operator_users_returns_learning_and_created_courses(app):
     ]
 
 
+def test_user_course_count_maps_use_lightweight_course_rows(app, monkeypatch):
+    load_calls = []
+
+    def fake_load_latest_shifus(model, **kwargs):
+        load_calls.append(("latest", model.__name__, kwargs.get("lightweight")))
+        return []
+
+    def fake_load_latest_courses_by_shifu_bids(
+        model,
+        shifu_bids,
+        *,
+        lightweight=False,
+    ):
+        load_calls.append(("by_bids", model.__name__, tuple(shifu_bids), lightweight))
+        return []
+
+    monkeypatch.setattr(
+        admin_module,
+        "_load_latest_shifus",
+        fake_load_latest_shifus,
+    )
+    monkeypatch.setattr(
+        admin_module,
+        "_load_latest_courses_by_shifu_bids",
+        fake_load_latest_courses_by_shifu_bids,
+    )
+
+    with app.app_context():
+        created_count_map, learning_count_map = (
+            admin_module._load_operator_user_course_count_maps(["user-no-activity"])
+        )
+
+    assert created_count_map == {"user-no-activity": 0}
+    assert learning_count_map == {"user-no-activity": 0}
+    assert load_calls == [
+        ("latest", "DraftShifu", True),
+        ("latest", "PublishedShifu", True),
+        ("by_bids", "DraftShifu", (), True),
+        ("by_bids", "PublishedShifu", (), True),
+    ]
+
+
 def test_list_operator_users_includes_creator_credit_summaries(app):
     with app.app_context():
         active_start_at, active_end_at = _build_active_window()
@@ -1404,6 +1546,51 @@ def test_get_operator_user_credits_returns_summary_and_paginated_ledger(app):
     assert result.items[0].note_code == ""
 
 
+def test_get_operator_user_credits_handles_invalid_source_type(app):
+    with app.app_context():
+        _seed_user(
+            app,
+            user_bid="credits-invalid-source-user",
+            identify="credits-invalid-source@example.com",
+            nickname="Invalid Source",
+            state=USER_STATE_PAID,
+            is_creator=True,
+            created_at=datetime(2026, 4, 9, 9, 0, 0),
+            updated_at=datetime(2026, 4, 9, 10, 0, 0),
+            providers=[("email", "credits-invalid-source@example.com")],
+        )
+        _seed_credit_wallet(
+            creator_bid="credits-invalid-source-user",
+            wallet_bid="wallet-credits-invalid-source-user",
+            available_credits="1.0000000000",
+        )
+        entry = _seed_credit_ledger_entry(
+            creator_bid="credits-invalid-source-user",
+            wallet_bid="wallet-credits-invalid-source-user",
+            wallet_bucket_bid="bucket-invalid-source",
+            ledger_bid="ledger-invalid-source",
+            entry_type=CREDIT_LEDGER_ENTRY_TYPE_ADJUSTMENT,
+            source_type=CREDIT_SOURCE_TYPE_MANUAL,
+            source_bid="adjustment-invalid-source",
+            amount="1.0000000000",
+            balance_after="1.0000000000",
+            created_at=datetime(2026, 4, 18, 8, 0, 0),
+        )
+        entry.source_type = ""
+        db.session.add(entry)
+        db.session.commit()
+
+        result = get_operator_user_credits(
+            app,
+            user_bid="credits-invalid-source-user",
+            page_index=1,
+            page_size=20,
+        )
+
+    assert result.total == 1
+    assert result.items[0].display_source_type == "manual"
+
+
 def test_get_operator_user_credits_uses_empty_expiry_for_long_term_balances(app):
     with app.app_context():
         _seed_user(
@@ -1490,6 +1677,183 @@ def test_get_operator_user_credits_maps_usage_rows_to_operator_display_codes(app
     assert result.items[0].display_source_type == "preview"
     assert result.items[0].note == ""
     assert result.items[0].note_code == "preview_consume"
+
+
+def test_get_operator_user_credits_enriches_consume_rows_with_course_context(app):
+    with app.app_context():
+        _seed_user(
+            app,
+            user_bid="credits-context-user",
+            identify="credits-context@example.com",
+            nickname="Credits Context",
+            state=USER_STATE_PAID,
+            is_creator=True,
+            created_at=datetime(2026, 4, 9, 9, 0, 0),
+            updated_at=datetime(2026, 4, 9, 10, 0, 0),
+            providers=[("email", "credits-context@example.com")],
+        )
+        _seed_credit_wallet(
+            creator_bid="credits-context-user",
+            wallet_bid="wallet-credits-context-user",
+            available_credits="9.0000000000",
+        )
+        _seed_course(
+            model=PublishedShifu,
+            shifu_bid="course-context",
+            title="Context Course",
+            creator_user_bid="credits-context-user",
+            created_at=datetime(2026, 4, 10, 8, 0, 0),
+            updated_at=datetime(2026, 4, 10, 8, 0, 0),
+        )
+        _seed_published_outline_item(
+            shifu_bid="course-context",
+            outline_item_bid="chapter-context",
+            title="Context Chapter",
+            parent_bid="",
+            position="1",
+        )
+        _seed_published_outline_item(
+            shifu_bid="course-context",
+            outline_item_bid="lesson-context",
+            title="Context Lesson",
+            parent_bid="chapter-context",
+            position="1.1",
+        )
+        _seed_bill_usage_record(
+            usage_bid="usage-context",
+            user_bid="learner-context-user",
+            shifu_bid="course-context",
+            progress_record_bid="progress-context",
+            outline_item_bid="lesson-context",
+            usage_type=BILL_USAGE_TYPE_TTS,
+            usage_scene=BILL_USAGE_SCENE_PREVIEW,
+            created_at=datetime(2026, 4, 18, 9, 0, 0),
+        )
+        _seed_credit_ledger_entry(
+            creator_bid="credits-context-user",
+            wallet_bid="wallet-credits-context-user",
+            wallet_bucket_bid="bucket-credits-context",
+            ledger_bid="ledger-context-consume",
+            entry_type=CREDIT_LEDGER_ENTRY_TYPE_CONSUME,
+            source_type=CREDIT_SOURCE_TYPE_USAGE,
+            source_bid="usage-context",
+            amount="-1.5000000000",
+            balance_after="9.0000000000",
+            created_at=datetime(2026, 4, 18, 9, 0, 0),
+        )
+        _seed_credit_ledger_entry(
+            creator_bid="credits-context-user",
+            wallet_bid="wallet-credits-context-user",
+            wallet_bucket_bid="bucket-credits-context",
+            ledger_bid="ledger-context-grant",
+            entry_type=CREDIT_LEDGER_ENTRY_TYPE_GRANT,
+            source_type=CREDIT_SOURCE_TYPE_MANUAL,
+            source_bid="manual-context",
+            amount="3.0000000000",
+            balance_after="12.0000000000",
+            created_at=datetime(2026, 4, 18, 10, 0, 0),
+        )
+
+        result = get_operator_user_credits(
+            app,
+            user_bid="credits-context-user",
+            page_index=1,
+            page_size=20,
+        )
+
+    rows_by_bid = {item.ledger_bid: item for item in result.items}
+    consume_item = rows_by_bid["ledger-context-consume"]
+    assert consume_item.usage_bid == "usage-context"
+    assert consume_item.course_bid == "course-context"
+    assert consume_item.course_name == "Context Course"
+    assert consume_item.chapter_title == "Context Chapter"
+    assert consume_item.lesson_title == "Context Lesson"
+    assert consume_item.usage_scene == "preview"
+    assert consume_item.usage_mode == "listen"
+
+    grant_item = rows_by_bid["ledger-context-grant"]
+    assert grant_item.usage_bid == ""
+    assert grant_item.course_bid == ""
+    assert grant_item.course_name == ""
+    assert grant_item.chapter_title == ""
+    assert grant_item.lesson_title == ""
+    assert grant_item.usage_scene == ""
+    assert grant_item.usage_mode == ""
+
+
+def test_get_operator_user_credits_loads_order_metadata_only_for_order_sources(
+    app,
+    monkeypatch,
+):
+    captured_source_bids: list[str] = []
+    original_load_billing_order_map = user_credits_module._load_billing_order_map
+
+    def capture_order_source_bids(source_bids):
+        captured_source_bids.extend(list(source_bids))
+        return original_load_billing_order_map(source_bids)
+
+    monkeypatch.setattr(
+        user_credits_module,
+        "_load_billing_order_map",
+        capture_order_source_bids,
+    )
+
+    with app.app_context():
+        _seed_user(
+            app,
+            user_bid="credits-order-source-user",
+            identify="credits-order-source@example.com",
+            nickname="Credits Order Source",
+            state=USER_STATE_PAID,
+            is_creator=True,
+            created_at=datetime(2026, 4, 9, 9, 0, 0),
+            updated_at=datetime(2026, 4, 9, 10, 0, 0),
+            providers=[("email", "credits-order-source@example.com")],
+        )
+        _seed_credit_wallet(
+            creator_bid="credits-order-source-user",
+            wallet_bid="wallet-credits-order-source-user",
+            available_credits="9.0000000000",
+        )
+        _seed_billing_order(
+            creator_bid="credits-order-source-user",
+            bill_order_bid="order-source-1",
+            metadata_json={"checkout_type": "subscription"},
+        )
+        _seed_credit_ledger_entry(
+            creator_bid="credits-order-source-user",
+            wallet_bid="wallet-credits-order-source-user",
+            wallet_bucket_bid="bucket-order-source",
+            ledger_bid="ledger-order-source-grant",
+            entry_type=CREDIT_LEDGER_ENTRY_TYPE_GRANT,
+            source_type=CREDIT_SOURCE_TYPE_SUBSCRIPTION,
+            source_bid="order-source-1",
+            amount="3.0000000000",
+            balance_after="12.0000000000",
+            created_at=datetime(2026, 4, 18, 10, 0, 0),
+        )
+        _seed_credit_ledger_entry(
+            creator_bid="credits-order-source-user",
+            wallet_bid="wallet-credits-order-source-user",
+            wallet_bucket_bid="bucket-order-source",
+            ledger_bid="ledger-order-source-consume",
+            entry_type=CREDIT_LEDGER_ENTRY_TYPE_CONSUME,
+            source_type=CREDIT_SOURCE_TYPE_USAGE,
+            source_bid="usage-source-1",
+            amount="-1.0000000000",
+            balance_after="11.0000000000",
+            created_at=datetime(2026, 4, 18, 11, 0, 0),
+        )
+
+        result = get_operator_user_credits(
+            app,
+            user_bid="credits-order-source-user",
+            page_index=1,
+            page_size=20,
+        )
+
+    assert result.total == 2
+    assert captured_source_bids == ["order-source-1"]
 
 
 def test_get_operator_user_credits_filters_consume_grant_and_other_rows(app):
@@ -1763,6 +2127,343 @@ def test_get_operator_user_credits_keeps_consume_rows_without_usage_when_unfilte
     assert filtered_result.total == 0
 
 
+def test_get_operator_user_credits_empty_consume_filter_does_not_scan_usage_rows(app):
+    with app.app_context():
+        _seed_user(
+            app,
+            user_bid="credits-empty-consume-user",
+            identify="credits-empty-consume@example.com",
+            nickname="Credits Empty Consume",
+            state=USER_STATE_PAID,
+            is_creator=True,
+            created_at=datetime(2026, 4, 9, 9, 0, 0),
+            updated_at=datetime(2026, 4, 9, 10, 0, 0),
+            providers=[("email", "credits-empty-consume@example.com")],
+        )
+        _seed_credit_wallet(
+            creator_bid="credits-empty-consume-user",
+            wallet_bid="wallet-credits-empty-consume-user",
+            available_credits="8.0000000000",
+        )
+        _seed_bill_usage_record(
+            usage_bid="usage-other-user",
+            user_bid="other-user",
+            shifu_bid="course-other-user",
+            progress_record_bid="progress-other-user",
+            outline_item_bid="lesson-other-user",
+            usage_type=BILL_USAGE_TYPE_LLM,
+            usage_scene=BILL_USAGE_SCENE_PROD,
+            created_at=datetime(2026, 4, 18, 9, 0, 0),
+            extra={"generation_name": "lesson_ask/filter"},
+        )
+
+        result = get_operator_user_credits(
+            app,
+            user_bid="credits-empty-consume-user",
+            page_index=1,
+            page_size=20,
+            filters={
+                "credit_type": "consume",
+                "usage_mode": "ask",
+            },
+        )
+
+    assert result.total == 0
+    assert result.items == []
+
+
+def test_get_operator_user_credit_usage_detail_returns_generated_content(app):
+    with app.app_context():
+        _seed_user(
+            app,
+            user_bid="usage-detail-owner",
+            identify="usage-detail-owner@example.com",
+            nickname="Usage Detail Owner",
+            state=USER_STATE_PAID,
+            is_creator=True,
+            created_at=datetime(2026, 4, 9, 9, 0, 0),
+            updated_at=datetime(2026, 4, 9, 10, 0, 0),
+            providers=[("email", "usage-detail-owner@example.com")],
+        )
+        _seed_credit_wallet(
+            creator_bid="usage-detail-owner",
+            wallet_bid="wallet-usage-detail-owner",
+            available_credits="9.0000000000",
+        )
+        _seed_course(
+            model=PublishedShifu,
+            shifu_bid="course-usage-detail",
+            title="Usage Detail Course",
+            creator_user_bid="usage-detail-owner",
+            created_at=datetime(2026, 4, 10, 8, 0, 0),
+            updated_at=datetime(2026, 4, 10, 8, 0, 0),
+        )
+        _seed_published_outline_item(
+            shifu_bid="course-usage-detail",
+            outline_item_bid="chapter-usage-detail",
+            title="Usage Detail Chapter",
+            parent_bid="",
+            position="1",
+        )
+        _seed_published_outline_item(
+            shifu_bid="course-usage-detail",
+            outline_item_bid="lesson-usage-detail",
+            title="Usage Detail Lesson",
+            parent_bid="chapter-usage-detail",
+            position="1.1",
+        )
+        _seed_generated_block(
+            generated_block_bid="block-usage-detail",
+            progress_record_bid="progress-usage-detail",
+            user_bid="learner-usage-detail",
+            shifu_bid="course-usage-detail",
+            outline_item_bid="lesson-usage-detail",
+            generated_content="This is the generated answer.",
+            created_at=datetime(2026, 4, 18, 9, 0, 0),
+        )
+        _seed_bill_usage_record(
+            usage_bid="usage-detail-llm",
+            user_bid="learner-usage-detail",
+            shifu_bid="course-usage-detail",
+            progress_record_bid="progress-usage-detail",
+            outline_item_bid="lesson-usage-detail",
+            generated_block_bid="block-usage-detail",
+            usage_type=BILL_USAGE_TYPE_LLM,
+            usage_scene=BILL_USAGE_SCENE_PROD,
+            input_tokens=100,
+            output_tokens=20,
+            total=120,
+            created_at=datetime(2026, 4, 18, 9, 0, 0),
+        )
+        _seed_credit_ledger_entry(
+            creator_bid="usage-detail-owner",
+            wallet_bid="wallet-usage-detail-owner",
+            wallet_bucket_bid="bucket-usage-detail",
+            ledger_bid="ledger-usage-detail",
+            entry_type=CREDIT_LEDGER_ENTRY_TYPE_CONSUME,
+            source_type=CREDIT_SOURCE_TYPE_USAGE,
+            source_bid="usage-detail-llm",
+            amount="-2.5000000000",
+            balance_after="7.5000000000",
+            created_at=datetime(2026, 4, 18, 9, 1, 0),
+        )
+
+        result = get_operator_user_credit_usage_detail(
+            app,
+            user_bid="usage-detail-owner",
+            usage_bid="usage-detail-llm",
+        )
+
+    assert result.usage_bid == "usage-detail-llm"
+    assert result.course_name == "Usage Detail Course"
+    assert result.lesson_title == "Usage Detail Lesson"
+    assert result.chapter_title == "Usage Detail Chapter"
+    assert result.total_consumed_credits == "2.50"
+    assert len(result.items) == 1
+    assert result.items[0].content == "This is the generated answer."
+    assert result.items[0].consumed_credits == "2.50"
+    assert result.items[0].input_tokens == 100
+    assert result.items[0].output_tokens == 20
+
+
+def test_get_operator_user_credit_usage_detail_uses_ledger_owner_not_usage_user(app):
+    with app.app_context():
+        _seed_user(
+            app,
+            user_bid="usage-detail-wallet-owner",
+            identify="usage-detail-wallet-owner@example.com",
+            nickname="Usage Detail Wallet Owner",
+            state=USER_STATE_PAID,
+            is_creator=True,
+            created_at=datetime(2026, 4, 9, 9, 0, 0),
+            updated_at=datetime(2026, 4, 9, 10, 0, 0),
+            providers=[("email", "usage-detail-wallet-owner@example.com")],
+        )
+        _seed_user(
+            app,
+            user_bid="usage-detail-other-owner",
+            identify="usage-detail-other-owner@example.com",
+            nickname="Usage Detail Other Owner",
+            state=USER_STATE_PAID,
+            is_creator=True,
+            created_at=datetime(2026, 4, 9, 9, 0, 0),
+            updated_at=datetime(2026, 4, 9, 10, 0, 0),
+            providers=[("email", "usage-detail-other-owner@example.com")],
+        )
+        _seed_credit_wallet(
+            creator_bid="usage-detail-wallet-owner",
+            wallet_bid="wallet-usage-detail-wallet-owner",
+            available_credits="9.0000000000",
+        )
+        _seed_generated_block(
+            generated_block_bid="block-usage-detail-owner",
+            progress_record_bid="progress-usage-detail-owner",
+            user_bid="actual-learner-user",
+            shifu_bid="course-usage-detail-owner",
+            outline_item_bid="lesson-usage-detail-owner",
+            generated_content="Owner detail content",
+            created_at=datetime(2026, 4, 18, 9, 0, 0),
+        )
+        _seed_bill_usage_record(
+            usage_bid="usage-detail-owner-check",
+            user_bid="actual-learner-user",
+            shifu_bid="course-usage-detail-owner",
+            progress_record_bid="progress-usage-detail-owner",
+            outline_item_bid="lesson-usage-detail-owner",
+            generated_block_bid="block-usage-detail-owner",
+            usage_type=BILL_USAGE_TYPE_LLM,
+            usage_scene=BILL_USAGE_SCENE_PROD,
+            total=100,
+            segment_count=2,
+            created_at=datetime(2026, 4, 18, 9, 0, 0),
+        )
+        _seed_credit_ledger_entry(
+            creator_bid="usage-detail-wallet-owner",
+            wallet_bid="wallet-usage-detail-wallet-owner",
+            wallet_bucket_bid="bucket-usage-detail-owner",
+            ledger_bid="ledger-usage-detail-owner",
+            entry_type=CREDIT_LEDGER_ENTRY_TYPE_CONSUME,
+            source_type=CREDIT_SOURCE_TYPE_USAGE,
+            source_bid="usage-detail-owner-check",
+            amount="-1.0000000000",
+            balance_after="8.0000000000",
+            created_at=datetime(2026, 4, 18, 9, 1, 0),
+        )
+
+        result = get_operator_user_credit_usage_detail(
+            app,
+            user_bid="usage-detail-wallet-owner",
+            usage_bid="usage-detail-owner-check",
+        )
+        with pytest.raises(AppException):
+            get_operator_user_credit_usage_detail(
+                app,
+                user_bid="usage-detail-other-owner",
+                usage_bid="usage-detail-owner-check",
+            )
+
+    assert result.items[0].content == "Owner detail content"
+
+
+def test_get_operator_user_credit_usage_detail_returns_tts_segment_rows(app):
+    with app.app_context():
+        _seed_user(
+            app,
+            user_bid="usage-detail-tts-owner",
+            identify="usage-detail-tts-owner@example.com",
+            nickname="Usage Detail TTS Owner",
+            state=USER_STATE_PAID,
+            is_creator=True,
+            created_at=datetime(2026, 4, 9, 9, 0, 0),
+            updated_at=datetime(2026, 4, 9, 10, 0, 0),
+            providers=[("email", "usage-detail-tts-owner@example.com")],
+        )
+        _seed_credit_wallet(
+            creator_bid="usage-detail-tts-owner",
+            wallet_bid="wallet-usage-detail-tts-owner",
+            available_credits="9.0000000000",
+        )
+        _seed_generated_element(
+            element_bid="element-tts-1",
+            generated_block_bid="block-usage-detail-tts",
+            progress_record_bid="progress-usage-detail-tts",
+            user_bid="learner-usage-detail-tts",
+            shifu_bid="course-usage-detail-tts",
+            outline_item_bid="lesson-usage-detail-tts",
+            content_text="First narration.",
+            audio_segments='[{"segment_index": 0}]',
+            sequence_number=1,
+            created_at=datetime(2026, 4, 18, 9, 0, 0),
+        )
+        _seed_generated_element(
+            element_bid="element-tts-2",
+            generated_block_bid="block-usage-detail-tts",
+            progress_record_bid="progress-usage-detail-tts",
+            user_bid="learner-usage-detail-tts",
+            shifu_bid="course-usage-detail-tts",
+            outline_item_bid="lesson-usage-detail-tts",
+            content_text="Second narration.",
+            audio_segments='[{"segment_index": 1}]',
+            sequence_number=2,
+            created_at=datetime(2026, 4, 18, 9, 0, 1),
+        )
+        _seed_bill_usage_record(
+            usage_bid="usage-detail-tts",
+            user_bid="learner-usage-detail-tts",
+            shifu_bid="course-usage-detail-tts",
+            progress_record_bid="progress-usage-detail-tts",
+            outline_item_bid="lesson-usage-detail-tts",
+            generated_block_bid="block-usage-detail-tts",
+            usage_type=BILL_USAGE_TYPE_TTS,
+            usage_scene=BILL_USAGE_SCENE_PROD,
+            total=100,
+            created_at=datetime(2026, 4, 18, 9, 0, 0),
+        )
+        _seed_bill_usage_record(
+            usage_bid="usage-detail-tts-segment-1",
+            parent_usage_bid="usage-detail-tts",
+            record_level=1,
+            user_bid="learner-usage-detail-tts",
+            shifu_bid="course-usage-detail-tts",
+            progress_record_bid="progress-usage-detail-tts",
+            outline_item_bid="lesson-usage-detail-tts",
+            generated_block_bid="block-usage-detail-tts",
+            usage_type=BILL_USAGE_TYPE_TTS,
+            usage_scene=BILL_USAGE_SCENE_PROD,
+            total=25,
+            word_count=3,
+            duration_ms=1000,
+            segment_index=0,
+            segment_count=0,
+            created_at=datetime(2026, 4, 18, 9, 0, 1),
+        )
+        _seed_bill_usage_record(
+            usage_bid="usage-detail-tts-segment-2",
+            parent_usage_bid="usage-detail-tts",
+            record_level=1,
+            user_bid="learner-usage-detail-tts",
+            shifu_bid="course-usage-detail-tts",
+            progress_record_bid="progress-usage-detail-tts",
+            outline_item_bid="lesson-usage-detail-tts",
+            generated_block_bid="block-usage-detail-tts",
+            usage_type=BILL_USAGE_TYPE_TTS,
+            usage_scene=BILL_USAGE_SCENE_PROD,
+            total=75,
+            word_count=4,
+            duration_ms=2000,
+            segment_index=1,
+            segment_count=0,
+            created_at=datetime(2026, 4, 18, 9, 0, 2),
+        )
+        _seed_credit_ledger_entry(
+            creator_bid="usage-detail-tts-owner",
+            wallet_bid="wallet-usage-detail-tts-owner",
+            wallet_bucket_bid="bucket-usage-detail-tts",
+            ledger_bid="ledger-usage-detail-tts",
+            entry_type=CREDIT_LEDGER_ENTRY_TYPE_CONSUME,
+            source_type=CREDIT_SOURCE_TYPE_USAGE,
+            source_bid="usage-detail-tts",
+            amount="-4.0000000000",
+            balance_after="5.0000000000",
+            created_at=datetime(2026, 4, 18, 9, 1, 0),
+        )
+
+        result = get_operator_user_credit_usage_detail(
+            app,
+            user_bid="usage-detail-tts-owner",
+            usage_bid="usage-detail-tts",
+        )
+
+    assert [item.content for item in result.items] == [
+        "First narration.",
+        "Second narration.",
+    ]
+    assert [item.consumed_credits for item in result.items] == ["1", "3"]
+    assert [item.word_count for item in result.items] == [3, 4]
+    assert [item.duration_ms for item in result.items] == [1000, 2000]
+    assert [item.segment_count for item in result.items] == [2, 2]
+
+
 def test_get_operator_user_credits_excludes_topup_from_available_without_subscription(
     app,
 ):
@@ -2001,6 +2702,7 @@ def test_grant_operator_user_credits_creates_manual_grant_bucket_and_summary(app
 
     assert result.user_bid == "credits-grant-target"
     assert result.amount == "5"
+    assert result.grant_type == "manual_credit"
     assert result.grant_source == "compensation"
     assert result.validity_preset == "7d"
     assert result.expires_at.endswith("Z")
@@ -2020,6 +2722,7 @@ def test_grant_operator_user_credits_creates_manual_grant_bucket_and_summary(app
     assert ledger.entry_type == CREDIT_LEDGER_ENTRY_TYPE_GRANT
     assert ledger.source_type == CREDIT_SOURCE_TYPE_MANUAL
     assert ledger.metadata_json["grant_type"] == "manual_grant"
+    assert ledger.metadata_json["operator_user_bid"] == "operator-1"
     assert ledger.metadata_json["grant_channel"] == "operator_user_management"
     assert ledger.metadata_json["display_name"] == "模型扣费补偿"
     assert ledger.metadata_json["note"] == "ops support"
@@ -2068,6 +2771,327 @@ def test_grant_operator_user_credits_is_idempotent_for_repeated_request_id(app):
     assert second_result.ledger_bid == first_result.ledger_bid
     assert second_result.wallet_bucket_bid == first_result.wallet_bucket_bid
     assert len(ledger_entries) == 1
+
+
+def test_grant_operator_user_referral_reward_stacks_bucket_and_expiry(app, monkeypatch):
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 4, 21, 0, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr(referral_reward_grants_module, "datetime", FixedDateTime)
+
+    with app.app_context():
+        _seed_user(
+            app,
+            user_bid="referral-reward-target",
+            identify="referral-reward-target@example.com",
+            nickname="Referral Reward Target",
+            state=USER_STATE_PAID,
+            is_creator=True,
+            created_at=datetime(2026, 4, 20, 9, 0, 0),
+            updated_at=datetime(2026, 4, 20, 10, 0, 0),
+            providers=[("email", "referral-reward-target@example.com")],
+        )
+
+        first_result = grant_operator_user_credits(
+            app,
+            user_bid="referral-reward-target",
+            operator_user_bid="operator-1",
+            payload=AdminOperationUserCreditGrantRequestDTO(
+                request_id="referral-reward-request-1",
+                amount="1000",
+                grant_type="referral_reward",
+                grant_source="reward",
+                validity_preset="1m",
+                note="first referral",
+            ),
+        )
+        second_result = grant_operator_user_credits(
+            app,
+            user_bid="referral-reward-target",
+            operator_user_bid="operator-1",
+            payload=AdminOperationUserCreditGrantRequestDTO(
+                request_id="referral-reward-request-2",
+                amount="800",
+                grant_type="referral_reward",
+                grant_source="reward",
+                validity_preset="1m",
+                note="second referral",
+            ),
+        )
+
+        buckets = CreditWalletBucket.query.filter_by(
+            creator_bid="referral-reward-target",
+            deleted=0,
+        ).all()
+        ledgers = (
+            CreditLedgerEntry.query.filter_by(
+                creator_bid="referral-reward-target",
+                deleted=0,
+            )
+            .order_by(CreditLedgerEntry.id.asc())
+            .all()
+        )
+        bootstrap = get_operator_user_grant_bootstrap(
+            app,
+            user_bid="referral-reward-target",
+        )
+
+    assert first_result.grant_type == "referral_reward"
+    assert first_result.expires_at == "2026-05-21T00:00:00Z"
+    assert second_result.grant_type == "referral_reward"
+    assert second_result.expires_at == "2026-06-21T00:00:00Z"
+    assert second_result.wallet_bucket_bid == first_result.wallet_bucket_bid
+    assert second_result.amount == "800"
+    assert second_result.summary.available_credits == "1800"
+    assert len(buckets) == 1
+    assert buckets[0].metadata_json["grant_type"] == "referral_reward"
+    assert buckets[0].metadata_json["validity_strategy"] == "stack_by_reward_scene"
+    assert Decimal(str(buckets[0].available_credits)) == Decimal("1800")
+    assert len(ledgers) == 2
+    assert ledgers[0].expires_at == ledgers[1].expires_at == buckets[0].effective_to
+    assert Decimal(ledgers[1].metadata_json["reward_credits"]) == Decimal("800")
+    assert ledgers[1].metadata_json["previous_effective_to"]
+    assert ledgers[1].metadata_json["new_effective_to"]
+    assert bootstrap.referral_reward_summary.available_credits == "1800"
+    assert bootstrap.referral_reward_summary.expires_at == second_result.expires_at
+    assert bootstrap.referral_reward_summary.grant_count == 2
+
+
+def test_grant_operator_user_referral_reward_extends_empty_active_bucket(
+    app, monkeypatch
+):
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 4, 21, 0, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr(referral_reward_grants_module, "datetime", FixedDateTime)
+
+    with app.app_context():
+        _seed_user(
+            app,
+            user_bid="referral-reward-empty-active",
+            identify="referral-reward-empty-active@example.com",
+            nickname="Referral Reward Empty Active",
+            state=USER_STATE_PAID,
+            is_creator=True,
+            created_at=datetime(2026, 4, 20, 9, 0, 0),
+            updated_at=datetime(2026, 4, 20, 10, 0, 0),
+            providers=[("email", "referral-reward-empty-active@example.com")],
+        )
+        _seed_credit_wallet(
+            creator_bid="referral-reward-empty-active",
+            wallet_bid="wallet-referral-reward-empty-active",
+            available_credits="0",
+        )
+        db.session.add(
+            CreditWalletBucket(
+                wallet_bucket_bid="bucket-referral-reward-empty-active",
+                wallet_bid="wallet-referral-reward-empty-active",
+                creator_bid="referral-reward-empty-active",
+                bucket_category=CREDIT_BUCKET_CATEGORY_SUBSCRIPTION,
+                source_type=CREDIT_SOURCE_TYPE_MANUAL,
+                source_bid="referral_reward",
+                priority=resolve_credit_bucket_priority(
+                    CREDIT_BUCKET_CATEGORY_SUBSCRIPTION
+                ),
+                original_credits=Decimal("1000"),
+                available_credits=Decimal("0"),
+                reserved_credits=Decimal("0"),
+                consumed_credits=Decimal("1000"),
+                expired_credits=Decimal("0"),
+                effective_from=datetime(2026, 4, 1, 0, 0, 0),
+                effective_to=datetime(2026, 5, 21, 0, 0, 0),
+                status=CREDIT_BUCKET_STATUS_ACTIVE,
+                metadata_json={
+                    "grant_type": "referral_reward",
+                    "validity_strategy": "stack_by_reward_scene",
+                },
+            )
+        )
+        db.session.commit()
+
+        result = grant_operator_user_credits(
+            app,
+            user_bid="referral-reward-empty-active",
+            operator_user_bid="operator-1",
+            payload=AdminOperationUserCreditGrantRequestDTO(
+                request_id="referral-reward-empty-active-request",
+                amount="1000",
+                grant_type="referral_reward",
+                grant_source="reward",
+                validity_preset="1m",
+                note="extend empty active bucket",
+            ),
+        )
+
+        buckets = CreditWalletBucket.query.filter_by(
+            creator_bid="referral-reward-empty-active",
+            deleted=0,
+        ).all()
+
+    assert result.wallet_bucket_bid == "bucket-referral-reward-empty-active"
+    assert result.expires_at == "2026-06-21T00:00:00Z"
+    assert result.note == "extend empty active bucket"
+    assert len(buckets) == 1
+    assert buckets[0].effective_to == datetime(2026, 6, 21, 0, 0, 0)
+    assert Decimal(str(buckets[0].available_credits)) == Decimal("1000")
+
+
+def test_grant_operator_user_referral_reward_is_idempotent_for_repeated_request_id(
+    app,
+):
+    with app.app_context():
+        _seed_user(
+            app,
+            user_bid="referral-reward-idempotent",
+            identify="referral-reward-idempotent@example.com",
+            nickname="Referral Reward Idempotent",
+            state=USER_STATE_PAID,
+            is_creator=True,
+            created_at=datetime(2026, 4, 20, 9, 0, 0),
+            updated_at=datetime(2026, 4, 20, 10, 0, 0),
+            providers=[("email", "referral-reward-idempotent@example.com")],
+        )
+
+        payload = AdminOperationUserCreditGrantRequestDTO(
+            request_id="referral-reward-idempotent-request",
+            amount="1000",
+            grant_type="referral_reward",
+            grant_source="reward",
+            validity_preset="1m",
+            note="retry-safe referral",
+        )
+        first_result = grant_operator_user_credits(
+            app,
+            user_bid="referral-reward-idempotent",
+            operator_user_bid="operator-1",
+            payload=payload,
+        )
+        second_result = grant_operator_user_credits(
+            app,
+            user_bid="referral-reward-idempotent",
+            operator_user_bid="operator-1",
+            payload=payload,
+        )
+
+        buckets = CreditWalletBucket.query.filter_by(
+            creator_bid="referral-reward-idempotent",
+            deleted=0,
+        ).all()
+        ledger_entries = CreditLedgerEntry.query.filter_by(
+            creator_bid="referral-reward-idempotent",
+            deleted=0,
+        ).all()
+
+    assert first_result.ledger_bid
+    assert second_result.ledger_bid == first_result.ledger_bid
+    assert second_result.wallet_bucket_bid == first_result.wallet_bucket_bid
+    assert second_result.summary.available_credits == "1000"
+    assert second_result.note == "retry-safe referral"
+    assert len(buckets) == 1
+    assert len(ledger_entries) == 1
+
+
+def test_grant_operator_user_referral_reward_rejects_non_integer_amount(app):
+    with app.app_context():
+        _seed_user(
+            app,
+            user_bid="referral-reward-invalid-amount",
+            identify="referral-reward-invalid-amount@example.com",
+            nickname="Referral Reward Invalid Amount",
+            state=USER_STATE_PAID,
+            is_creator=True,
+            created_at=datetime(2026, 4, 20, 9, 0, 0),
+            updated_at=datetime(2026, 4, 20, 10, 0, 0),
+            providers=[("email", "referral-reward-invalid-amount@example.com")],
+        )
+
+        with pytest.raises(AppException):
+            grant_operator_user_credits(
+                app,
+                user_bid="referral-reward-invalid-amount",
+                operator_user_bid="operator-1",
+                payload=AdminOperationUserCreditGrantRequestDTO(
+                    request_id="referral-reward-invalid-amount-request",
+                    amount="1000.5",
+                    grant_type="referral_reward",
+                    grant_source="reward",
+                    validity_preset="1m",
+                ),
+            )
+
+
+def test_grant_operator_user_credits_accepts_legacy_manual_grant_type(app):
+    with app.app_context():
+        _seed_user(
+            app,
+            user_bid="credits-grant-legacy-manual-type",
+            identify="credits-grant-legacy-manual-type@example.com",
+            nickname="Credits Grant Legacy Manual Type",
+            state=USER_STATE_PAID,
+            is_creator=True,
+            created_at=datetime(2026, 4, 20, 9, 0, 0),
+            updated_at=datetime(2026, 4, 20, 10, 0, 0),
+            providers=[("email", "credits-grant-legacy-manual-type@example.com")],
+        )
+
+        result = grant_operator_user_credits(
+            app,
+            user_bid="credits-grant-legacy-manual-type",
+            operator_user_bid="operator-1",
+            payload=AdminOperationUserCreditGrantRequestDTO(
+                request_id="grant-request-legacy-manual-type",
+                amount="5",
+                grant_type="manual_grant",
+                grant_source="reward",
+                validity_preset="1d",
+                note="legacy type",
+            ),
+        )
+
+    assert result.grant_type == "manual_credit"
+    assert result.note == "legacy type"
+
+
+def test_grant_operator_user_credits_rejects_unknown_grant_type(app):
+    with app.app_context():
+        _seed_user(
+            app,
+            user_bid="credits-grant-unknown-type",
+            identify="credits-grant-unknown-type@example.com",
+            nickname="Credits Grant Unknown Type",
+            state=USER_STATE_PAID,
+            is_creator=True,
+            created_at=datetime(2026, 4, 20, 9, 0, 0),
+            updated_at=datetime(2026, 4, 20, 10, 0, 0),
+            providers=[("email", "credits-grant-unknown-type@example.com")],
+        )
+
+        with pytest.raises(AppException) as exc_info:
+            grant_operator_user_credits(
+                app,
+                user_bid="credits-grant-unknown-type",
+                operator_user_bid="operator-1",
+                payload=AdminOperationUserCreditGrantRequestDTO(
+                    request_id="grant-request-unknown-type",
+                    amount="5",
+                    grant_type="unknown_type",
+                    grant_source="reward",
+                    validity_preset="1d",
+                    note="invalid type",
+                ),
+            )
+        ledger_count = CreditLedgerEntry.query.filter_by(
+            creator_bid="credits-grant-unknown-type",
+            deleted=0,
+        ).count()
+
+    assert exc_info.value.code == ERROR_CODE["server.common.paramsError"]
+    assert "grant_type" in exc_info.value.message
+    assert ledger_count == 0
 
 
 def test_grant_operator_user_credits_returns_persisted_payload_for_reused_request_id(
@@ -2260,7 +3284,14 @@ def test_grant_operator_user_package_creates_manual_paid_order_and_summary(app):
     assert order.status == BILLING_ORDER_STATUS_PAID
     assert order.payment_provider == "manual"
     assert order.metadata_json["checkout_type"] == "admin_manual_plan_grant"
+    assert order.metadata_json["operator_user_bid"] == "operator-1"
     assert order.metadata_json["request_id"] == "package-grant-request-1"
+    assert (
+        order.metadata_json["notification_extensions"]["admin_manual_plan_grant"][
+            "operator_user_bid"
+        ]
+        == "operator-1"
+    )
     assert (
         order.metadata_json["notification_extensions"]["admin_manual_plan_grant"][
             "status"
@@ -2269,6 +3300,8 @@ def test_grant_operator_user_package_creates_manual_paid_order_and_summary(app):
     )
     assert subscription is not None
     assert subscription.status == BILLING_SUBSCRIPTION_STATUS_ACTIVE
+    assert subscription.metadata_json["operator_user_bid"] == "operator-1"
+    assert subscription.metadata_json["request_id"] == "package-grant-request-1"
     assert ledger is not None
     assert ledger.entry_type == CREDIT_LEDGER_ENTRY_TYPE_GRANT
     assert ledger.source_type == CREDIT_SOURCE_TYPE_SUBSCRIPTION
@@ -2317,6 +3350,123 @@ def test_grant_operator_user_package_is_idempotent_for_repeated_request_id(app):
     assert second_result.bill_order_bid == first_result.bill_order_bid
     assert second_result.subscription_bid == first_result.subscription_bid
     assert len(orders) == 1
+
+
+def test_grant_operator_user_package_upgrades_active_pingxx_subscription(app):
+    with app.app_context():
+        db.session.add_all(
+            build_bill_products(
+                product_bids=[
+                    "bill-product-plan-monthly",
+                    "bill-product-plan-yearly",
+                ]
+            )
+        )
+        _seed_user(
+            app,
+            user_bid="package-grant-pingxx-upgrade",
+            identify="package-grant-pingxx-upgrade@example.com",
+            nickname="Package Grant Pingxx Upgrade",
+            state=USER_STATE_PAID,
+            is_creator=True,
+            created_at=datetime(2026, 4, 20, 9, 0, 0),
+            updated_at=datetime(2026, 4, 20, 10, 0, 0),
+            providers=[("email", "package-grant-pingxx-upgrade@example.com")],
+        )
+        _seed_billing_subscription(
+            creator_bid="package-grant-pingxx-upgrade",
+            subscription_bid="sub-package-grant-pingxx-upgrade",
+            product_bid="bill-product-plan-monthly",
+            billing_provider="pingxx",
+            current_period_start_at=datetime.now() - timedelta(days=1),
+            current_period_end_at=datetime.now() + timedelta(days=29),
+        )
+
+        result = grant_operator_user_package(
+            app,
+            user_bid="package-grant-pingxx-upgrade",
+            operator_user_bid="operator-1",
+            payload=AdminOperationUserPackageGrantRequestDTO(
+                request_id="package-grant-pingxx-upgrade-request",
+                product_bid="bill-product-plan-yearly",
+                note="ops package upgrade",
+            ),
+        )
+
+        order = (
+            BillingOrder.query.filter_by(
+                creator_bid="package-grant-pingxx-upgrade",
+                bill_order_bid=result.bill_order_bid,
+            )
+            .order_by(BillingOrder.id.desc())
+            .first()
+        )
+        subscription = (
+            BillingSubscription.query.filter_by(
+                creator_bid="package-grant-pingxx-upgrade",
+                subscription_bid=result.subscription_bid,
+            )
+            .order_by(BillingSubscription.id.desc())
+            .first()
+        )
+
+    assert result.product_bid == "bill-product-plan-yearly"
+    assert order is not None
+    assert order.order_type == BILLING_ORDER_TYPE_SUBSCRIPTION_UPGRADE
+    assert order.payment_provider == "manual"
+    assert subscription is not None
+    assert subscription.product_bid == "bill-product-plan-yearly"
+    assert subscription.billing_provider == "pingxx"
+
+
+def test_grant_operator_user_package_rejects_active_stripe_subscription(app):
+    with app.app_context():
+        db.session.add_all(
+            build_bill_products(
+                product_bids=[
+                    "bill-product-plan-monthly",
+                    "bill-product-plan-yearly",
+                ]
+            )
+        )
+        _seed_user(
+            app,
+            user_bid="package-grant-stripe-conflict",
+            identify="package-grant-stripe-conflict@example.com",
+            nickname="Package Grant Stripe Conflict",
+            state=USER_STATE_PAID,
+            is_creator=True,
+            created_at=datetime(2026, 4, 20, 9, 0, 0),
+            updated_at=datetime(2026, 4, 20, 10, 0, 0),
+            providers=[("email", "package-grant-stripe-conflict@example.com")],
+        )
+        _seed_billing_subscription(
+            creator_bid="package-grant-stripe-conflict",
+            subscription_bid="sub-package-grant-stripe-conflict",
+            product_bid="bill-product-plan-monthly",
+            billing_provider="stripe",
+            provider_subscription_id="sub_provider_package_grant_stripe_conflict",
+            provider_customer_id="cus_package_grant_stripe_conflict",
+            current_period_start_at=datetime.now() - timedelta(days=1),
+            current_period_end_at=datetime.now() + timedelta(days=29),
+        )
+
+        with pytest.raises(AppException) as exc_info:
+            grant_operator_user_package(
+                app,
+                user_bid="package-grant-stripe-conflict",
+                operator_user_bid="operator-1",
+                payload=AdminOperationUserPackageGrantRequestDTO(
+                    request_id="package-grant-stripe-conflict-request",
+                    product_bid="bill-product-plan-yearly",
+                    note="ops package conflict",
+                ),
+            )
+
+    assert (
+        exc_info.value.code
+        == ERROR_CODE["server.billing.adminPlanGrantProviderManagedConflict"]
+    )
 
 
 def test_list_operator_users_counts_redeem_orders_in_total_paid_amount(app):
@@ -2763,6 +3913,37 @@ def test_admin_operation_users_route_returns_filtered_payload(
     ]
 
 
+@pytest.mark.parametrize(
+    ("query_string", "expected_param"),
+    [
+        ("page_index=1&page_size=20&user_status=invalid", "user_status"),
+        ("page_index=1&page_size=20&user_role=invalid", "user_role"),
+        ("page_index=1&page_size=20&start_time=not-a-date", "start_time"),
+        (
+            "page_index=1&page_size=20&start_time=2026-05-02&end_time=2026-05-01",
+            "start_time",
+        ),
+    ],
+)
+def test_admin_operation_users_route_rejects_invalid_filter_params(
+    test_client,
+    monkeypatch,
+    query_string,
+    expected_param,
+):
+    _mock_operator(monkeypatch)
+
+    response = test_client.get(
+        f"/api/shifu/admin/operations/users?{query_string}",
+        headers={"Token": "test-token"},
+    )
+    payload = response.get_json(force=True)
+
+    assert response.status_code == 200
+    assert payload["code"] == ERROR_CODE["server.common.paramsError"]
+    assert payload["message"] == f"Params Error {expected_param}"
+
+
 def test_admin_operation_user_detail_route_returns_payload(
     app,
     test_client,
@@ -2878,6 +4059,41 @@ def test_admin_operation_user_credits_route_returns_payload(
             expires_at=active_end_at,
             consumable_from=datetime(2026, 4, 10, 12, 0, 0),
         )
+        _seed_course(
+            model=PublishedShifu,
+            shifu_bid="course-preview-route",
+            title="Preview Route Course",
+            creator_user_bid="user-credits-route",
+            created_at=datetime(2026, 4, 9, 8, 0, 0),
+            updated_at=datetime(2026, 4, 9, 9, 0, 0),
+        )
+        _seed_bill_usage_record(
+            usage_bid="usage-preview-route",
+            user_bid="user-credits-route",
+            shifu_bid="course-preview-route",
+            progress_record_bid="progress-preview-route",
+            outline_item_bid="lesson-preview-route",
+            usage_type=BILL_USAGE_TYPE_LLM,
+            usage_scene=BILL_USAGE_SCENE_PREVIEW,
+            created_at=datetime(2026, 4, 10, 12, 30, 0),
+            extra={"generation_name": "learn_preview"},
+            input_tokens=100,
+            output_tokens=50,
+            total=150,
+        )
+        _seed_credit_ledger_entry(
+            creator_bid="user-credits-route",
+            wallet_bid="wallet-credits-route",
+            wallet_bucket_bid="bucket-credits-route",
+            ledger_bid="ledger-preview-route",
+            entry_type=CREDIT_LEDGER_ENTRY_TYPE_CONSUME,
+            source_type=CREDIT_SOURCE_TYPE_USAGE,
+            source_bid="usage-preview-route",
+            amount="-1.0000000000",
+            balance_after="6.0000000000",
+            created_at=datetime(2026, 4, 10, 12, 30, 0),
+            metadata_json={"usage_bid": "usage-preview-route"},
+        )
 
     response = test_client.get(
         "/api/shifu/admin/operations/users/user-credits-route/credits",
@@ -2898,6 +4114,29 @@ def test_admin_operation_user_credits_route_returns_payload(
         },
         "items": [
             {
+                "ledger_bid": "ledger-preview-route",
+                "created_at": _format_operator_datetime(
+                    datetime(2026, 4, 10, 12, 30, 0)
+                ),
+                "entry_type": "consume",
+                "source_type": "usage",
+                "display_entry_type": "consume",
+                "display_source_type": "usage",
+                "amount": "-1",
+                "balance_after": "6",
+                "expires_at": "",
+                "consumable_from": "",
+                "note": "",
+                "note_code": "",
+                "usage_bid": "usage-preview-route",
+                "course_bid": "course-preview-route",
+                "course_name": "Preview Route Course",
+                "chapter_title": "",
+                "lesson_title": "",
+                "usage_scene": "preview",
+                "usage_mode": "learn",
+            },
+            {
                 "ledger_bid": "ledger-grant-route",
                 "created_at": _format_operator_datetime(
                     datetime(2026, 4, 10, 12, 0, 0)
@@ -2914,13 +4153,55 @@ def test_admin_operation_user_credits_route_returns_payload(
                 ),
                 "note": "",
                 "note_code": "subscription_purchase",
-            }
+                "usage_bid": "",
+                "course_bid": "",
+                "course_name": "",
+                "chapter_title": "",
+                "lesson_title": "",
+                "usage_scene": "",
+                "usage_mode": "",
+            },
         ],
         "page": 1,
         "page_size": 20,
-        "total": 1,
+        "total": 2,
         "page_count": 1,
     }
+
+    scene_response = test_client.get(
+        "/api/shifu/admin/operations/users/user-credits-route/credits",
+        query_string={
+            "page_index": 1,
+            "page_size": 20,
+            "credit_type": "consume",
+            "usage_scene": "preview",
+        },
+        headers={"Token": "test-token"},
+    )
+    scene_payload = scene_response.get_json(force=True)
+
+    assert scene_response.status_code == 200
+    assert scene_payload["code"] == 0
+    assert scene_payload["data"]["total"] == 1
+    assert scene_payload["data"]["items"][0]["usage_scene"] == "preview"
+
+
+def test_admin_operation_user_credits_route_rejects_inverted_time_range(
+    test_client,
+    monkeypatch,
+):
+    _mock_operator(monkeypatch)
+
+    response = test_client.get(
+        "/api/shifu/admin/operations/users/user-credits-route/credits"
+        "?page_index=1&page_size=20&start_time=2026-05-02&end_time=2026-05-01",
+        headers={"Token": "test-token"},
+    )
+    payload = response.get_json(force=True)
+
+    assert response.status_code == 200
+    assert payload["code"] == ERROR_CODE["server.common.paramsError"]
+    assert payload["message"] == "Params Error start_time"
 
 
 def test_admin_operation_user_credit_grant_route_returns_payload(
