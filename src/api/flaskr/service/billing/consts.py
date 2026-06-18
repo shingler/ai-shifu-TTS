@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -187,6 +187,11 @@ BILLING_ORDER_STATUS_LABELS = {
     BILLING_ORDER_STATUS_CANCELED: "canceled",
     BILLING_ORDER_STATUS_TIMEOUT: "timeout",
 }
+
+BILLING_PENDING_ORDER_TIMEOUT_MINUTES = 30
+BILLING_PENDING_ORDER_TIMEOUT_DELTA = timedelta(
+    minutes=BILLING_PENDING_ORDER_TIMEOUT_MINUTES
+)
 
 CREDIT_LEDGER_ENTRY_TYPE_LABELS = {
     CREDIT_LEDGER_ENTRY_TYPE_GRANT: "grant",
@@ -490,7 +495,9 @@ BILL_SYS_CONFIG_SEEDS = (
                 "enabled": 0,
                 "batch_size": 100,
                 "lookahead_minutes": 60,
-                "queue": "billing-renewal",
+                "processing_timeout_minutes": 30,
+                "queue": "",
+                "use_dedicated_queue": 0,
             },
             separators=(",", ":"),
             sort_keys=True,
