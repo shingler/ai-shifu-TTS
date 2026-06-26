@@ -2,7 +2,6 @@
 
 import { useEnvStore } from '@/c-store';
 import { EnvStoreState } from '@/c-types/store';
-import { redirectToHomeUrlIfRootPath } from '@/lib/utils';
 import { getBoolEnv } from '@/c-utils/envUtils';
 import { getDynamicApiBaseUrl } from '@/config/environment';
 
@@ -140,10 +139,6 @@ const loadRuntimeConfig = async () => {
 
   const payload = await fetchRuntimeConfig();
   const runtimeConfig = payload?.data ?? payload;
-  const homeUrl = runtimeConfig?.homeUrl || '/c';
-  if (redirectToHomeUrlIfRootPath(homeUrl === '/' ? '/c' : homeUrl)) {
-    return;
-  }
 
   const paymentChannels = normalizeStringArray(
     runtimeConfig?.paymentChannels,
