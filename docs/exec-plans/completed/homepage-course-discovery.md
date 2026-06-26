@@ -14,13 +14,13 @@
 
 - [x] 2026-06-24: Spec 评审通过并提交。
 - [x] 2026-06-24: 确认归档语义(用创作者归档作课程级状态)、接口鉴权模式、测试范式。
-- [ ] 后端 Task 1: 发现页查询函数 `get_published_course_catalog` + 单测。
-- [ ] 后端 Task 2: 半公开路由 `GET /api/shifu/published-courses` + 路由层测试。
-- [ ] 前端 Task 3: `api.ts` 新增 `getPublishedCourses`。
-- [ ] 前端 Task 4: i18n 文案(zh-CN / en-US)。
-- [ ] 前端 Task 5: `CourseCard` 组件 + Jest 测试。
-- [ ] 前端 Task 6: `CourseDiscovery` 容器 + 改造 `app/page.tsx`。
-- [ ] Task 7: 全量验证(pytest / type-check / lint / jest),ExecPlan 移入 `completed/`。
+- [x] 2026-06-26: 后端 Task 1 — `get_published_course_catalog` + 6 纯函数测试(可见性/归档/排序/badge/分页/删除)。
+- [x] 2026-06-26: 后端 Task 2 — `GET /api/shifu/published-courses`(`@bypass_token_validation`+`@optional_token_validation`)+ 2 路由层测试。
+- [x] 2026-06-26: 前端 Task 3 — `api.ts` 新增 `getPublishedCourses`。
+- [x] 2026-06-26: 前端 Task 4 — i18n 文案(zh-CN / en-US `core.json`)。
+- [x] 2026-06-26: 前端 Task 5 — `CourseCard` 组件 + 7 个 Jest 测试。
+- [x] 2026-06-26: 前端 Task 6 — `CourseDiscovery` 容器 + 改造 `app/page.tsx`。
+- [x] 2026-06-26: Task 7 — pytest(8/8 新测试 + shifu 回归 232 passed)/ type-check(干净)/ jest 7-7 / lint(无新增问题);ExecPlan 移入 `completed/`。
 
 ## Surprises & Discoveries
 
@@ -40,7 +40,14 @@
 
 ## Outcomes & Retrospective
 
-(实现完成后填写:验收结果、偏差、后续改进项。)
+- **验收结果**:
+  - 后端:`test_published_course_catalog.py` 8/8 通过(6 纯函数 + 2 路由层);shifu 目录回归 232 passed。
+  - 前端:`tsc --noEmit` 零错误;`CourseCard` Jest 7/7;ESLint 无新增 warning/error。
+- **偏差**:无功能性偏差。学习进度聚合按 spec §5.3 实现(全部 item `603`→已完成;否则存在 `602`→学习中;否则不显示)。
+- **预存问题(非本次引入,已验证)**:
+  - `tests/service/shifu/test_admin_users.py::test_grant_operator_user_referral_reward_stacks_bucket_and_expiry` 失败(credit wallet `available_credits` 断言);stash 本次改动后仍失败 → 与本次无关。
+  - cook-web `tsc` 误报 `.next/types/app/admin/{best-practice,inspiration,knowledge,template}` 找不到模块,因这些 admin 页面源文件已删除而 `.next` 缓存陈旧;清 `.next` 后消失。
+- **后续改进**:学习进度聚合可对照 `/c` 现有进度逻辑再校准;首页暂不做搜索/筛选(YAGNI);归档「创作者记录作课程级状态」若未来需要真正全局归档,需加 PublishedShifu 字段。
 
 ## Context and Orientation
 
