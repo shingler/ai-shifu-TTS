@@ -52,6 +52,8 @@ from .funcs import (
     shifu_permission_verification,
 )
 from flaskr.route.common import make_common_response, bypass_token_validation, fmt
+from flaskr.route.user import optional_token_validation
+from flaskr.service.shifu.discovery_funcs import get_published_course_catalog
 from flaskr.framework.plugin.inject import inject
 from flaskr.service.common.models import raise_param_error, raise_error, ERROR_CODE
 from flaskr.service.billing.admission import admit_creator_usage
@@ -441,6 +443,31 @@ def register_shifu_routes(app: Flask, path_prefix="/api/shifu"):
             get_shifu_draft_list(
                 app, user_id, page_index, page_size, is_favorite, archived
             )
+        )
+
+    @app.route(path_prefix + "/published-courses", methods=["GET"])
+    @bypass_token_validation
+    @optional_token_validation
+    def get_published_courses_api():
+        """
+        Public discovery feed of published courses.
+        ---
+        tags:
+            - shifu
+        """
+        user = getattr(request, "user", None)
+        user_id = user.user_id if user else None
+        page_index = request.args.get("page_index", 1)
+        page_size = request.args.get("page_size", 10)
+        try:
+            page_index = int(page_index)
+            page_size = int(page_size)
+        except (TypeError, ValueError):
+            raise_param_error("page_index or page_size is not a number")
+        if page_index < 1 or page_size < 1:
+            raise_param_error("page_index or page_size is less than 1")
+        return make_common_response(
+            get_published_course_catalog(app, user_id, page_index, page_size)
         )
 
     register_admin_operations_routes(app, path_prefix=path_prefix)
