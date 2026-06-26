@@ -89,6 +89,25 @@ const nextConfig: NextConfig = {
     return [{ source: '/main', destination: '/admin', permanent: true }];
   },
 
+  // Locally proxy backend-served storage assets (e.g. course cover images)
+  // to the API server. Production relies on the reverse proxy (nginx) for
+  // this, so the rewrite is dev-only and scoped to /api/storage to avoid
+  // intercepting Next-owned routes such as /api/config and /api/i18n.
+  async rewrites() {
+    if (process.env.NODE_ENV !== 'development') {
+      return [];
+    }
+    const backendBase = (
+      process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:5800'
+    ).replace(/\/+$/, '');
+    return [
+      {
+        source: '/api/storage/:path*',
+        destination: `${backendBase}/api/storage/:path*`,
+      },
+    ];
+  },
+
   // Disable image optimization to avoid Sharp dependency
   images: {
     unoptimized: true,
