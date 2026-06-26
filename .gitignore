@@ -186,6 +186,9 @@ docker/milvus_data/
 # Logs
 src/api/logs/
 
+# Local file storage (runtime uploaded assets served via /api/storage)
+src/api/storage/
+
 # Harness runtime artifacts
 artifacts/runs/
 
