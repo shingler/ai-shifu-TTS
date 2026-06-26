@@ -39,6 +39,7 @@ const api = {
 
   // shifu api start
   getShifuList: 'GET /shifu/shifus',
+  getPublishedCourses: 'GET /shifu/published-courses',
   createShifu: 'PUT /shifu/shifus',
   getShifuDetail: 'GET /shifu/shifus/{shifu_bid}/detail',
   getShifuDraftMeta: 'GET /shifu/shifus/{shifu_bid}/draft-meta',
