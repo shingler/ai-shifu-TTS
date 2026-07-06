@@ -15,6 +15,7 @@ export interface CourseItem {
   is_owner: boolean;
   is_purchased: boolean;
   learn_status: number | null;
+  tts_enabled: boolean;
 }
 
 export interface CourseCardProps {
@@ -94,6 +95,9 @@ export default function CourseCard({
           )}
           {showArchived && (
             <Badge variant='outline'>{t('common.core.archived')}</Badge>
+          )}
+          {course.tts_enabled && (
+            <Badge variant='success'>{t('common.core.courseAudioAvailable')}</Badge>
           )}
         </div>
         <p className='line-clamp-2 text-sm text-muted-foreground'>

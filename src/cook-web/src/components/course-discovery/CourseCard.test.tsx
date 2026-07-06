@@ -18,6 +18,7 @@ const baseCourse: CourseItem = {
   is_owner: false,
   is_purchased: false,
   learn_status: null,
+  tts_enabled: false,
 };
 
 const renderCard = (
@@ -86,4 +87,14 @@ test('calls onClick with shifu_bid when the card is clicked', () => {
   );
   fireEvent.click(screen.getByRole('button'));
   expect(onClick).toHaveBeenCalledWith('c1');
+});
+
+test('renders audio badge when tts_enabled is true (independent of login)', () => {
+  renderCard({ tts_enabled: true }, false);
+  expect(screen.getByText('common.core.courseAudioAvailable')).toBeInTheDocument();
+});
+
+test('does not render audio badge when tts_enabled is false', () => {
+  renderCard({ tts_enabled: false }, true);
+  expect(screen.queryByText('common.core.courseAudioAvailable')).toBeNull();
 });
