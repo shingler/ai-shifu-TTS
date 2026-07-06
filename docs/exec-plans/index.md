@@ -9,6 +9,7 @@ Active and completed ExecPlans live here. The structure and required sections ar
 - [Admin Orders Page Slimming](./active/admin-orders-page-slimming.md)
 - [Agent-First Harness Phase 2](./active/agent-first-harness-phase-2.md)
 - [ExecPlan: Billing Credit Notifications](./active/billing-credit-notifications.md)
+- [课程发现页「可听课」徽章 — ExecPlan](./active/course-discovery-tts-badge.md)
 - [Creator Dashboard Course Ownership Optimization](./active/creator-dashboard-course-ownership-optimization.md)
 - [Creator Dashboard Course Ratings](./active/creator-dashboard-course-ratings.md)
 - [Creator Dashboard Learners SQL Optimization](./active/creator-dashboard-learners-sql-optimization.md)
@@ -24,6 +25,7 @@ Active and completed ExecPlans live here. The structure and required sections ar
 
 - [Agent-First Harness Migration](./completed/agent-first-harness-migration.md)
 - [Operator Course Copy](./completed/course-copy-operator.md)
+- [Homepage Course Discovery — ExecPlan](./completed/homepage-course-discovery.md)
 - [Operator Course B Optimization](./completed/operator-course-b-optimization.md)
 - [Operator Course Detail Tab Splitting](./completed/operator-course-detail-tab-splitting.md)
 
