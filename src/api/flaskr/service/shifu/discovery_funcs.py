@@ -98,6 +98,7 @@ def get_published_course_catalog(
                 "description": c.description,
                 "avatar_url": res_url_map.get(c.avatar_res_bid, ""),
                 "price": str(c.price),
+                "tts_enabled": bool(c.tts_enabled),
                 "updated_at": c.updated_at,
                 "is_archived": bool(archive_map.get(c.shifu_bid, False)),
                 "is_owner": c.created_user_bid == user_id if user_id else False,

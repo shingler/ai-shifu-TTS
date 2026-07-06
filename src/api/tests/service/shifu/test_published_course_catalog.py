@@ -40,6 +40,7 @@ def _seed_published(
     updated_at: datetime | None = None,
     deleted: int = 0,
     price: Decimal = Decimal("0"),
+    tts_enabled: int = 0,
 ) -> None:
     moment = updated_at or datetime(2026, 5, 1, 10, 0, 0)
     with app.app_context():
@@ -51,6 +52,7 @@ def _seed_published(
                 avatar_res_bid="",
                 price=price,
                 deleted=deleted,
+                tts_enabled=tts_enabled,
                 created_user_bid=owner_bid,
                 created_at=moment,
                 updated_at=moment,
@@ -282,3 +284,17 @@ def test_route_with_token_attaches_user(test_client, app, monkeypatch):
     assert payload["code"] == 0
     item = next(i for i in payload["data"]["items"] if i["shifu_bid"] == bid)
     assert item["is_owner"] is True
+
+
+def test_catalog_exposes_tts_enabled(app):
+    on = _PREFIX + "T-on"
+    off = _PREFIX + "T-off"
+    _cleanup_all(app)
+    _seed_published(app, shifu_bid=on, owner_bid="owner-T1", tts_enabled=1)
+    _seed_published(app, shifu_bid=off, owner_bid="owner-T2", tts_enabled=0)
+
+    result = get_published_course_catalog(app, None, 1, 10)
+
+    by = {item["shifu_bid"]: item for item in result.data}
+    assert by[on]["tts_enabled"] is True
+    assert by[off]["tts_enabled"] is False
