@@ -99,8 +99,8 @@ body.listen-mode-vh-fallback #root {
     --accent-foreground: #f9fafb;
     --destructive: #7f1d1d;
     --destructive-foreground: #f9fafb;
-    --success: #22c55e;
-    --success-foreground: #052e16;
+    --success: #166534;
+    --success-foreground: #f9fafb;
     --border: #1f2937;
     --input: #1f2937;
     --ring: var(--primary);
