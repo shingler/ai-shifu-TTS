@@ -60,16 +60,15 @@
   success:
     'border-transparent bg-success text-success-foreground hover:bg-success/80',
   ```
-- [globals.css](../../../src/cook-web/src/app/globals.css) 在亮色与暗色两套变量里各补(绿色沿用 [app/c/layout.css:54](../../../src/cook-web/src/app/c/layout.css) 既有的 `#00a27a` 体系):
+- [globals.css](../../../src/cook-web/src/app/globals.css) 与 [tailwind.config.ts](../../../src/cook-web/tailwind.config.ts) 各补一组 `success` 变量/token(`bg-success` utility 需两者同时存在才生效):
   ```css
   /* :root */
-  --success: #00a27a;
-  --success-foreground: #ffffff;
-  /* .dark */
   --success: #16a34a;
-  --success-foreground: #f0fdf4;
+  --success-foreground: #ffffff;
+  /* .dark(深底浅字,对齐 .dark 里 --destructive 的模式) */
+  --success: #166534;
+  --success-foreground: #f9fafb;
   ```
-  (实现时以现有暗色基调微调,保持与 `--destructive` 同档对比度。)
 
 ### 5.2 `CourseItem` 与 `CourseCard`
 

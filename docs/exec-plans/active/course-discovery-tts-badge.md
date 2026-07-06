@@ -157,14 +157,12 @@
 
 - [ ] **Step 2: globals.css 暗色变量**
 
-  在 `.dark` 块的 `--destructive-foreground: #f9fafb;`(约 99 行)之后插入:
+  在 `.dark` 块的 `--destructive-foreground: #f9fafb;`(约 99 行)之后插入(深底浅字,对齐 `.dark` 里 `--destructive` 的模式,保证对比度):
 
   ```css
-      --success: #22c55e;
-      --success-foreground: #052e16;
+      --success: #166534;
+      --success-foreground: #f9fafb;
   ```
-
-  (色值参考 `--success-color: #00a27a` 体系;若暗色对比度不足,实现时可在保持绿色相前提下微调。)
 
 - [ ] **Step 3: tailwind.config.ts 注册 success color token**
 
