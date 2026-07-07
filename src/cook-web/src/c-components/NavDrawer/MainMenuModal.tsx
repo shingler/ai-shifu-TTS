@@ -41,6 +41,7 @@ const MainMenuModal = ({
   onBasicInfoClick,
   onPersonalInfoClick,
   isAdmin = false,
+  showPersonalInfo = true,
 }) => {
   const { t } = useTranslation();
 
@@ -229,21 +230,23 @@ const MainMenuModal = ({
         >
           {!isAdmin ? (
             <>
-              <div
-                className={cn(styles.mainMenuModalRow, 'px-2.5')}
-                onClick={_onPersonalInfoClick}
-              >
-                <Image
-                  className={styles.rowIcon}
-                  width={16}
-                  height={16}
-                  src={imgPersonal.src}
-                  alt=''
-                />
-                <div className={styles.rowTitle}>
-                  {t('component.menus.navigationMenus.personalInfo')}
+              {showPersonalInfo && (
+                <div
+                  className={cn(styles.mainMenuModalRow, 'px-2.5')}
+                  onClick={_onPersonalInfoClick}
+                >
+                  <Image
+                    className={styles.rowIcon}
+                    width={16}
+                    height={16}
+                    src={imgPersonal.src}
+                    alt=''
+                  />
+                  <div className={styles.rowTitle}>
+                    {t('component.menus.navigationMenus.personalInfo')}
+                  </div>
                 </div>
-              </div>
+              )}
               {setPasswordRow}
               <div
                 className={cn(styles.mainMenuModalRow, 'px-2.5')}

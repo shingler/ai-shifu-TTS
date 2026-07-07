@@ -22,21 +22,16 @@ jest.mock('@/c-components/NavDrawer/NavFooter', () => {
 jest.mock('@/c-components/NavDrawer/MainMenuModal', () => {
   const Mock = (props: {
     open: boolean;
-    onBasicInfoClick: () => void;
-    onPersonalInfoClick: () => void;
+    showPersonalInfo: boolean;
+    style?: Record<string, string>;
   }) => (
-    <div data-testid='main-menu' data-open={props.open ? 'true' : 'false'}>
-      <button data-testid='basic-info' onClick={props.onBasicInfoClick} />
-      <button
-        data-testid='personal-info'
-        onClick={props.onPersonalInfoClick}
-      />
-    </div>
+    <div
+      data-testid='main-menu'
+      data-open={props.open ? 'true' : 'false'}
+      data-show-personal={props.showPersonalInfo ? 'true' : 'false'}
+      data-style={props.style ? JSON.stringify(props.style) : ''}
+    />
   );
-  return { __esModule: true, default: Mock };
-});
-jest.mock('@/app/c/[[...id]]/Components/Settings/UserSettings', () => {
-  const Mock = () => <div data-testid='user-settings' />;
   return { __esModule: true, default: Mock };
 });
 jest.mock('@/c-store/useUiLayoutStore', () => ({
@@ -61,9 +56,12 @@ test('clicking the nav footer trigger opens the menu', () => {
   );
 });
 
-test('basic-info menu item opens UserSettings', () => {
+test('hides personal info item and anchors the menu flush below the trigger', () => {
   render(<HomeHeader />);
-  fireEvent.click(screen.getByTestId('nav-footer'));
-  fireEvent.click(screen.getByTestId('basic-info'));
-  expect(screen.getByTestId('user-settings')).toBeInTheDocument();
+  const menu = screen.getByTestId('main-menu');
+  expect(menu.getAttribute('data-show-personal')).toBe('false');
+  const style = menu.getAttribute('data-style') || '';
+  expect(style).toContain('"right":0');
+  expect(style).toContain('"top":"100%"');
+  expect(style).toContain('"left":"auto"');
 });

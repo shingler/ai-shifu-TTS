@@ -1,22 +1,20 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 
 import LogoWithText from '@/c-components/logo/LogoWithText';
 import NavFooterBase from '@/c-components/NavDrawer/NavFooter';
 import MainMenuModalBase from '@/c-components/NavDrawer/MainMenuModal';
-import UserSettingsBase from '@/app/c/[[...id]]/Components/Settings/UserSettings';
 import { useDisclosure } from '@/c-common/hooks/useDisclosure';
 import { useUiLayoutStore } from '@/c-store/useUiLayoutStore';
 import { FRAME_LAYOUT_MOBILE } from '@/c-constants/uiConstants';
 
-// Legacy /c components (forwardRef without generics, non-optional className)
-// have loose prop types. Cast to any to avoid per-attribute @ts-expect-error,
-// consistent with the lenient typing used across the /c surface.
+// Legacy /c components (forwardRef without generics, loose prop types).
+// Cast to any to avoid per-attribute @ts-expect-error, consistent with the
+// lenient typing used across the /c surface.
 const NavFooter: any = NavFooterBase;
 const MainMenuModal: any = MainMenuModalBase;
-const UserSettings: any = UserSettingsBase;
 
 export default function HomeHeader() {
   const router = useRouter();
@@ -25,9 +23,6 @@ export default function HomeHeader() {
     onToggle: onMenuToggle,
     onClose: onMenuClose,
   } = useDisclosure();
-
-  const [showUserSettings, setShowUserSettings] = useState(false);
-  const [isBasicInfo, setIsBasicInfo] = useState(false);
 
   // NavFooter exposes containElement via forwardRef so clicks inside the
   // trigger don't immediately close the menu via the modal's outside-click.
@@ -42,18 +37,6 @@ export default function HomeHeader() {
   const onLogoClick = useCallback(() => {
     router.push('/');
   }, [router]);
-
-  const onBasicInfoClick = useCallback(() => {
-    setIsBasicInfo(true);
-    setShowUserSettings(true);
-    onMenuClose();
-  }, [onMenuClose]);
-
-  const onPersonalInfoClick = useCallback(() => {
-    setIsBasicInfo(false);
-    setShowUserSettings(true);
-    onMenuClose();
-  }, [onMenuClose]);
 
   const onMenuCloseHandler = useCallback(
     (event?: { target?: unknown }) => {
@@ -77,26 +60,27 @@ export default function HomeHeader() {
         >
           <LogoWithText direction='row' size={32} />
         </button>
-        <NavFooter
-          ref={footerRef}
-          onClick={onMenuToggle}
-          isMenuOpen={menuOpen}
-        />
+        {/*
+          Wrap the trigger + menu in a relative container so the menu's
+          absolute positioning (see PopupModal.module.scss) anchors to the
+          trigger, not the header. style overrides the default left:50%/top:50%
+          so the menu floats flush below the name, right-aligned to it.
+        */}
+        <div className='relative flex items-center'>
+          <NavFooter
+            ref={footerRef}
+            onClick={onMenuToggle}
+            isMenuOpen={menuOpen}
+          />
+          <MainMenuModal
+            open={menuOpen}
+            onClose={onMenuCloseHandler}
+            mobileStyle={isMobile}
+            showPersonalInfo={false}
+            style={{ left: 'auto', right: 0, top: '100%', transform: 'none' }}
+          />
+        </div>
       </div>
-      <MainMenuModal
-        open={menuOpen}
-        onClose={onMenuCloseHandler}
-        mobileStyle={isMobile}
-        onBasicInfoClick={onBasicInfoClick}
-        onPersonalInfoClick={onPersonalInfoClick}
-      />
-      {showUserSettings && (
-        <UserSettings
-          onClose={() => setShowUserSettings(false)}
-          onHomeClick={() => setShowUserSettings(false)}
-          isBasicInfo={isBasicInfo}
-        />
-      )}
     </header>
   );
 }
