@@ -14,11 +14,8 @@ import { FRAME_LAYOUT_MOBILE } from '@/c-constants/uiConstants';
 // Legacy /c components (forwardRef without generics, non-optional className)
 // have loose prop types. Cast to any to avoid per-attribute @ts-expect-error,
 // consistent with the lenient typing used across the /c surface.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const NavFooter: any = NavFooterBase;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const MainMenuModal: any = MainMenuModalBase;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const UserSettings: any = UserSettingsBase;
 
 export default function HomeHeader() {
