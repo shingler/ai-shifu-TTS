@@ -42,6 +42,7 @@ const MainMenuModal = ({
   onPersonalInfoClick,
   isAdmin = false,
   showPersonalInfo = true,
+  modalStyle = {},
 }) => {
   const { t } = useTranslation();
 
@@ -213,10 +214,10 @@ const MainMenuModal = ({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      {/* @ts-expect-error EXPECT */}
       <PopupModal
         open={open}
         onClose={onClose}
+        style={modalStyle}
         wrapStyle={{ ...style }}
         className={cn(
           className,
