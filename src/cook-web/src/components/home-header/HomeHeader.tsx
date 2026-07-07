@@ -78,7 +78,7 @@ export default function HomeHeader() {
             mobileStyle={isMobile}
             showPersonalInfo={false}
             style={{ left: 'auto', right: 0, top: '100%', transform: 'none' }}
-            modalStyle={{ minWidth: '240px' }}
+            modalStyle={{ minWidth: '240px', background: 'var(--popover)' }}
           />
         </div>
       </div>
