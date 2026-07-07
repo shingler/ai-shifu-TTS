@@ -1,5 +1,6 @@
 {
   "__namespace__": "common.core",
+  "actionFailed": "Action could not be completed, please try again later",
   "adminTitle": "Admin",
   "aiCourseCreator": "Create courses with AI assistant",
   "all": "All",
@@ -41,8 +42,10 @@
   "ok": "OK",
   "operations": "Operations",
   "orderManagement": "Order Management",
+  "profileOnboardingManagement": "Profile Onboarding",
   "promotionManagement": "Promotions",
   "referralInvitation": "Invite Friends",
+  "requestFailed": "Request failed, please try again later",
   "retry": "Retry",
   "selectModel": "Model",
   "settings": "Settings",
@@ -66,5 +69,6 @@
   "unsupportedBrowserDescription": "Your current iOS version is not supported. Please upgrade to iOS 16.4 or later and try again.",
   "unsupportedBrowserTitle": "Your iOS Version Is Not Supported",
   "userManagement": "User Management",
+  "voiceCloneManagement": "Voice Clone Management",
   "waitingForCompletion": "Coming Soon"
 }

@@ -13,9 +13,17 @@ import AdminTooltipText from '@/app/admin/components/AdminTooltipText';
 import { useEnvStore } from '@/c-store';
 import ErrorDisplay from '@/components/ErrorDisplay';
 import Loading from '@/components/loading';
+import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/Select';
 import {
   Table,
   TableBody,
@@ -44,11 +52,14 @@ type FollowUpFilters = {
   userBid: string;
   keyword: string;
   chapterKeyword: string;
+  sourceStatus: string;
   startTime: string;
   endTime: string;
 };
 
 const PAGE_SIZE = 20;
+const ALL_SOURCE_STATUS = 'all';
+const DETAIL_CACHE_LIMIT = 20;
 
 const EMPTY_FOLLOW_UPS_RESPONSE: DashboardCourseFollowUpListResponse = {
   summary: {
@@ -90,6 +101,7 @@ const createFollowUpFilters = (
   userBid: values?.userBid?.trim() || '',
   keyword: values?.keyword?.trim() || '',
   chapterKeyword: values?.chapterKeyword?.trim() || '',
+  sourceStatus: values?.sourceStatus?.trim() || ALL_SOURCE_STATUS,
   startTime: values?.startTime?.trim() || '',
   endTime: values?.endTime?.trim() || '',
 });
@@ -237,6 +249,7 @@ export default function AdminDashboardCourseFollowUpsPage() {
         userBid: searchParams.get('user_bid') || '',
         keyword: searchParams.get('keyword') || '',
         chapterKeyword: searchParams.get('chapter_keyword') || '',
+        sourceStatus: searchParams.get('source_status') || '',
         startTime: searchParams.get('start_time') || '',
         endTime: searchParams.get('end_time') || '',
       }),
@@ -271,6 +284,9 @@ export default function AdminDashboardCourseFollowUpsPage() {
   const [detailError, setDetailError] = useState<ErrorState | null>(null);
   const listRequestIdRef = useRef(0);
   const detailRequestIdRef = useRef(0);
+  const detailCacheRef = useRef(
+    new Map<string, DashboardCourseFollowUpDetailResponse>(),
+  );
 
   useEffect(() => {
     setFiltersDraft(initialFilters);
@@ -300,6 +316,10 @@ export default function AdminDashboardCourseFollowUpsPage() {
           user_bid: resolvedFilters.userBid,
           keyword: resolvedFilters.keyword.trim(),
           chapter_keyword: resolvedFilters.chapterKeyword.trim(),
+          source_status:
+            resolvedFilters.sourceStatus.trim() === ALL_SOURCE_STATUS
+              ? ''
+              : resolvedFilters.sourceStatus.trim(),
           start_time: resolvedFilters.startTime,
           end_time: resolvedFilters.endTime,
           ...(timezone ? { timezone } : {}),
@@ -329,47 +349,74 @@ export default function AdminDashboardCourseFollowUpsPage() {
     [filters, shifuBid, timezone, unknownErrorMessage],
   );
 
-  const fetchFollowUpDetail = useCallback(async () => {
-    if (!shifuBid.trim() || !selectedGeneratedBlockBid.trim()) {
-      setDetailError({ message: unknownErrorMessage });
-      setDetail(EMPTY_FOLLOW_UP_DETAIL);
-      setDetailLoading(false);
-      return;
-    }
-
-    const requestId = detailRequestIdRef.current + 1;
-    detailRequestIdRef.current = requestId;
-    setDetailLoading(true);
-    setDetailError(null);
-
-    try {
-      const response = (await api.getDashboardCourseFollowUpDetail({
-        shifu_bid: shifuBid,
-        generated_block_bid: selectedGeneratedBlockBid,
-        ...(timezone ? { timezone } : {}),
-      })) as DashboardCourseFollowUpDetailResponse;
-      if (requestId !== detailRequestIdRef.current) {
-        return;
-      }
-      setDetail(response || EMPTY_FOLLOW_UP_DETAIL);
-    } catch (err) {
-      if (requestId !== detailRequestIdRef.current) {
-        return;
-      }
-      setDetail(EMPTY_FOLLOW_UP_DETAIL);
-      if (err instanceof ErrorWithCode) {
-        setDetailError({ message: err.message, code: err.code });
-      } else if (err instanceof Error) {
-        setDetailError({ message: err.message });
-      } else {
+  const fetchFollowUpDetail = useCallback(
+    async ({ forceRefresh = false }: { forceRefresh?: boolean } = {}) => {
+      if (!shifuBid.trim() || !selectedGeneratedBlockBid.trim()) {
         setDetailError({ message: unknownErrorMessage });
-      }
-    } finally {
-      if (requestId === detailRequestIdRef.current) {
+        setDetail(EMPTY_FOLLOW_UP_DETAIL);
         setDetailLoading(false);
+        return;
       }
-    }
-  }, [selectedGeneratedBlockBid, shifuBid, timezone, unknownErrorMessage]);
+
+      if (!forceRefresh) {
+        const cachedDetail = detailCacheRef.current.get(
+          selectedGeneratedBlockBid,
+        );
+        if (cachedDetail) {
+          detailCacheRef.current.delete(selectedGeneratedBlockBid);
+          detailCacheRef.current.set(selectedGeneratedBlockBid, cachedDetail);
+          return;
+        }
+      }
+
+      const requestId = detailRequestIdRef.current + 1;
+      detailRequestIdRef.current = requestId;
+      setDetailLoading(true);
+      setDetailError(null);
+
+      try {
+        const response = (await api.getDashboardCourseFollowUpDetail({
+          shifu_bid: shifuBid,
+          generated_block_bid: selectedGeneratedBlockBid,
+          ...(timezone ? { timezone } : {}),
+        })) as DashboardCourseFollowUpDetailResponse;
+        if (requestId !== detailRequestIdRef.current) {
+          return;
+        }
+        const resolvedDetail = response || EMPTY_FOLLOW_UP_DETAIL;
+        detailCacheRef.current.delete(selectedGeneratedBlockBid);
+        detailCacheRef.current.set(selectedGeneratedBlockBid, resolvedDetail);
+        if (detailCacheRef.current.size > DETAIL_CACHE_LIMIT) {
+          const oldestKey = detailCacheRef.current.keys().next().value;
+          if (oldestKey) {
+            detailCacheRef.current.delete(oldestKey);
+          }
+        }
+        setDetail(resolvedDetail);
+      } catch (err) {
+        if (requestId !== detailRequestIdRef.current) {
+          return;
+        }
+        setDetail(EMPTY_FOLLOW_UP_DETAIL);
+        if (err instanceof ErrorWithCode) {
+          setDetailError({ message: err.message, code: err.code });
+        } else if (err instanceof Error) {
+          setDetailError({ message: err.message });
+        } else {
+          setDetailError({ message: unknownErrorMessage });
+        }
+      } finally {
+        if (requestId === detailRequestIdRef.current) {
+          setDetailLoading(false);
+        }
+      }
+    },
+    [selectedGeneratedBlockBid, shifuBid, timezone, unknownErrorMessage],
+  );
+
+  useEffect(() => {
+    detailCacheRef.current.clear();
+  }, [shifuBid]);
 
   useEffect(() => {
     if (!isInitialized || !isGuest) {
@@ -428,6 +475,7 @@ export default function AdminDashboardCourseFollowUpsPage() {
   const outlineColumnLabel = hasChapterHierarchy
     ? t('module.dashboard.detail.followUps.table.chapter')
     : t('module.dashboard.detail.followUps.table.lesson');
+  const sourceStatusSelectId = 'dashboard-follow-up-source-status-filter';
   const summaryCards = useMemo(
     () => [
       {
@@ -470,6 +518,7 @@ export default function AdminDashboardCourseFollowUpsPage() {
       userBid: filtersDraft.userBid,
       keyword: filtersDraft.keyword.trim(),
       chapterKeyword: filtersDraft.chapterKeyword.trim(),
+      sourceStatus: filtersDraft.sourceStatus.trim(),
       startTime: filtersDraft.startTime,
       endTime: filtersDraft.endTime,
     };
@@ -509,9 +558,13 @@ export default function AdminDashboardCourseFollowUpsPage() {
 
       detailRequestIdRef.current += 1;
       setSelectedGeneratedBlockBid(normalizedGeneratedBlockBid);
-      setDetail(null);
+      setDetail(
+        detailCacheRef.current.get(normalizedGeneratedBlockBid) ?? null,
+      );
       setDetailError(null);
-      setDetailLoading(true);
+      setDetailLoading(
+        !detailCacheRef.current.has(normalizedGeneratedBlockBid),
+      );
       setDetailOpen(true);
     },
     [unknownErrorMessage],
@@ -589,10 +642,13 @@ export default function AdminDashboardCourseFollowUpsPage() {
 
           <Card className='overflow-hidden border-border/80 shadow-sm'>
             <CardHeader className='pb-3'>
-              <div className='flex items-center gap-3'>
+              <div className='space-y-0.5'>
                 <CardTitle className='text-base font-semibold tracking-normal'>
                   {t('module.dashboard.detail.followUps.table.title')}
                 </CardTitle>
+                <p className='text-xs leading-5 text-muted-foreground/85'>
+                  {t('module.dashboard.detail.followUps.summary.scopeHint')}
+                </p>
                 <p className='text-xs leading-5 text-muted-foreground/85'>
                   {t('module.dashboard.detail.followUps.turnIndexHelp')}
                 </p>
@@ -649,6 +705,53 @@ export default function AdminDashboardCourseFollowUpsPage() {
                     />
                   </div>
                   <div className='flex flex-col gap-2'>
+                    <label
+                      htmlFor={sourceStatusSelectId}
+                      className='text-xs font-medium text-muted-foreground'
+                    >
+                      {t(
+                        'module.dashboard.detail.followUps.filters.sourceStatus',
+                      )}
+                    </label>
+                    <Select
+                      value={filtersDraft.sourceStatus}
+                      onValueChange={value =>
+                        setFiltersDraft(previous => ({
+                          ...previous,
+                          sourceStatus: value,
+                        }))
+                      }
+                    >
+                      <SelectTrigger
+                        id={sourceStatusSelectId}
+                        className='h-9'
+                      >
+                        <SelectValue
+                          placeholder={t(
+                            'module.dashboard.detail.followUps.filters.sourceStatusAll',
+                          )}
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={ALL_SOURCE_STATUS}>
+                          {t(
+                            'module.dashboard.detail.followUps.filters.sourceStatusAll',
+                          )}
+                        </SelectItem>
+                        <SelectItem value='resolved'>
+                          {t(
+                            'module.dashboard.detail.followUps.filters.sourceStatusResolved',
+                          )}
+                        </SelectItem>
+                        <SelectItem value='missing'>
+                          {t(
+                            'module.dashboard.detail.followUps.filters.sourceStatusMissing',
+                          )}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className='flex flex-col gap-2'>
                     <label className='text-xs font-medium text-muted-foreground'>
                       {t(
                         'module.dashboard.detail.followUps.filters.followUpTime',
@@ -678,7 +781,7 @@ export default function AdminDashboardCourseFollowUpsPage() {
                   </div>
                 </div>
 
-                <div className='mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3 xl:items-end'>
+                <div className='mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4 xl:items-end'>
                   <div className='pl-3 text-sm text-muted-foreground xl:self-center'>
                     {t(
                       'module.dashboard.detail.followUps.filters.resultCount',
@@ -687,6 +790,7 @@ export default function AdminDashboardCourseFollowUpsPage() {
                       },
                     )}
                   </div>
+                  <div className='hidden xl:block' />
                   <div className='hidden xl:block' />
                   <div className='flex min-h-9 items-center justify-start gap-2 md:justify-end'>
                     <Button
@@ -846,6 +950,25 @@ export default function AdminDashboardCourseFollowUpsPage() {
                                         emptyValue={emptyValue}
                                         className='block max-w-[320px] text-sm font-medium text-foreground'
                                       />
+                                      <div className='mt-2'>
+                                        <Badge
+                                          variant='outline'
+                                          className={cn(
+                                            'border px-2 py-0.5 text-[11px] font-medium',
+                                            item.has_source_output
+                                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                              : 'border-amber-200 bg-amber-50 text-amber-700',
+                                          )}
+                                        >
+                                          {item.has_source_output
+                                            ? t(
+                                                'module.dashboard.detail.followUps.table.sourceResolved',
+                                              )
+                                            : t(
+                                                'module.dashboard.detail.followUps.table.sourceMissing',
+                                              )}
+                                        </Badge>
+                                      </div>
                                     </div>
                                   </TableCell>
                                   <TableCell className='whitespace-nowrap py-3 align-top text-sm text-foreground'>
@@ -902,7 +1025,7 @@ export default function AdminDashboardCourseFollowUpsPage() {
         contactMode={contactMode}
         defaultUserName={defaultUserName}
         resolveLessonDisplay={resolvePrimaryLessonDisplay}
-        onRetry={fetchFollowUpDetail}
+        onRetry={() => fetchFollowUpDetail({ forceRefresh: true })}
         onOpenChange={handleDetailOpenChange}
       />
     </div>

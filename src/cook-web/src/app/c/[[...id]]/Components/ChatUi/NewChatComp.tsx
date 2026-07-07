@@ -287,6 +287,8 @@ export const NewChatComponents = ({
     })),
   );
   const isListenMode = learningMode === 'listen';
+  const isClassroomMode = learningMode === 'classroom';
+  const isSlideMode = isListenMode || isClassroomMode;
   const [readModeTypewriterCache, setReadModeTypewriterCache] =
     useState<ReadModeTypewriterCache>({});
   const courseTtsEnabled = useCourseStore(state => state.courseTtsEnabled);
@@ -299,10 +301,16 @@ export const NewChatComponents = ({
   const previousListenModeActiveRef = useRef(isListenModeActive);
   // Normalize lesson scope for downstream APIs and stores that require a string key.
   const resolvedLessonId = lessonId || '';
-  const promptContextKey = `${resolvedLessonId}:${isListenModeActive ? 'listen' : 'read'}`;
+  const promptContextKey = `${resolvedLessonId}:${
+    isClassroomMode ? 'classroom' : isListenModeActive ? 'listen' : 'read'
+  }`;
   const [settledPromptContextKey, setSettledPromptContextKey] =
     useState(promptContextKey);
-  const shouldShowAudioAction = previewMode || isListenModeActive;
+  const isPreviewReadMode = previewMode && learningMode === 'read';
+  const shouldShowAudioAction =
+    !isClassroomMode &&
+    (previewMode || isListenModeActive) &&
+    !isPreviewReadMode;
   const { requestExclusive, releaseExclusive } = useExclusiveAudio();
   const isPromptContextSettled = settledPromptContextKey === promptContextKey;
   const ensureLessonScope = useAskStateStore(state => state.ensureLessonScope);
@@ -417,6 +425,7 @@ export const NewChatComponents = ({
     scrollToLesson,
     listenRequestEnabled: isListenModeActive,
     shouldPromptLessonFeedback:
+      !isClassroomMode &&
       isPromptContextSettled &&
       (isListenModeActive
         ? isListenFeedbackReady
@@ -591,10 +600,10 @@ export const NewChatComponents = ({
 
   useEffect(() => {
     setShowScrollDown(false);
-  }, [isListenModeActive, lessonId]);
+  }, [isSlideMode, lessonId]);
 
   useEffect(() => {
-    if (isListenModeActive) {
+    if (isSlideMode) {
       setIsReadFeedbackAnchorVisible(false);
       setReadFeedbackTriggerElement(null);
       return;
@@ -622,7 +631,7 @@ export const NewChatComponents = ({
       observer.disconnect();
     };
   }, [
-    isListenModeActive,
+    isSlideMode,
     lessonId,
     mobileStyle,
     readFeedbackTriggerElement,
@@ -631,9 +640,11 @@ export const NewChatComponents = ({
 
   useEffect(() => {
     setReadModeTypewriterCache(prevCache =>
-      syncReadModeTypewriterCache(readModeItems, prevCache),
+      syncReadModeTypewriterCache(readModeItems, prevCache, {
+        markFinalTextItemsFinished: isClassroomMode,
+      }),
     );
-  }, [readModeItems]);
+  }, [isClassroomMode, readModeItems]);
 
   useEffect(() => {
     if (!isListenModeActive) {
@@ -642,10 +653,6 @@ export const NewChatComponents = ({
 
     if (!isListenModeAvailable) {
       updateLearningMode('read');
-      return;
-    }
-
-    if (previewMode) {
       return;
     }
 
@@ -767,7 +774,7 @@ export const NewChatComponents = ({
   }, [isListenModeActive, isLoading, lessonId]);
 
   useEffect(() => {
-    if (isListenModeActive) {
+    if (isSlideMode) {
       setIsReadFeedbackReady(false);
       return;
     }
@@ -794,7 +801,7 @@ export const NewChatComponents = ({
     };
   }, [
     currentTypewriterElementBid,
-    isListenModeActive,
+    isSlideMode,
     isLoading,
     isOutputInProgress,
     items.length,
@@ -802,13 +809,14 @@ export const NewChatComponents = ({
     resolveScrollPresentation,
   ]);
 
-  const listenModeItems = useMemo(
+  const slideModeItems = useMemo(
     () =>
       projectListenModeItems({
         items,
         askButtonMarkup,
+        variant: isClassroomMode ? 'classroom' : 'listen',
       }),
-    [askButtonMarkup, items],
+    [askButtonMarkup, isClassroomMode, items],
   );
 
   const itemByGeneratedBid = useMemo(() => {
@@ -848,7 +856,7 @@ export const NewChatComponents = ({
   }, [lessonId]);
 
   const autoPlayTargetBlockBid = useMemo(() => {
-    if (!autoPlayAudio || previewMode) {
+    if (!autoPlayAudio) {
       return null;
     }
 
@@ -878,7 +886,7 @@ export const NewChatComponents = ({
     }
 
     return null;
-  }, [autoPlayAudio, currentPlayingBlockBid, items, previewMode]);
+  }, [autoPlayAudio, currentPlayingBlockBid, items]);
 
   const mobileInteractionPrimaryTrack = useMemo(
     () =>
@@ -1084,13 +1092,7 @@ export const NewChatComponents = ({
       });
       resizeObserver.disconnect();
     };
-  }, [
-    checkScroll,
-    isListenModeActive,
-    isScrollableElement,
-    items,
-    mobileStyle,
-  ]);
+  }, [checkScroll, isSlideMode, isScrollableElement, items, mobileStyle]);
 
   useEffect(() => {
     if (mobileStyle) {
@@ -1202,10 +1204,10 @@ export const NewChatComponents = ({
       className={containerClassName}
       style={{ position: 'relative', overflow: 'hidden', padding: 0 }}
     >
-      {isListenMode ? (
-        isListenModeAvailable ? (
+      {isSlideMode ? (
+        isClassroomMode || isListenModeAvailable ? (
           <ListenModeSlideRenderer
-            items={listenModeItems}
+            items={slideModeItems}
             mobileStyle={mobileStyle}
             chatRef={chatRef as React.RefObject<HTMLDivElement>}
             isLoading={isLoading}
@@ -1216,6 +1218,7 @@ export const NewChatComponents = ({
             shifuBid={shifuBid}
             previewMode={previewMode}
             lessonStatus={lessonStatus}
+            variant={isClassroomMode ? 'classroom' : 'listen'}
             onMobileViewModeChange={onListenMobileViewModeChange}
             onSend={memoizedOnSend}
             onPlayerVisibilityChange={onListenPlayerVisibilityChange}
@@ -1499,7 +1502,7 @@ export const NewChatComponents = ({
           </div>
         </div>
       )}
-      {!isListenMode &&
+      {!isSlideMode &&
         (mobileStyle && portalTarget
           ? createPortal(scrollButton, portalTarget)
           : scrollButton)}
@@ -1529,7 +1532,7 @@ export const NewChatComponents = ({
           showGenerateBtn={showGenerateBtn}
         />
       )}
-      {lessonFeedbackPopupContent
+      {!isClassroomMode && lessonFeedbackPopupContent
         ? listenFullscreenPortalTarget
           ? createPortal(
               lessonFeedbackPopupContent,

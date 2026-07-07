@@ -72,6 +72,10 @@ from flaskr.service.shifu.admin_operations.credit_notifications import (
     sync_operator_credit_notification_template,
     update_operator_credit_notification_config,
 )
+from flaskr.service.shifu.admin_operations.profile_onboarding import (
+    get_operator_profile_onboarding_config,
+    update_operator_profile_onboarding_config,
+)
 from flaskr.service.shifu.admin_operations.user_credits import (
     get_operator_user_credit_usage_detail,
     get_operator_user_credits,
@@ -83,6 +87,12 @@ from flaskr.service.shifu.admin_operations.users import (
     get_operator_user_detail,
     get_operator_user_overview,
     list_operator_users,
+)
+from flaskr.service.shifu.admin_operations.voice_clones import (
+    OPERATOR_VOICE_CLONE_BILLING_STATUSES,
+    OPERATOR_VOICE_CLONE_LIST_MAX_PAGE_SIZE,
+    OPERATOR_VOICE_CLONE_STATUSES,
+    list_operator_voice_clones,
 )
 from flaskr.service.shifu.admin_dtos import (
     AdminOperationUserCreditGrantRequestDTO,
@@ -565,6 +575,118 @@ def register_admin_operations_routes(
         _require_operator()
         return make_common_response(get_operator_user_overview(app))
 
+    @app.route(path_prefix + "/admin/operations/voice-clones", methods=["GET"])
+    def admin_operations_voice_clones():
+        """
+        Operator MiniMax cloned voice list
+        ---
+        tags:
+            - TTS
+        parameters:
+            - name: page_index
+              type: integer
+              required: false
+            - name: page_size
+              type: integer
+              required: false
+            - name: status
+              type: string
+              required: false
+            - name: failure_reason
+              type: string
+              required: false
+            - name: billing_status
+              type: string
+              required: false
+            - name: start_time
+              type: string
+              required: false
+            - name: end_time
+              type: string
+              required: false
+            - name: user_keyword
+              type: string
+              required: false
+            - name: course_keyword
+              type: string
+              required: false
+            - name: voice_keyword
+              type: string
+              required: false
+            - name: minimax_status_code
+              type: integer
+              required: false
+        responses:
+            200:
+                description: List operator-visible MiniMax cloned voice jobs
+        """
+        _require_operator()
+        page_index = _parse_positive_query_int(
+            request.args.get("page_index"),
+            field_name="page_index",
+            default=1,
+        )
+        page_size = _parse_positive_query_int(
+            request.args.get("page_size"),
+            field_name="page_size",
+            default=20,
+        )
+        page_size = min(page_size, OPERATOR_VOICE_CLONE_LIST_MAX_PAGE_SIZE)
+        raw_minimax_status_code = _normalize_query_text(
+            request.args.get("minimax_status_code")
+        )
+        minimax_status_code = (
+            _parse_positive_query_int(
+                raw_minimax_status_code,
+                field_name="minimax_status_code",
+                default=0,
+                minimum=0,
+            )
+            if raw_minimax_status_code
+            else None
+        )
+
+        filters = {
+            "status": _parse_choice_query_param(
+                request.args.get("status"),
+                field_name="status",
+                allowed_values=OPERATOR_VOICE_CLONE_STATUSES,
+            ),
+            "failure_reason": _normalize_query_text(request.args.get("failure_reason")),
+            "billing_status": _parse_choice_query_param(
+                request.args.get("billing_status"),
+                field_name="billing_status",
+                allowed_values=OPERATOR_VOICE_CLONE_BILLING_STATUSES,
+            ),
+            "start_time": _parse_datetime_filter(
+                request.args.get("start_time", ""),
+                field_name="start_time",
+                is_end=False,
+            ),
+            "end_time": _parse_datetime_filter(
+                request.args.get("end_time", ""),
+                field_name="end_time",
+                is_end=True,
+            ),
+            "user_keyword": _normalize_query_text(request.args.get("user_keyword")),
+            "course_keyword": _normalize_query_text(request.args.get("course_keyword")),
+            "voice_keyword": _normalize_query_text(request.args.get("voice_keyword")),
+            "minimax_status_code": minimax_status_code,
+        }
+        _validate_datetime_range(
+            filters["start_time"],
+            filters["end_time"],
+            field_name="start_time",
+        )
+        return make_common_response(
+            list_operator_voice_clones(
+                app,
+                page_index=page_index,
+                page_size=page_size,
+                filters=filters,
+            )
+        )
+
     @app.route(path_prefix + "/admin/operations/orders", methods=["GET"])
     def admin_operations_orders():
         """
@@ -800,6 +922,33 @@ def register_admin_operations_routes(
             raise_param_error("credit_notification_config")
         return make_common_response(
             update_operator_credit_notification_config(
+                app,
+                payload=payload,
+                operator_user_bid=str(getattr(request.user, "user_id", "") or ""),
+            )
+        )
+
+    @app.route(
+        path_prefix + "/admin/operations/profile-onboarding",
+        methods=["GET"],
+    )
+    def admin_operation_profile_onboarding_config():
+        """Get operator profile onboarding config."""
+        _require_operator()
+        return make_common_response(get_operator_profile_onboarding_config(app))
+
+    @app.route(
+        path_prefix + "/admin/operations/profile-onboarding",
+        methods=["POST"],
+    )
+    def admin_operation_update_profile_onboarding_config():
+        """Update operator profile onboarding config."""
+        _require_operator()
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            raise_param_error("profile_onboarding_config")
+        return make_common_response(
+            update_operator_profile_onboarding_config(
                 app,
                 payload=payload,
                 operator_user_bid=str(getattr(request.user, "user_id", "") or ""),
@@ -2315,6 +2464,11 @@ def register_admin_operations_routes(
               type: string
               required: false
               description: Chapter or lesson keyword
+            - name: source_status
+              in: query
+              type: string
+              required: false
+              description: Original output source status filter (resolved or missing)
             - name: start_time
               in: query
               type: string
@@ -2348,6 +2502,7 @@ def register_admin_operations_routes(
         filters = {
             "keyword": request.args.get("keyword", ""),
             "chapter_keyword": request.args.get("chapter_keyword", ""),
+            "source_status": request.args.get("source_status", ""),
             "start_time": _parse_datetime_filter(
                 request.args.get("start_time", ""),
                 field_name="start_time",
