@@ -1,13 +1,18 @@
+'use client';
+
 import styles from './ChatUi.module.scss';
 
-import { memo, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
+import dynamic from 'next/dynamic';
 import { cn } from '@/lib/utils';
 import { useShallow } from 'zustand/react/shallow';
 import { useTranslation } from 'react-i18next';
 
-import ChatComponents from './NewChatComp';
 import UserSettings from '../Settings/UserSettings';
-import { FRAME_LAYOUT_MOBILE } from '@/c-constants/uiConstants';
+import {
+  FRAME_LAYOUT_MOBILE,
+  FRAME_LAYOUT_PC,
+} from '@/c-constants/uiConstants';
 import { useSystemStore } from '@/c-store/useSystemStore';
 import { useCourseStore, useUiLayoutStore } from '@/c-store';
 import MarkdownFlowLink from '@/components/ui/MarkdownFlowLink';
@@ -15,6 +20,14 @@ import type { ListenMobileViewModeChangeHandler } from './listenModeTypes';
 import CourseHeaderSummary from '../CourseHeaderSummary';
 import LearningModeSwitch from '../LearningModeSwitch';
 import PreviewHeaderBanner from '../PreviewHeaderBanner';
+import LessonUpdateNotice from '../LessonUpdateNotice';
+import LessonPdfDownloadButton, {
+  type LessonPdfDownloadAction,
+} from './LessonPdfDownloadButton';
+
+const ChatComponents = dynamic(() => import('./NewChatComp'), {
+  ssr: false,
+});
 
 interface ChatUiProps {
   chapterId: string;
@@ -24,6 +37,7 @@ interface ChatUiProps {
   onPurchased: () => void;
   lessonTitle?: string;
   lessonStatus?: string;
+  lessonHasContentUpdate?: boolean;
   showUserSettings?: boolean;
   userSettingBasicInfo?: boolean;
   onUserSettingsClose?: () => void;
@@ -34,6 +48,7 @@ interface ChatUiProps {
   isNavOpen?: boolean;
   onListenMobileViewModeChange?: ListenMobileViewModeChangeHandler;
   showGenerateBtn?: boolean;
+  onLessonUpdateNoticeVisibilityChange?: (visible: boolean) => void;
 }
 
 /**
@@ -47,6 +62,7 @@ export const ChatUi = ({
   onPurchased,
   lessonTitle = '',
   lessonStatus = '',
+  lessonHasContentUpdate = false,
   showUserSettings = true,
   userSettingBasicInfo = false,
   onUserSettingsClose = () => {},
@@ -56,6 +72,7 @@ export const ChatUi = ({
   isNavOpen = false,
   onListenMobileViewModeChange,
   showGenerateBtn = false,
+  onLessonUpdateNoticeVisibilityChange,
 }: ChatUiProps) => {
   const { t } = useTranslation();
   const { frameLayout } = useUiLayoutStore(state => state);
@@ -83,6 +100,22 @@ export const ChatUi = ({
   const showHeader = frameLayout !== FRAME_LAYOUT_MOBILE;
   const footerSeparator = String.fromCharCode(124);
   const [isListenPlayerVisible, setIsListenPlayerVisible] = useState(false);
+  const [showLessonUpdateNoticeInHeader, setShowLessonUpdateNoticeInHeader] =
+    useState(false);
+  const [lessonPdfDownloadAction, setLessonPdfDownloadAction] =
+    useState<LessonPdfDownloadAction | null>(null);
+  const currentLessonPdfDownloadAction =
+    lessonPdfDownloadAction?.lessonId === (lessonId || '')
+      ? lessonPdfDownloadAction
+      : null;
+
+  const handleLessonUpdateNoticeVisibilityChange = useCallback(
+    (visible: boolean) => {
+      setShowLessonUpdateNoticeInHeader(visible);
+      onLessonUpdateNoticeVisibilityChange?.(visible);
+    },
+    [onLessonUpdateNoticeVisibilityChange],
+  );
 
   useEffect(() => {
     if (!isSlideMode) {
@@ -90,8 +123,21 @@ export const ChatUi = ({
     }
   }, [isSlideMode]);
 
+  useEffect(() => {
+    setShowLessonUpdateNoticeInHeader(false);
+    onLessonUpdateNoticeVisibilityChange?.(false);
+  }, [lessonId, onLessonUpdateNoticeVisibilityChange]);
+
+  useEffect(
+    () => () => {
+      onLessonUpdateNoticeVisibilityChange?.(false);
+    },
+    [onLessonUpdateNoticeVisibilityChange],
+  );
+
   return (
     <div
+      data-lesson-print-shell='true'
       className={cn(
         styles.ChatUi,
         frameLayout === FRAME_LAYOUT_MOBILE ? styles.mobile : '',
@@ -129,11 +175,34 @@ export const ChatUi = ({
                   titleClassName={styles.courseSummaryTitle}
                 />
               </div>
-              {showModeToggle ? (
-                <div className={styles.headerActions}>
-                  <LearningModeSwitch size='desktop' />
+              {showLessonUpdateNoticeInHeader ? (
+                <div className={styles.lessonUpdateNoticeTarget}>
+                  <LessonUpdateNotice
+                    chapterId={chapterId}
+                    lessonId={lessonId}
+                    lessonTitle={lessonTitle}
+                  />
                 </div>
               ) : null}
+              <div className={styles.headerActions}>
+                <LessonPdfDownloadButton
+                  isContentReady={Boolean(currentLessonPdfDownloadAction)}
+                  isFollowUpStreaming={
+                    currentLessonPdfDownloadAction?.isFollowUpStreaming ?? false
+                  }
+                  isPreparing={
+                    currentLessonPdfDownloadAction?.isPreparing ?? false
+                  }
+                  onDownload={currentLessonPdfDownloadAction?.onDownload}
+                />
+                {showModeToggle ? (
+                  <LearningModeSwitch
+                    size={
+                      frameLayout === FRAME_LAYOUT_PC ? 'desktop' : 'mobile'
+                    }
+                  />
+                ) : null}
+              </div>
             </div>
           </div>
         ) : null
@@ -147,6 +216,7 @@ export const ChatUi = ({
           onGoChapter={onGoChapter}
           lessonTitle={lessonTitle}
           lessonStatus={lessonStatus}
+          lessonHasContentUpdate={lessonHasContentUpdate}
           className={cn(
             styles.chatComponents,
             showUserSettings ? styles.chatComponentsHidden : '',
@@ -160,6 +230,10 @@ export const ChatUi = ({
           onListenMobileViewModeChange={onListenMobileViewModeChange}
           onListenPlayerVisibilityChange={setIsListenPlayerVisible}
           showGenerateBtn={showGenerateBtn}
+          onLessonUpdateNoticeVisibilityChange={
+            handleLessonUpdateNoticeVisibilityChange
+          }
+          onLessonPdfActionChange={setLessonPdfDownloadAction}
         />
       }
       {showUserSettings && (

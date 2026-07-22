@@ -17,7 +17,7 @@ import {
   getAdminStickyRightHeaderClass,
 } from '@/app/admin/components/adminTableStyles';
 import { useAdminResizableColumns } from '@/app/admin/hooks/useAdminResizableColumns';
-import { formatAdminNaiveDateTime } from '@/app/admin/lib/dateTime';
+import { formatAdminUtcDateTime } from '@/app/admin/lib/dateTime';
 import { formatAdminCount } from '@/app/admin/lib/numberFormat';
 import { useEnvStore } from '@/c-store';
 import ErrorDisplay from '@/components/ErrorDisplay';
@@ -311,7 +311,12 @@ export default function AdminOperationCourseFollowUpsPage() {
     : params?.shifu_bid || '';
   const emptyValue = tOperations('detail.followUps.emptyValue');
   const clearLabel = t('common.core.close');
-  const unknownErrorMessage = t('common.core.unknownError');
+  const followUpsLoadErrorMessage = t(
+    'module.operationsCourse.messages.loadFollowUpsFailed',
+  );
+  const followUpDetailLoadErrorMessage = t(
+    'module.operationsCourse.messages.loadFollowUpDetailFailed',
+  );
   const defaultUserName = t('module.user.defaultUserName');
   const contactMode = useMemo<ContactMode>(
     () => resolveContactMode(loginMethodsEnabled, defaultLoginMethod),
@@ -370,7 +375,7 @@ export default function AdminOperationCourseFollowUpsPage() {
   const fetchFollowUps = useCallback(
     async (targetPage: number, nextFilters?: FollowUpFilters) => {
       if (!shifuBid.trim()) {
-        setError({ message: unknownErrorMessage });
+        setError({ message: followUpsLoadErrorMessage });
         setFollowUps(EMPTY_FOLLOW_UPS_RESPONSE);
         setFullSummary(EMPTY_FOLLOW_UPS_RESPONSE.summary);
         return;
@@ -422,7 +427,7 @@ export default function AdminOperationCourseFollowUpsPage() {
         } else if (err instanceof Error) {
           setError({ message: err.message });
         } else {
-          setError({ message: unknownErrorMessage });
+          setError({ message: followUpsLoadErrorMessage });
         }
       } finally {
         if (requestId === listRequestIdRef.current) {
@@ -430,12 +435,12 @@ export default function AdminOperationCourseFollowUpsPage() {
         }
       }
     },
-    [filters, shifuBid, unknownErrorMessage],
+    [filters, shifuBid, followUpsLoadErrorMessage],
   );
 
   const fetchFollowUpDetail = useCallback(async () => {
     if (!shifuBid.trim() || !selectedGeneratedBlockBid.trim()) {
-      setDetailError({ message: unknownErrorMessage });
+      setDetailError({ message: followUpDetailLoadErrorMessage });
       setDetail(EMPTY_FOLLOW_UP_DETAIL);
       setDetailLoading(false);
       return;
@@ -465,14 +470,14 @@ export default function AdminOperationCourseFollowUpsPage() {
       } else if (err instanceof Error) {
         setDetailError({ message: err.message });
       } else {
-        setDetailError({ message: unknownErrorMessage });
+        setDetailError({ message: followUpDetailLoadErrorMessage });
       }
     } finally {
       if (requestId === detailRequestIdRef.current) {
         setDetailLoading(false);
       }
     }
-  }, [selectedGeneratedBlockBid, shifuBid, unknownErrorMessage]);
+  }, [selectedGeneratedBlockBid, shifuBid, followUpDetailLoadErrorMessage]);
 
   useEffect(() => {
     if (!isReady) {
@@ -561,8 +566,7 @@ export default function AdminOperationCourseFollowUpsPage() {
         key: 'latestFollowUpAt',
         label: tOperations('detail.followUps.summary.latestFollowUpAt'),
         value:
-          formatAdminNaiveDateTime(fullSummary.latest_follow_up_at) ||
-          emptyValue,
+          formatAdminUtcDateTime(fullSummary.latest_follow_up_at) || emptyValue,
         tone: 'timestamp' as const,
       },
     ],
@@ -623,7 +627,7 @@ export default function AdminOperationCourseFollowUpsPage() {
         detailRequestIdRef.current += 1;
         setSelectedGeneratedBlockBid('');
         setDetail(EMPTY_FOLLOW_UP_DETAIL);
-        setDetailError({ message: unknownErrorMessage });
+        setDetailError({ message: followUpDetailLoadErrorMessage });
         setDetailLoading(false);
         setDetailOpen(false);
         return;
@@ -636,7 +640,7 @@ export default function AdminOperationCourseFollowUpsPage() {
       setDetailLoading(true);
       setDetailOpen(true);
     },
-    [unknownErrorMessage],
+    [followUpDetailLoadErrorMessage],
   );
 
   const handleDetailOpenChange = useCallback((open: boolean) => {
@@ -671,7 +675,7 @@ export default function AdminOperationCourseFollowUpsPage() {
       <div className='p-6'>
         <ErrorDisplay
           errorCode={0}
-          errorMessage={unknownErrorMessage}
+          errorMessage={followUpsLoadErrorMessage}
           onRetry={() => router.push('/admin/operations')}
         />
       </div>
@@ -1019,7 +1023,7 @@ export default function AdminOperationCourseFollowUpsPage() {
                                       style={getColumnStyle('createdAt')}
                                     >
                                       <AdminTooltipText
-                                        text={formatAdminNaiveDateTime(
+                                        text={formatAdminUtcDateTime(
                                           item.created_at,
                                         )}
                                         emptyValue={emptyValue}

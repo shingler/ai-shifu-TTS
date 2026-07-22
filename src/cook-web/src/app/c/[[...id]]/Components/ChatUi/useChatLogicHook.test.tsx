@@ -97,6 +97,14 @@ const mockGetRunMessage = jest.fn();
 const mockCheckIsRunning = jest.fn();
 const mockStreamGeneratedBlockAudio = jest.fn();
 const mockSubmitLessonFeedback = jest.fn();
+const mockGetShifuDraftMeta = jest.fn();
+
+jest.mock('@/api', () => ({
+  __esModule: true,
+  default: {
+    getShifuDraftMeta: (...args: unknown[]) => mockGetShifuDraftMeta(...args),
+  },
+}));
 
 jest.mock('@/c-api/studyV2', () => {
   return {
@@ -188,12 +196,14 @@ describe('useChatLogicHook stream cleanup', () => {
     | {
         source: MockRunSource;
         onMessage: (response: any) => Promise<void> | void;
+        onError: (error: unknown) => void;
       }
     | undefined;
 
   beforeEach(() => {
     jest.clearAllMocks();
     mockStreamGeneratedBlockAudio.mockReset();
+    mockGetShifuDraftMeta.mockReset();
     useLessonRunContentStore.getState().clearAll();
     activeRun = undefined;
 
@@ -208,6 +218,9 @@ describe('useChatLogicHook stream cleanup', () => {
       running_time: 0,
     });
     mockSubmitLessonFeedback.mockResolvedValue({});
+    mockGetShifuDraftMeta.mockResolvedValue({
+      updated_at: '2026-06-30T12:00:00+08:00',
+    });
 
     mockGetRunMessage.mockImplementation(
       (
@@ -219,11 +232,13 @@ describe('useChatLogicHook stream cleanup', () => {
           input_type: SSE_INPUT_TYPE;
         },
         onMessage: (response: any) => Promise<void> | void,
+        onError: (error: unknown) => void,
       ) => {
         const source = new MockRunSource();
         activeRun = {
           source,
           onMessage,
+          onError,
         };
         return source;
       },
@@ -258,10 +273,19 @@ describe('useChatLogicHook stream cleanup', () => {
     </AppContext.Provider>
   );
 
+  const createDeferred = <T,>() => {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>(next => {
+      resolve = next;
+    });
+    return { promise, resolve };
+  };
+
   const buildBaseParams = () => ({
     shifuBid: 'shifu-1',
     outlineBid: 'lesson-1',
     lessonId: 'lesson-1',
+    lessonHasContentUpdate: false,
     trackEvent: jest.fn(),
     trackTrailProgress: jest.fn(),
     lessonUpdate: jest.fn(),
@@ -1555,6 +1579,7 @@ describe('useChatLogicHook stream cleanup', () => {
       title: 'module.chat.streamTimeoutRetry',
       variant: 'destructive',
     });
+    expect(result.current.hasRunFailed).toBe(true);
     expect(activeRun?.source.close).toHaveBeenCalled();
 
     jest.useRealTimers();
@@ -2799,6 +2824,7 @@ describe('useChatLogicHook stream cleanup', () => {
         content: '',
         is_terminal: true,
       });
+      activeRun?.onError(new Error('source closed after terminal event'));
     });
 
     expect(params.lessonUpdate).toHaveBeenCalledWith({
@@ -2809,6 +2835,7 @@ describe('useChatLogicHook stream cleanup', () => {
     });
     expect(mockGetRunMessage).toHaveBeenCalledTimes(initialRunCount);
     await waitFor(() => expect(result.current.isOutputInProgress).toBe(false));
+    expect(result.current.hasRunFailed).toBe(false);
     expect(activeRun?.source.close).toHaveBeenCalled();
   });
 
@@ -2860,6 +2887,151 @@ describe('useChatLogicHook stream cleanup', () => {
         }),
       ),
     );
+  });
+
+  it('marks the active run failed when the connection drops before a new completion update', async () => {
+    const { result } = renderHook(() => useChatLogicHook(buildBaseParams()), {
+      wrapper,
+    });
+
+    await waitFor(() => expect(activeRun).toBeDefined());
+
+    await act(async () => {
+      activeRun?.onError(new Error('connection dropped'));
+    });
+
+    await waitFor(() => expect(result.current.hasRunFailed).toBe(true));
+    expect(result.current.isOutputInProgress).toBe(false);
+  });
+
+  it('clears a previous run failure when a retry starts and succeeds', async () => {
+    const { result } = renderHook(() => useChatLogicHook(buildBaseParams()), {
+      wrapper,
+    });
+
+    await waitFor(() => expect(activeRun).toBeDefined());
+    await act(async () => {
+      await activeRun?.onMessage({
+        generated_block_bid: 'content-1',
+        type: SSE_OUTPUT_TYPE.ELEMENT,
+        content: {
+          element_bid: 'content-1',
+          generated_block_bid: 'content-1',
+          element_type: 'content',
+          content: 'partial content',
+          like_status: 'none',
+        },
+      });
+      activeRun?.onError(new Error('connection dropped'));
+    });
+
+    await waitFor(() => expect(result.current.hasRunFailed).toBe(true));
+    const failedRun = activeRun;
+    const initialRunCount = mockGetRunMessage.mock.calls.length;
+
+    await act(async () => {
+      await result.current.onRefresh('content-1');
+    });
+
+    await waitFor(() =>
+      expect(mockGetRunMessage).toHaveBeenCalledTimes(initialRunCount + 1),
+    );
+    expect(activeRun).not.toBe(failedRun);
+    expect(result.current.hasRunFailed).toBe(false);
+    expect(result.current.isOutputInProgress).toBe(true);
+
+    await act(async () => {
+      await activeRun?.onMessage({
+        generated_block_bid: 'content-1',
+        type: SSE_OUTPUT_TYPE.TEXT_END,
+        content: '',
+        is_terminal: true,
+      });
+    });
+
+    await waitFor(() => expect(result.current.isOutputInProgress).toBe(false));
+    expect(result.current.hasRunFailed).toBe(false);
+  });
+
+  it('clears a stale local streaming guard before retrying the original run', async () => {
+    const { result } = renderHook(() => useChatLogicHook(buildBaseParams()), {
+      wrapper,
+    });
+
+    await waitFor(() => expect(activeRun).toBeDefined());
+    const staleRun = activeRun;
+    const initialRunCount = mockGetRunMessage.mock.calls.length;
+
+    await act(async () => {
+      await staleRun?.onMessage({
+        generated_block_bid: 'content-1',
+        type: SSE_OUTPUT_TYPE.ELEMENT,
+        content: {
+          element_bid: 'content-1',
+          generated_block_bid: 'content-1',
+          element_type: 'content',
+          content: 'partial content',
+          like_status: 'none',
+        },
+      });
+    });
+
+    mockCheckIsRunning.mockResolvedValueOnce({
+      is_running: false,
+      running_time: 0,
+    });
+
+    await act(async () => {
+      await result.current.onRefresh('content-1');
+    });
+
+    await waitFor(() =>
+      expect(mockGetRunMessage).toHaveBeenCalledTimes(initialRunCount + 1),
+    );
+    expect(staleRun?.source.close).toHaveBeenCalled();
+    expect(activeRun).not.toBe(staleRun);
+    expect(toast).not.toHaveBeenCalledWith({
+      title: 'module.chat.outputInProgress',
+    });
+    expect(result.current.hasRunFailed).toBe(false);
+    expect(result.current.isOutputInProgress).toBe(true);
+  });
+
+  it('keeps the current stream guard when run status cannot be confirmed', async () => {
+    const params = buildBaseParams();
+    const { result } = renderHook(() => useChatLogicHook(params), {
+      wrapper,
+    });
+
+    await waitFor(() => expect(activeRun).toBeDefined());
+    const staleRun = activeRun;
+    const initialRunCount = mockGetRunMessage.mock.calls.length;
+
+    await act(async () => {
+      await staleRun?.onMessage({
+        generated_block_bid: 'content-1',
+        type: SSE_OUTPUT_TYPE.ELEMENT,
+        content: {
+          element_bid: 'content-1',
+          generated_block_bid: 'content-1',
+          element_type: 'content',
+          content: 'partial content',
+          like_status: 'none',
+        },
+      });
+    });
+
+    mockCheckIsRunning.mockRejectedValueOnce(new Error('network down'));
+
+    await act(async () => {
+      await result.current.onRefresh('content-1');
+    });
+
+    expect(mockGetRunMessage).toHaveBeenCalledTimes(initialRunCount);
+    expect(staleRun?.source.close).not.toHaveBeenCalled();
+    expect(activeRun).toBe(staleRun);
+    expect(params.showOutputInProgressToast).toHaveBeenCalledTimes(1);
+    expect(result.current.isOutputInProgress).toBe(true);
   });
 
   it('does not treat the latest interaction as regenerate when helper rows are trailing', async () => {
@@ -3099,6 +3271,201 @@ describe('useChatLogicHook stream cleanup', () => {
       expect(initialSource?.close).not.toHaveBeenCalled();
       expect(mockGetRunMessage).toHaveBeenCalledTimes(runCallCountBeforeCancel);
       expect(result.current.reGenerateConfirm.open).toBe(false);
+    });
+  });
+
+  describe('lesson update notice', () => {
+    it('shows the notice when draft content is newer than learner history', async () => {
+      mockGetLessonStudyRecord.mockResolvedValue({
+        elements: [
+          {
+            element_type: 'content',
+            element_bid: 'history-1',
+            generated_block_bid: 'history-1',
+            content: 'history content',
+            like_status: 'none',
+            user_input: '',
+            is_marker: false,
+            is_new: false,
+            is_renderable: true,
+            is_speakable: false,
+          },
+        ],
+        last_progress_updated_at: '2026-06-30T10:00:00Z',
+      });
+      mockGetShifuDraftMeta.mockResolvedValue({
+        updated_at: '2026-06-30T12:00:00Z',
+      });
+
+      const { result } = renderHook(
+        () =>
+          useChatLogicHook({
+            ...buildBaseParams(),
+            previewMode: true,
+          }),
+        { wrapper },
+      );
+
+      await waitFor(() => {
+        expect(result.current.showLessonUpdateNotice).toBe(true);
+      });
+      expect(mockGetShifuDraftMeta).toHaveBeenCalledWith({
+        shifu_bid: 'shifu-1',
+        outline_bid: 'lesson-1',
+      });
+    });
+
+    it('keeps the notice hidden when there is no learner history', async () => {
+      mockGetLessonStudyRecord.mockResolvedValue({
+        elements: [],
+        last_progress_updated_at: null,
+      });
+
+      const { result } = renderHook(
+        () =>
+          useChatLogicHook({
+            ...buildBaseParams(),
+            previewMode: true,
+          }),
+        { wrapper },
+      );
+
+      await waitFor(() => {
+        expect(result.current.showLessonUpdateNotice).toBe(false);
+      });
+    });
+
+    it('skips draft-meta loading when learner history has no progress timestamp', async () => {
+      mockGetLessonStudyRecord.mockResolvedValue({
+        elements: [
+          {
+            element_type: 'content',
+            element_bid: 'history-1',
+            generated_block_bid: 'history-1',
+            content: 'history content',
+            like_status: 'none',
+            user_input: '',
+            is_marker: false,
+            is_new: false,
+            is_renderable: true,
+            is_speakable: false,
+          },
+        ],
+        last_progress_updated_at: null,
+      });
+
+      const { result } = renderHook(
+        () =>
+          useChatLogicHook({
+            ...buildBaseParams(),
+            previewMode: true,
+          }),
+        { wrapper },
+      );
+
+      await waitFor(() => {
+        expect(result.current.showLessonUpdateNotice).toBe(false);
+      });
+      expect(mockGetShifuDraftMeta).not.toHaveBeenCalled();
+    });
+
+    it('shows the notice in published mode when the current lesson has a published update', async () => {
+      mockGetLessonStudyRecord.mockResolvedValue({
+        elements: [
+          {
+            element_type: 'content',
+            element_bid: 'history-1',
+            generated_block_bid: 'history-1',
+            content: 'history content',
+            like_status: 'none',
+            user_input: '',
+            is_marker: false,
+            is_new: false,
+            is_renderable: true,
+            is_speakable: false,
+          },
+        ],
+        last_progress_updated_at: '2026-06-30T10:00:00+08:00',
+      });
+
+      const { result } = renderHook(
+        () =>
+          useChatLogicHook({
+            ...buildBaseParams(),
+            previewMode: false,
+            lessonHasContentUpdate: true,
+          }),
+        { wrapper },
+      );
+
+      await waitFor(() => {
+        expect(result.current.showLessonUpdateNotice).toBe(true);
+      });
+      expect(mockGetShifuDraftMeta).not.toHaveBeenCalled();
+    });
+
+    it('ignores stale preview update responses after lesson navigation', async () => {
+      const staleRecord = createDeferred<{
+        elements: Array<Record<string, unknown>>;
+        last_progress_updated_at: string;
+      }>();
+      mockGetLessonStudyRecord.mockImplementation(({ outline_bid }) => {
+        if (outline_bid === 'lesson-1') {
+          return staleRecord.promise;
+        }
+        return Promise.resolve({
+          elements: [],
+          last_progress_updated_at: null,
+        });
+      });
+      mockGetShifuDraftMeta.mockResolvedValue({
+        updated_at: '2026-06-30T12:00:00Z',
+      });
+
+      const { result, rerender } = renderHook(
+        ({ outlineBid, lessonId }) =>
+          useChatLogicHook({
+            ...buildBaseParams(),
+            outlineBid,
+            lessonId,
+            previewMode: true,
+          }),
+        {
+          wrapper,
+          initialProps: { outlineBid: 'lesson-1', lessonId: 'lesson-1' },
+        },
+      );
+
+      rerender({ outlineBid: 'lesson-2', lessonId: 'lesson-2' });
+
+      await waitFor(() => {
+        expect(mockGetLessonStudyRecord).toHaveBeenCalledWith(
+          expect.objectContaining({ outline_bid: 'lesson-2' }),
+        );
+      });
+
+      await act(async () => {
+        staleRecord.resolve({
+          elements: [
+            {
+              element_type: 'content',
+              element_bid: 'history-1',
+              generated_block_bid: 'history-1',
+              content: 'history content',
+              like_status: 'none',
+              user_input: '',
+              is_marker: false,
+              is_new: false,
+              is_renderable: true,
+              is_speakable: false,
+            },
+          ],
+          last_progress_updated_at: '2026-06-30T10:00:00Z',
+        });
+        await staleRecord.promise;
+      });
+
+      expect(result.current.showLessonUpdateNotice).toBe(false);
     });
   });
 });

@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from datetime import datetime
+
+from typing import List
 
 from pydantic import BaseModel, Field
 
 from flaskr.common.swagger import register_schema_to_swagger
+from flaskr.service.common.dto_base import AutoJsonMixin
 
 
 @register_schema_to_swagger
-class DashboardEntrySummaryDTO(BaseModel):
+class DashboardEntrySummaryDTO(AutoJsonMixin, BaseModel):
     """Dashboard entry summary metrics."""
 
     course_count: int = Field(..., description="Visible course count", required=False)
@@ -22,17 +25,9 @@ class DashboardEntrySummaryDTO(BaseModel):
         ..., description="Order amount with 2 decimal places", required=False
     )
 
-    def __json__(self) -> Dict[str, Any]:
-        return {
-            "course_count": int(self.course_count),
-            "learner_count": int(self.learner_count),
-            "order_count": int(self.order_count),
-            "order_amount": self.order_amount,
-        }
-
 
 @register_schema_to_swagger
-class DashboardEntryCourseItemDTO(BaseModel):
+class DashboardEntryCourseItemDTO(AutoJsonMixin, BaseModel):
     """Dashboard entry list item for a single course."""
 
     shifu_bid: str = Field(
@@ -46,31 +41,15 @@ class DashboardEntryCourseItemDTO(BaseModel):
     order_amount: str = Field(
         ..., description="Order amount with 2 decimal places", required=False
     )
-    last_active_at: str = Field(
-        default="",
+    last_active_at: datetime | None = Field(
+        default=None,
         description="Course last active timestamp (ISO)",
         required=False,
     )
-    last_active_at_display: str = Field(
-        default="",
-        description="Course last active timestamp for direct display",
-        required=False,
-    )
-
-    def __json__(self) -> Dict[str, Any]:
-        return {
-            "shifu_bid": self.shifu_bid,
-            "shifu_name": self.shifu_name,
-            "learner_count": int(self.learner_count),
-            "order_count": int(self.order_count),
-            "order_amount": self.order_amount,
-            "last_active_at": self.last_active_at,
-            "last_active_at_display": self.last_active_at_display,
-        }
 
 
 @register_schema_to_swagger
-class DashboardEntryDTO(BaseModel):
+class DashboardEntryDTO(AutoJsonMixin, BaseModel):
     """Dashboard entry response payload."""
 
     summary: DashboardEntrySummaryDTO = Field(
@@ -84,19 +63,9 @@ class DashboardEntryDTO(BaseModel):
         default_factory=list, description="Course rows", required=False
     )
 
-    def __json__(self) -> Dict[str, Any]:
-        return {
-            "summary": self.summary.__json__(),
-            "page": int(self.page),
-            "page_size": int(self.page_size),
-            "page_count": int(self.page_count),
-            "total": int(self.total),
-            "items": [item.__json__() for item in self.items],
-        }
-
 
 @register_schema_to_swagger
-class DashboardCourseDetailBasicInfoDTO(BaseModel):
+class DashboardCourseDetailBasicInfoDTO(AutoJsonMixin, BaseModel):
     """Dashboard detail basic course information."""
 
     shifu_bid: str = Field(
@@ -108,14 +77,9 @@ class DashboardCourseDetailBasicInfoDTO(BaseModel):
         description="Course status for creator dashboard",
         required=False,
     )
-    created_at: str = Field(
-        default="",
+    created_at: datetime | None = Field(
+        default=None,
         description="Course creation timestamp (ISO)",
-        required=False,
-    )
-    created_at_display: str = Field(
-        default="",
-        description="Course creation timestamp for direct display",
         required=False,
     )
     chapter_count: int = Field(..., description="Visible lesson count", required=False)
@@ -123,20 +87,9 @@ class DashboardCourseDetailBasicInfoDTO(BaseModel):
         ..., description="Distinct learner count", required=False
     )
 
-    def __json__(self) -> Dict[str, Any]:
-        return {
-            "shifu_bid": self.shifu_bid,
-            "course_name": self.course_name,
-            "course_status": self.course_status,
-            "created_at": self.created_at,
-            "created_at_display": self.created_at_display,
-            "chapter_count": int(self.chapter_count),
-            "learner_count": int(self.learner_count),
-        }
-
 
 @register_schema_to_swagger
-class DashboardCourseDetailMetricsDTO(BaseModel):
+class DashboardCourseDetailMetricsDTO(AutoJsonMixin, BaseModel):
     """Dashboard detail metrics for a single course."""
 
     order_count: int = Field(..., description="Order count", required=False)
@@ -167,24 +120,9 @@ class DashboardCourseDetailMetricsDTO(BaseModel):
         required=False,
     )
 
-    def __json__(self) -> Dict[str, Any]:
-        return {
-            "order_count": int(self.order_count),
-            "order_amount": self.order_amount,
-            "new_learner_count_last_7_days": int(self.new_learner_count_last_7_days),
-            "learning_learner_count": int(self.learning_learner_count),
-            "completed_learner_count": int(self.completed_learner_count),
-            "completion_rate": self.completion_rate,
-            "active_learner_count_last_7_days": int(
-                self.active_learner_count_last_7_days
-            ),
-            "total_follow_up_count": int(self.total_follow_up_count),
-            "rating_score": self.rating_score,
-        }
-
 
 @register_schema_to_swagger
-class DashboardCourseDetailLearnerItemDTO(BaseModel):
+class DashboardCourseDetailLearnerItemDTO(AutoJsonMixin, BaseModel):
     """Dashboard learner row for a single course."""
 
     user_bid: str = Field(
@@ -205,46 +143,20 @@ class DashboardCourseDetailLearnerItemDTO(BaseModel):
     follow_up_count: int = Field(
         ..., description="Follow-up question count", required=False
     )
-    last_learning_at: str = Field(
-        default="",
+    last_learning_at: datetime | None = Field(
+        default=None,
         description="Last learning timestamp (ISO)",
         required=False,
     )
-    last_learning_at_display: str = Field(
-        default="",
-        description="Last learning timestamp for direct display",
-        required=False,
-    )
-    joined_at: str = Field(
-        default="",
+    joined_at: datetime | None = Field(
+        default=None,
         description="Joined-at timestamp (ISO)",
         required=False,
     )
-    joined_at_display: str = Field(
-        default="",
-        description="Joined-at timestamp for direct display",
-        required=False,
-    )
-
-    def __json__(self) -> Dict[str, Any]:
-        return {
-            "user_bid": self.user_bid,
-            "mobile": self.mobile,
-            "email": self.email,
-            "nickname": self.nickname,
-            "learned_lesson_count": int(self.learned_lesson_count),
-            "total_lesson_count": int(self.total_lesson_count),
-            "learning_status": self.learning_status,
-            "follow_up_count": int(self.follow_up_count),
-            "last_learning_at": self.last_learning_at,
-            "last_learning_at_display": self.last_learning_at_display,
-            "joined_at": self.joined_at,
-            "joined_at_display": self.joined_at_display,
-        }
 
 
 @register_schema_to_swagger
-class DashboardCourseDetailLearnersDTO(BaseModel):
+class DashboardCourseDetailLearnersDTO(AutoJsonMixin, BaseModel):
     """Dashboard detail learner list payload."""
 
     page: int = Field(..., description="Current page", required=False)
@@ -255,18 +167,9 @@ class DashboardCourseDetailLearnersDTO(BaseModel):
         default_factory=list, description="Learner rows", required=False
     )
 
-    def __json__(self) -> Dict[str, Any]:
-        return {
-            "page": int(self.page),
-            "page_size": int(self.page_size),
-            "page_count": int(self.page_count),
-            "total": int(self.total),
-            "items": [item.__json__() for item in self.items],
-        }
-
 
 @register_schema_to_swagger
-class DashboardCourseDetailDTO(BaseModel):
+class DashboardCourseDetailDTO(AutoJsonMixin, BaseModel):
     """Dashboard detail response payload."""
 
     basic_info: DashboardCourseDetailBasicInfoDTO = Field(
@@ -276,15 +179,9 @@ class DashboardCourseDetailDTO(BaseModel):
         ..., description="Course detail metrics", required=False
     )
 
-    def __json__(self) -> Dict[str, Any]:
-        return {
-            "basic_info": self.basic_info.__json__(),
-            "metrics": self.metrics.__json__(),
-        }
-
 
 @register_schema_to_swagger
-class DashboardCourseFollowUpSummaryDTO(BaseModel):
+class DashboardCourseFollowUpSummaryDTO(AutoJsonMixin, BaseModel):
     """Dashboard follow-up summary metrics for a single course."""
 
     follow_up_count: int = Field(..., description="Follow-up count", required=False)
@@ -294,23 +191,15 @@ class DashboardCourseFollowUpSummaryDTO(BaseModel):
     lesson_count: int = Field(
         ..., description="Distinct lesson count with follow-ups", required=False
     )
-    latest_follow_up_at: str = Field(
-        default="",
+    latest_follow_up_at: datetime | None = Field(
+        default=None,
         description="Latest follow-up time for direct display",
         required=False,
     )
 
-    def __json__(self) -> Dict[str, Any]:
-        return {
-            "follow_up_count": int(self.follow_up_count),
-            "user_count": int(self.user_count),
-            "lesson_count": int(self.lesson_count),
-            "latest_follow_up_at": self.latest_follow_up_at,
-        }
-
 
 @register_schema_to_swagger
-class DashboardCourseFollowUpItemDTO(BaseModel):
+class DashboardCourseFollowUpItemDTO(AutoJsonMixin, BaseModel):
     """Dashboard follow-up list row for a single course."""
 
     generated_block_bid: str = Field(
@@ -334,31 +223,15 @@ class DashboardCourseFollowUpItemDTO(BaseModel):
         required=False,
     )
     turn_index: int = Field(default=0, description="Turn index", required=False)
-    created_at: str = Field(
-        default="",
+    created_at: datetime | None = Field(
+        default=None,
         description="Follow-up created time for direct display",
         required=False,
     )
 
-    def __json__(self) -> Dict[str, Any]:
-        return {
-            "generated_block_bid": self.generated_block_bid,
-            "progress_record_bid": self.progress_record_bid,
-            "user_bid": self.user_bid,
-            "mobile": self.mobile,
-            "email": self.email,
-            "nickname": self.nickname,
-            "chapter_title": self.chapter_title,
-            "lesson_title": self.lesson_title,
-            "follow_up_content": self.follow_up_content,
-            "has_source_output": bool(self.has_source_output),
-            "turn_index": int(self.turn_index),
-            "created_at": self.created_at,
-        }
-
 
 @register_schema_to_swagger
-class DashboardCourseFollowUpListDTO(BaseModel):
+class DashboardCourseFollowUpListDTO(AutoJsonMixin, BaseModel):
     """Dashboard follow-up list response payload."""
 
     summary: DashboardCourseFollowUpSummaryDTO = Field(
@@ -372,19 +245,9 @@ class DashboardCourseFollowUpListDTO(BaseModel):
         default_factory=list, description="Follow-up rows", required=False
     )
 
-    def __json__(self) -> Dict[str, Any]:
-        return {
-            "summary": self.summary.__json__(),
-            "page": int(self.page),
-            "page_size": int(self.page_size),
-            "page_count": int(self.page_count),
-            "total": int(self.total),
-            "items": [item.__json__() for item in self.items],
-        }
-
 
 @register_schema_to_swagger
-class DashboardCourseFollowUpDetailBasicInfoDTO(BaseModel):
+class DashboardCourseFollowUpDetailBasicInfoDTO(AutoJsonMixin, BaseModel):
     """Dashboard follow-up detail basic information."""
 
     generated_block_bid: str = Field(
@@ -399,30 +262,16 @@ class DashboardCourseFollowUpDetailBasicInfoDTO(BaseModel):
     nickname: str = Field(default="", description="Learner nickname", required=False)
     chapter_title: str = Field(default="", description="Chapter title", required=False)
     lesson_title: str = Field(default="", description="Lesson title", required=False)
-    created_at: str = Field(
-        default="",
+    created_at: datetime | None = Field(
+        default=None,
         description="Follow-up created time for direct display",
         required=False,
     )
     turn_index: int = Field(default=0, description="Turn index", required=False)
 
-    def __json__(self) -> Dict[str, Any]:
-        return {
-            "generated_block_bid": self.generated_block_bid,
-            "progress_record_bid": self.progress_record_bid,
-            "user_bid": self.user_bid,
-            "mobile": self.mobile,
-            "email": self.email,
-            "nickname": self.nickname,
-            "chapter_title": self.chapter_title,
-            "lesson_title": self.lesson_title,
-            "created_at": self.created_at,
-            "turn_index": int(self.turn_index),
-        }
-
 
 @register_schema_to_swagger
-class DashboardCourseFollowUpCurrentRecordDTO(BaseModel):
+class DashboardCourseFollowUpCurrentRecordDTO(AutoJsonMixin, BaseModel):
     """Dashboard follow-up current record detail."""
 
     follow_up_content: str = Field(
@@ -432,37 +281,23 @@ class DashboardCourseFollowUpCurrentRecordDTO(BaseModel):
         default="", description="Current answer content", required=False
     )
 
-    def __json__(self) -> Dict[str, Any]:
-        return {
-            "follow_up_content": self.follow_up_content,
-            "answer_content": self.answer_content,
-        }
-
 
 @register_schema_to_swagger
-class DashboardCourseFollowUpTimelineItemDTO(BaseModel):
+class DashboardCourseFollowUpTimelineItemDTO(AutoJsonMixin, BaseModel):
     """Dashboard follow-up timeline row."""
 
     role: str = Field(..., description="Timeline role", required=False)
     content: str = Field(default="", description="Timeline content", required=False)
-    created_at: str = Field(
-        default="",
+    created_at: datetime | None = Field(
+        default=None,
         description="Timeline created time for direct display",
         required=False,
     )
     is_current: bool = Field(default=False, description="Current turn", required=False)
 
-    def __json__(self) -> Dict[str, Any]:
-        return {
-            "role": self.role,
-            "content": self.content,
-            "created_at": self.created_at,
-            "is_current": bool(self.is_current),
-        }
-
 
 @register_schema_to_swagger
-class DashboardCourseFollowUpDetailDTO(BaseModel):
+class DashboardCourseFollowUpDetailDTO(AutoJsonMixin, BaseModel):
     """Dashboard follow-up detail response payload."""
 
     basic_info: DashboardCourseFollowUpDetailBasicInfoDTO = Field(
@@ -475,16 +310,9 @@ class DashboardCourseFollowUpDetailDTO(BaseModel):
         default_factory=list, description="Follow-up timeline", required=False
     )
 
-    def __json__(self) -> Dict[str, Any]:
-        return {
-            "basic_info": self.basic_info.__json__(),
-            "current_record": self.current_record.__json__(),
-            "timeline": [item.__json__() for item in self.timeline],
-        }
-
 
 @register_schema_to_swagger
-class DashboardCourseRatingSummaryDTO(BaseModel):
+class DashboardCourseRatingSummaryDTO(AutoJsonMixin, BaseModel):
     """Dashboard rating summary metrics for a single course."""
 
     average_score: str = Field(
@@ -496,23 +324,15 @@ class DashboardCourseRatingSummaryDTO(BaseModel):
     user_count: int = Field(
         ..., description="Distinct learner count with ratings", required=False
     )
-    latest_rated_at: str = Field(
-        default="",
+    latest_rated_at: datetime | None = Field(
+        default=None,
         description="Latest rating time for direct display",
         required=False,
     )
 
-    def __json__(self) -> Dict[str, Any]:
-        return {
-            "average_score": self.average_score,
-            "rating_count": int(self.rating_count),
-            "user_count": int(self.user_count),
-            "latest_rated_at": self.latest_rated_at,
-        }
-
 
 @register_schema_to_swagger
-class DashboardCourseRatingItemDTO(BaseModel):
+class DashboardCourseRatingItemDTO(AutoJsonMixin, BaseModel):
     """Dashboard rating list row for a single course."""
 
     lesson_feedback_bid: str = Field(
@@ -529,30 +349,15 @@ class DashboardCourseRatingItemDTO(BaseModel):
     lesson_title: str = Field(default="", description="Lesson title", required=False)
     score: int = Field(..., description="Rating score", required=False)
     comment: str = Field(default="", description="Rating comment", required=False)
-    rated_at: str = Field(
-        default="",
+    rated_at: datetime | None = Field(
+        default=None,
         description="Rating time for direct display",
         required=False,
     )
 
-    def __json__(self) -> Dict[str, Any]:
-        return {
-            "lesson_feedback_bid": self.lesson_feedback_bid,
-            "progress_record_bid": self.progress_record_bid,
-            "user_bid": self.user_bid,
-            "mobile": self.mobile,
-            "email": self.email,
-            "nickname": self.nickname,
-            "chapter_title": self.chapter_title,
-            "lesson_title": self.lesson_title,
-            "score": int(self.score),
-            "comment": self.comment,
-            "rated_at": self.rated_at,
-        }
-
 
 @register_schema_to_swagger
-class DashboardCourseRatingListDTO(BaseModel):
+class DashboardCourseRatingListDTO(AutoJsonMixin, BaseModel):
     """Dashboard rating list response payload."""
 
     summary: DashboardCourseRatingSummaryDTO = Field(
@@ -565,13 +370,3 @@ class DashboardCourseRatingListDTO(BaseModel):
     items: List[DashboardCourseRatingItemDTO] = Field(
         default_factory=list, description="Rating rows", required=False
     )
-
-    def __json__(self) -> Dict[str, Any]:
-        return {
-            "summary": self.summary.__json__(),
-            "page": int(self.page),
-            "page_size": int(self.page_size),
-            "page_count": int(self.page_count),
-            "total": int(self.total),
-            "items": [item.__json__() for item in self.items],
-        }

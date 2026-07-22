@@ -1,4 +1,7 @@
 .ChatUi {
+  --chat-footer-height: 40px;
+  --listen-player-footer-gap: 12px;
+
   position: relative;
   flex: 1;
   min-width: 0;
@@ -25,7 +28,9 @@
     line-height: 20px;
 
     .headerMain {
-      display: flex;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr);
+      column-gap: 12px;
       width: 100%;
       min-height: 64px;
       align-items: center;
@@ -34,8 +39,9 @@
     }
 
     .headerContent {
+      grid-column: 1;
       min-width: 0;
-      max-width: calc(100% - 160px);
+      max-width: 100%;
     }
 
     .courseSummary {
@@ -49,11 +55,20 @@
       line-height: var(--text-sm-line-height, 18px);
     }
 
+    .lessonUpdateNoticeTarget {
+      grid-column: 2;
+      display: flex;
+      min-width: 0;
+      max-width: min(420px, 42vw);
+      justify-content: center;
+    }
+
     .headerActions {
+      grid-column: 3;
+      justify-self: end;
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      margin-left: auto;
       flex-shrink: 0;
     }
   }
@@ -86,7 +101,7 @@
     left: 0;
     right: 0;
     bottom: 0;
-    height: 40px;
+    height: var(--chat-footer-height);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -153,7 +168,7 @@
   &.mobile {
     width: 100%;
     // padding-top: 80px;
-    // padding-bottom: 40px;
+    // padding-bottom: var(--chat-footer-height);
     overflow: hidden;
     .chatComponents {
       padding-top: 0;
@@ -175,15 +190,13 @@
       calc(var(--app-viewport-block-unit, 1dvh) * 100) - var(
           --mobile-chat-header-height,
           44px
-        ) -
-        40px
+        ) - var(--chat-footer-height)
     );
     max-height: calc(
       calc(var(--app-viewport-block-unit, 1dvh) * 100) - var(
           --mobile-chat-header-height,
           44px
-        ) -
-        40px
+        ) - var(--chat-footer-height)
     );
     min-height: 0;
     flex-direction: column;

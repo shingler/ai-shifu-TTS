@@ -356,32 +356,6 @@ COOK_WEB_SPEC = DocSpec(
 
 
 BACKEND_META = {
-    "active": BackendModuleMeta(
-        summary=(
-            "a reserved service namespace for activation-related behavior. The "
-            "directory currently has no checked-in source files beyond caches."
-        ),
-        key_files=(),
-        invariants=(
-            "introduce real source files before wiring imports or route "
-            "registration into the application factory",
-            "make ownership explicit in new files so future agents know whether "
-            "activation, entitlement, or status logic belongs here",
-            "add the first focused pytest suite at the same time the namespace "
-            "starts owning runtime behavior",
-        ),
-        avoid_points=(
-            "do not rely on `__pycache__` artifacts as a source of truth for "
-            "business behavior",
-            "do not register placeholder modules or imports that point to files "
-            "which are not committed",
-            "do not spread activation logic across unrelated services once this "
-            "namespace becomes active",
-        ),
-        tests_path="src/api/tests/service/active/",
-        tests_exist=False,
-        owns_models=False,
-    ),
     "check_risk": BackendModuleMeta(
         summary=(
             "risk-control persistence and text moderation checks used to screen "
@@ -1670,6 +1644,11 @@ def build_documents() -> dict[Path, str]:
                 "description in sync with the latest code changes so they "
                 "accurately describe the current implementation and "
                 "verification state.",
+                "For git commit message title, body, and classification "
+                "requirements, read "
+                "`AGENTS.md#git-commit-message-requirements`; keep "
+                "agent-specific rule files from duplicating the detailed "
+                "commit-message policy.",
                 "Keep generated knowledge artifacts in sync by running "
                 "`python scripts/build_repo_knowledge_index.py` after docs "
                 "structure or metadata changes.",
@@ -1797,6 +1776,16 @@ def build_documents() -> dict[Path, str]:
                 "path or ad-hoc component fetch logic.",
                 "Keep user-facing strings in shared i18n JSON under `src/i18n/` "
                 "and preserve the unified request/business-code handling flow.",
+                "For clickable UI, prefer semantic elements (`button`, `a`, "
+                "`summary`) or shared Radix/shadcn primitives. If a "
+                "non-semantic element must handle clicks, mark the actual "
+                'clickable target with `data-clickable="true"` and preserve '
+                'disabled states with `disabled`, `aria-disabled="true"`, or '
+                "`data-disabled`. Do not rely on page-local cursor styles or "
+                "broad `* { cursor: pointer; }` rules. Full-screen "
+                "onboarding/backdrop advance surfaces are the exception: keep "
+                "their large background or card hit areas on the default "
+                "cursor so the whole page does not read as a button.",
                 "Keep route-entry behavior in `page.tsx`, `layout.tsx`, and "
                 "`route.ts`, and treat legacy `c-*` directories as active "
                 "compatibility surfaces until a planned migration removes them.",
@@ -1832,6 +1821,11 @@ def build_documents() -> dict[Path, str]:
                 "description in sync with the latest code changes so they "
                 "accurately describe the current implementation and "
                 "verification state.",
+                "For git commit message title, body, and classification "
+                "requirements, read "
+                "`AGENTS.md#git-commit-message-requirements`; keep "
+                "agent-specific rule files from duplicating the detailed "
+                "commit-message policy.",
                 "Regenerate repository knowledge indexes with "
                 "`python scripts/build_repo_knowledge_index.py` after moving docs "
                 "or changing required metadata.",
@@ -1911,6 +1905,16 @@ def build_documents() -> dict[Path, str]:
                 "implementations or ad-hoc component fetch logic.",
                 "Keep user-facing strings in shared i18n JSON under `src/i18n/` "
                 "and preserve the unified business-code handling path.",
+                "For clickable UI, prefer semantic elements (`button`, `a`, "
+                "`summary`) or shared Radix/shadcn primitives. If a "
+                "non-semantic element must handle clicks, mark the actual "
+                'clickable target with `data-clickable="true"` and preserve '
+                'disabled states with `disabled`, `aria-disabled="true"`, or '
+                "`data-disabled`. Do not rely on page-local cursor styles or "
+                "broad `* { cursor: pointer; }` rules. Full-screen "
+                "onboarding/backdrop advance surfaces are the exception: keep "
+                "their large background or card hit areas on the default "
+                "cursor so the whole page does not read as a button.",
                 "Keep route-entry behavior in `page.tsx`, `layout.tsx`, and "
                 "`route.ts`, and treat legacy `c-*` directories as active "
                 "compatibility surfaces until a deliberate migration removes them.",

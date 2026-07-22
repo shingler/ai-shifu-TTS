@@ -31,12 +31,14 @@ import {
 } from './askState';
 import { useAskStateStore } from './useAskStateStore';
 import { CHAT_TYPEWRITER_SPEED_MS } from '@/c-constants/uiConstants';
+import { resolveMarkdownFlowLocale } from '@/lib/markdown-flow-locale';
 export type { AskMessage } from './askState';
 
 export interface AskBlockProps {
   askList?: AskMessage[];
   className?: string;
   isExpanded?: boolean;
+  printMode?: boolean;
   forceDesktopSlidePanel?: boolean;
   shifu_bid: string;
   outline_bid: string;
@@ -53,6 +55,7 @@ export default function AskBlock({
   askList = [],
   className,
   isExpanded = undefined,
+  printMode = false,
   forceDesktopSlidePanel = false,
   shifu_bid,
   outline_bid,
@@ -60,9 +63,10 @@ export default function AskBlock({
   element_bid,
   onToggleAskExpanded,
 }: AskBlockProps) {
-  const { t } = useTranslation();
-  const copyButtonText = t('module.renderUi.core.copyCode');
-  const copiedButtonText = t('module.renderUi.core.copied');
+  const { t, i18n } = useTranslation();
+  const markdownFlowLocale = resolveMarkdownFlowLocale(
+    i18n.resolvedLanguage ?? i18n.language,
+  );
   const { mobileStyle } = useContext(AppContext);
   const courseAvatar = useCourseStore(state => state.courseAvatar);
   const ensureLessonScope = useAskStateStore(state => state.ensureLessonScope);
@@ -249,6 +253,35 @@ export default function AskBlock({
     currentAnswerElementBidRef.current = '';
     isStreamingRef.current = true;
 
+    let streamSettled = false;
+    const rollbackFailedExchange = () => {
+      if (streamSettled) {
+        return;
+      }
+
+      streamSettled = true;
+      isStreamingRef.current = false;
+      setAskList(element_bid, prev => {
+        const next = [...prev];
+        if (next.at(-1)?.type === BLOCK_TYPE.ANSWER) {
+          next.pop();
+        }
+        if (next.at(-1)?.type === BLOCK_TYPE.ASK) {
+          next.pop();
+        }
+        return next;
+      });
+      setInputValue(question);
+    };
+    const finishSuccessfulExchange = () => {
+      if (streamSettled) {
+        return;
+      }
+
+      streamSettled = true;
+      finalizeStreamingMessage();
+    };
+
     // Initiate the SSE request
     const source = getRunMessage(
       shifu_bid,
@@ -275,23 +308,7 @@ export default function AskBlock({
             // ANSWER we appended before opening the SSE, restore the user's
             // text so they can retry, and surface the backend's localized
             // reason via toast.
-            setAskList(element_bid, prev => {
-              const next = [...prev];
-              if (
-                next.length &&
-                next[next.length - 1].type === BLOCK_TYPE.ANSWER
-              ) {
-                next.pop();
-              }
-              if (
-                next.length &&
-                next[next.length - 1].type === BLOCK_TYPE.ASK
-              ) {
-                next.pop();
-              }
-              return next;
-            });
-            setInputValue(question);
+            rollbackFailedExchange();
 
             const backendMessage =
               typeof response.content === 'string' ? response.content : '';
@@ -299,7 +316,6 @@ export default function AskBlock({
               title: backendMessage || t('module.chat.outputInProgress'),
             });
 
-            isStreamingRef.current = false;
             sseRef.current?.close();
             return;
           }
@@ -346,27 +362,33 @@ export default function AskBlock({
               return;
             }
 
-            finalizeStreamingMessage();
+            finishSuccessfulExchange();
             sseRef.current?.close();
             return;
           }
         } catch {
-          finalizeStreamingMessage();
+          rollbackFailedExchange();
+          sseRef.current?.close();
         }
       },
     );
 
-    // Add error and close listeners to ensure the state resets
+    // A transport failure can leave a partial answer in the local store. Roll
+    // the incomplete exchange back so it cannot be mistaken for printable
+    // follow-up content.
     source.addEventListener('error', () => {
-      finalizeStreamingMessage();
+      rollbackFailedExchange();
+      source.close();
     });
 
     source.addEventListener('readystatechange', () => {
       // readyState: 0=CONNECTING, 1=OPEN, 2=CLOSED
       if (source.readyState === 1) {
-        isStreamingRef.current = true;
+        if (!streamSettled) {
+          isStreamingRef.current = true;
+        }
       } else if (source.readyState === 2) {
-        finalizeStreamingMessage();
+        rollbackFailedExchange();
       }
     });
 
@@ -393,7 +415,11 @@ export default function AskBlock({
   );
 
   // Decide which messages to display
-  const messagesToShow = expanded ? displayList : displayList.slice(0, 1);
+  const messagesToShow = printMode
+    ? displayList
+    : expanded
+      ? displayList
+      : displayList.slice(0, 1);
   const hasAskAnswerMessages = messagesToShow.length > 0;
   const shouldRenderMobileDialog =
     mobileStyle &&
@@ -614,6 +640,7 @@ export default function AskBlock({
         {messages.map((message, index) => {
           const messageRenderKey = `${message.type}-${message.element_bid || index}`;
           const shouldEnableMessageTypewriter =
+            !printMode &&
             message.type === BLOCK_TYPE.ANSWER &&
             message.shouldUseTypewriter === true;
           // if (message.type === BLOCK_TYPE.ANSWER) {
@@ -622,6 +649,9 @@ export default function AskBlock({
           return (
             <div
               key={messageRenderKey}
+              data-clickable={
+                index === 0 && !expanded && mobileStyle ? 'true' : undefined
+              }
               className={cn(styles.messageWrapper)}
               onClick={() => handleClickTitle(index)}
               style={{
@@ -633,7 +663,7 @@ export default function AskBlock({
                 <div
                   className={cn(
                     styles.userMessage,
-                    expanded && styles.isExpanded,
+                    (expanded || printMode) && styles.isExpanded,
                   )}
                 >
                   {message.content}
@@ -646,6 +676,7 @@ export default function AskBlock({
                   )}
                 >
                   <ContentRender
+                    locale={markdownFlowLocale}
                     content={message.content}
                     customRenderBar={
                       message.isStreaming
@@ -665,8 +696,6 @@ export default function AskBlock({
                     enableTypewriter={shouldEnableMessageTypewriter}
                     typingSpeed={CHAT_TYPEWRITER_SPEED_MS}
                     readonly={true}
-                    copyButtonText={copyButtonText}
-                    copiedButtonText={copiedButtonText}
                   />
                 </div>
               )}
@@ -678,7 +707,7 @@ export default function AskBlock({
   };
 
   const renderInput = (extraClass?: string) => {
-    if (!expanded) {
+    if (printMode || !expanded) {
       return null;
     }
 
@@ -688,6 +717,7 @@ export default function AskBlock({
         ref={inputWrapperRef}
       >
         <MarkdownFlowInput
+          locale={markdownFlowLocale}
           placeholder={t('module.chat.askContent')}
           value={inputValue}
           onChange={handleInputChange}
@@ -701,7 +731,7 @@ export default function AskBlock({
     );
   };
 
-  if (shouldRenderMobileDialog) {
+  if (!printMode && shouldRenderMobileDialog) {
     return (
       <div className={cn(styles.askBlock, className, styles.mobile)}>
         {!expanded && renderMessages()}
@@ -709,6 +739,7 @@ export default function AskBlock({
           <>
             <div
               className={styles.mobileOverlay}
+              data-clickable='true'
               onClick={handleClose}
               style={expanded ? undefined : { display: 'none' }}
             />
@@ -773,6 +804,7 @@ export default function AskBlock({
   }
 
   if (
+    !printMode &&
     (isDesktopSlideAskBlock || forceDesktopSlidePanel) &&
     (expanded || hasStreamingAnswerTypewriterMessage)
   ) {

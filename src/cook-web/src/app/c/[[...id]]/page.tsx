@@ -145,6 +145,8 @@ export default function ChatPage() {
     })),
   );
   const isSlideMode = learningMode === 'listen' || learningMode === 'classroom';
+  const [lessonUpdateNoticeVisible, setLessonUpdateNoticeVisible] =
+    useState(false);
 
   useEffect(() => {
     if (!initialized) {
@@ -652,6 +654,21 @@ export default function ChatPage() {
     return '';
   }, [resolvedLessonId, tree]);
 
+  const currentLessonHasContentUpdate = useMemo(() => {
+    if (!tree || !resolvedLessonId) {
+      return false;
+    }
+    for (const catalog of tree.catalogs || []) {
+      const lesson = (catalog.lessons || []).find(
+        entry => entry.id === resolvedLessonId,
+      );
+      if (lesson) {
+        return Boolean(lesson.has_content_update_for_current_user);
+      }
+    }
+    return false;
+  }, [resolvedLessonId, tree]);
+
   const onLessonSelect = ({ id }) => {
     const selection = applyLessonSelection({
       lessonId: id,
@@ -885,10 +902,12 @@ export default function ChatPage() {
 
   return (
     <div
+      data-lesson-print-page='true'
       data-testid='course-chat-page'
       className={clsx(
         styles.newChatPage,
         previewMode ? styles.previewMode : '',
+        lessonUpdateNoticeVisible ? styles.lessonUpdateNoticeVisible : '',
         isSlideMode ? styles.listenMode : '',
         mobileStyle ? 'flex-col' : 'h-screen flex-row',
         'flex',
@@ -903,6 +922,10 @@ export default function ChatPage() {
             className={styles.chatMobileHeader}
             iconPopoverPayload={tree?.bannerInfo}
             onSettingClick={onNavToggle}
+            lessonUpdateNoticeVisible={lessonUpdateNoticeVisible}
+            chapterId={chapterId}
+            lessonId={resolvedLessonId}
+            lessonTitle={currentLessonTitle}
           />
         ) : null}
 
@@ -944,10 +967,11 @@ export default function ChatPage() {
 
         {initialized && profileOnboardingRuntimeReady ? (
           <ChatUi
-            lessonId={lessonId}
+            lessonId={resolvedLessonId}
             chapterId={chapterId}
             lessonTitle={currentLessonTitle}
             lessonStatus={currentLessonStatus}
+            lessonHasContentUpdate={currentLessonHasContentUpdate}
             lessonUpdate={onLessonUpdate}
             onGoChapter={onGoChapter}
             onPurchased={onPurchased}
@@ -960,6 +984,7 @@ export default function ChatPage() {
             isNavOpen={navOpen}
             onListenMobileViewModeChange={setListenMobileViewMode}
             showGenerateBtn={false}
+            onLessonUpdateNoticeVisibilityChange={setLessonUpdateNoticeVisible}
           />
         ) : null}
 

@@ -1,7 +1,9 @@
 import styles from './ChatComponents.module.scss';
 import { ChevronsDown, X } from 'lucide-react';
 import { createPortal } from 'react-dom';
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
+import { QRCodeSVG } from 'qrcode.react';
 import {
   useContext,
   useRef,
@@ -14,6 +16,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { cn } from '@/lib/utils';
+import { runWithConcurrency } from '@/lib/runWithConcurrency';
 import { getDocumentFullscreenElement } from '@/c-utils/browserFullscreen';
 import { AppContext } from '../AppContext';
 import { useChatComponentsScroll } from './ChatComponents/useChatComponentsScroll';
@@ -24,6 +27,7 @@ import { useCourseStore } from '@/c-store/useCourseStore';
 import { fail, toast } from '@/hooks/useToast';
 import useExclusiveAudio from '@/hooks/useExclusiveAudio';
 import AskIcon from '@/c-assets/newchat/light/icon_ask.svg';
+import { resolveWideLogoSource } from '@/c-components/logo/logoSource';
 import InteractionBlock from './InteractionBlock';
 import useChatLogicHook, { ChatContentItemType } from './useChatLogicHook';
 import type { ChatContentItem } from './useChatLogicHook';
@@ -48,7 +52,10 @@ import {
   DialogTitle,
 } from '@/components/ui/Dialog';
 import { useSystemStore } from '@/c-store/useSystemStore';
-import { buildAskListByAnchorElementBid } from './askState';
+import {
+  buildAskListByAnchorElementBid,
+  hasStreamingAskMessage,
+} from './askState';
 import { useAskStateStore } from './useAskStateStore';
 import type { ListenMobileViewModeChangeHandler } from './listenModeTypes';
 import { isListenModeActive as getIsListenModeActive } from '../learningModeOptions';
@@ -76,8 +83,22 @@ import {
   projectReadModeItems,
 } from './chatUiModeProjection';
 import { findLastVisibleLessonFeedbackElementBid } from './lessonFeedbackPromptState';
+import type { LessonPdfDownloadAction } from './LessonPdfDownloadButton';
+import {
+  isLessonPdfContentReady,
+  shouldExcludeLessonPdfInteraction,
+} from './lessonPdfState';
+import { useLessonPdfPrint } from './useLessonPdfPrint';
+import LessonPdfPreparingOverlay from './LessonPdfPreparingOverlay';
+import { buildCoursePageUrl } from '@/c-utils/urlUtils';
 
 const CREDIT_INSUFFICIENT_ERROR_CODE = 7101;
+
+// Max concurrent listen-mode audio backfill requests. Entering listen mode used
+// to fire TTS synthesis for every missing block at once (Promise.all), which
+// could burst past the provider RPM limit; a small bounded pool keeps the
+// instantaneous request rate well under it.
+const LISTEN_AUDIO_BACKFILL_CONCURRENCY = 3;
 
 interface NewChatComponentsProps {
   className?: string;
@@ -87,6 +108,7 @@ interface NewChatComponentsProps {
   lessonId?: string;
   lessonTitle?: string;
   lessonStatus?: string;
+  lessonHasContentUpdate?: boolean;
   onPurchased: () => void;
   chapterUpdate: any;
   updateSelectedLesson: any;
@@ -96,6 +118,8 @@ interface NewChatComponentsProps {
   onListenPlayerVisibilityChange?: (visible: boolean) => void;
   onListenMobileViewModeChange?: ListenMobileViewModeChangeHandler;
   showGenerateBtn?: boolean;
+  onLessonUpdateNoticeVisibilityChange?: (visible: boolean) => void;
+  onLessonPdfActionChange?: (action: LessonPdfDownloadAction | null) => void;
 }
 
 const isContentItemWithElementBid = (item: ChatContentItem) =>
@@ -111,6 +135,7 @@ export const NewChatComponents = ({
   lessonId,
   lessonTitle = '',
   lessonStatus = '',
+  lessonHasContentUpdate = false,
   onPurchased,
   chapterUpdate,
   updateSelectedLesson,
@@ -120,13 +145,14 @@ export const NewChatComponents = ({
   onListenPlayerVisibilityChange,
   onListenMobileViewModeChange,
   showGenerateBtn = false,
+  onLessonUpdateNoticeVisibilityChange,
+  onLessonPdfActionChange,
 }: NewChatComponentsProps) => {
   const { trackEvent, trackTrailProgress } = useTracking();
   const { t } = useTranslation();
   const router = useRouter();
-  const confirmButtonText = t('module.renderUi.core.confirm');
-  const copyButtonText = t('module.renderUi.core.copyCode');
-  const copiedButtonText = t('module.renderUi.core.copied');
+  const lessonFeedbackSubmitLabel = t('module.chat.lessonFeedbackSubmit');
+  const lessonPdfCourseQrLabel = t('module.chat.lessonPdfCourseQrLabel');
   const askButtonMarkup = useMemo(
     () =>
       `<custom-button-after-content><img src="${AskIcon.src}" alt="ask" width="14" height="14" /><span>${t('module.chat.ask')}</span></custom-button-after-content>`,
@@ -143,6 +169,17 @@ export const NewChatComponents = ({
   }, [router]);
 
   const { courseId: shifuBid } = useEnvStore.getState();
+  const [lessonPdfCourseUrl, setLessonPdfCourseUrl] = useState('');
+  useEffect(() => {
+    setLessonPdfCourseUrl(buildCoursePageUrl(window.location.href));
+  }, [shifuBid]);
+  const { logoHorizontal, logoWideUrl } = useEnvStore(
+    useShallow(state => ({
+      logoHorizontal: state.logoHorizontal,
+      logoWideUrl: state.logoWideUrl,
+    })),
+  );
+  const printBrandLogo = resolveWideLogoSource(logoWideUrl, logoHorizontal);
   const { refreshUserInfo } = useUserStore(
     useShallow(state => ({
       refreshUserInfo: state.refreshUserInfo,
@@ -157,6 +194,7 @@ export const NewChatComponents = ({
   const { mobileStyle } = useContext(AppContext);
 
   const chatRef = useRef<HTMLDivElement | null>(null);
+  const lessonPrintRootRef = useRef<HTMLDivElement | null>(null);
   const { scrollToLesson } = useChatComponentsScroll({
     chatRef,
     containerStyle: styles.chatComponents,
@@ -399,6 +437,7 @@ export const NewChatComponents = ({
     items,
     isLoading,
     isOutputInProgress,
+    hasRunFailed,
     currentStreamingElementBid,
     currentTypewriterElementBid,
     onSend,
@@ -407,6 +446,7 @@ export const NewChatComponents = ({
     reGenerateConfirm,
     requestAudioForBlock,
     lessonFeedbackPopup,
+    showLessonUpdateNotice,
   } = useChatLogicHook({
     onGoChapter,
     shifuBid,
@@ -414,6 +454,7 @@ export const NewChatComponents = ({
     lessonId: resolvedLessonId,
     chapterId,
     previewMode,
+    lessonHasContentUpdate,
     isListenMode: isListenModeActive,
     trackEvent,
     chatBoxBottomRef,
@@ -434,6 +475,17 @@ export const NewChatComponents = ({
     showOutputInProgressToast,
     onPayModalOpen,
   });
+
+  useEffect(() => {
+    onLessonUpdateNoticeVisibilityChange?.(showLessonUpdateNotice);
+  }, [onLessonUpdateNoticeVisibilityChange, showLessonUpdateNotice]);
+
+  useEffect(
+    () => () => {
+      onLessonUpdateNoticeVisibilityChange?.(false);
+    },
+    [onLessonUpdateNoticeVisibilityChange],
+  );
 
   const requestListenAudioBackfillForBlock = useCallback(
     (blockBid: string, lessonIdAtRequest: string) => {
@@ -504,6 +556,13 @@ export const NewChatComponents = ({
   const visibleReadModeItems = useMemo(
     () => buildVisibleReadModeItems(readModeItems, readModeTypewriterCache),
     [readModeItems, readModeTypewriterCache],
+  );
+  const isFollowUpStreaming = useMemo(
+    () =>
+      Object.values(scopedAskListByAnchorElementBid).some(
+        hasStreamingAskMessage,
+      ),
+    [scopedAskListByAnchorElementBid],
   );
   const trailingVisibleReadModeTextBid = useMemo(
     () =>
@@ -582,6 +641,55 @@ export const NewChatComponents = ({
     hasReadModeItems: visibleReadModeItems.length > 0,
     shouldShowReadModeStreamingDots,
   });
+  const isLessonPdfReady = isLessonPdfContentReady({
+    courseName,
+    lessonTitle,
+    lessonStatus,
+    isSlideMode,
+    isLoading,
+    isOutputInProgress,
+    hasGenerationError:
+      hasRunFailed ||
+      items.some(item => item.type === ChatContentItemType.ERROR),
+    currentStreamingElementBid,
+    readModeItems,
+    visibleReadModeItems,
+    readModeTypewriterCache,
+  });
+  const handleLessonPdfPrintError = useCallback(() => {
+    fail(t('module.chat.lessonPdfPrepareFailed'));
+  }, [t]);
+  const { isPreparing: isPreparingLessonPdf, printLessonPdf } =
+    useLessonPdfPrint({
+      printRootRef: isSlideMode ? lessonPrintRootRef : chatRef,
+      lessonId: resolvedLessonId,
+      courseName,
+      lessonTitle,
+      onError: handleLessonPdfPrintError,
+    });
+  const renderedReadModeItems = isPreparingLessonPdf
+    ? readModeItems
+    : visibleReadModeItems;
+
+  useEffect(() => {
+    onLessonPdfActionChange?.(
+      isLessonPdfReady
+        ? {
+            lessonId: resolvedLessonId,
+            isFollowUpStreaming,
+            isPreparing: isPreparingLessonPdf,
+            onDownload: printLessonPdf,
+          }
+        : null,
+    );
+  }, [
+    isFollowUpStreaming,
+    isLessonPdfReady,
+    isPreparingLessonPdf,
+    onLessonPdfActionChange,
+    printLessonPdf,
+    resolvedLessonId,
+  ]);
 
   useEffect(() => {
     ensureLessonScope(resolvedLessonId);
@@ -692,25 +800,40 @@ export const NewChatComponents = ({
 
     listenAudioBackfillLessonIdRef.current = lessonIdAtRequest;
 
-    const backfillPromises = missingAudioBlockBids.map(blockBid =>
-      requestListenAudioBackfillForBlock(blockBid, lessonIdAtRequest)
-        .then(result => {
-          if (listenAudioBackfillLessonIdRef.current !== lessonIdAtRequest) {
-            return null;
-          }
-
-          return result;
-        })
-        .catch(() => null),
+    // Prioritise blocks that will actually be played (non-history) so the first
+    // playable block is synthesised before history blocks, which auto-play
+    // skips. Otherwise the bounded pool could spend its slots on leading history
+    // blocks and delay first playback.
+    const historyBlockBidSet = new Set(
+      readyBackfillCandidateItems
+        .filter(item => item.isHistory)
+        .map(item => item.element_bid),
     );
+    const prioritizedBlockBids = [
+      ...missingAudioBlockBids.filter(bid => !historyBlockBidSet.has(bid)),
+      ...missingAudioBlockBids.filter(bid => historyBlockBidSet.has(bid)),
+    ];
 
-    void Promise.all(backfillPromises).then(results => {
+    void runWithConcurrency(
+      prioritizedBlockBids,
+      LISTEN_AUDIO_BACKFILL_CONCURRENCY,
+      blockBid =>
+        requestListenAudioBackfillForBlock(blockBid, lessonIdAtRequest)
+          .then(result => {
+            if (listenAudioBackfillLessonIdRef.current !== lessonIdAtRequest) {
+              return null;
+            }
+
+            return result;
+          })
+          .catch(() => null),
+    ).then(results => {
       if (listenAudioBackfillLessonIdRef.current !== lessonIdAtRequest) {
         return;
       }
 
       const hasGeneratedAudio = results.some(Boolean);
-      const failedBlockBids = missingAudioBlockBids.filter(
+      const failedBlockBids = prioritizedBlockBids.filter(
         (_, index) => !results[index],
       );
       failedBlockBids.forEach(blockBid => {
@@ -1190,7 +1313,7 @@ export const NewChatComponents = ({
             defaultScoreText={lessonFeedbackPopup.defaultScoreText}
             defaultCommentText={lessonFeedbackPopup.defaultCommentText}
             placeholder={t('module.chat.lessonFeedbackCommentPlaceholder')}
-            submitLabel={confirmButtonText}
+            submitLabel={lessonFeedbackSubmitLabel}
             clearLabel={t('module.chat.lessonFeedbackClearInput')}
             readonly={lessonFeedbackPopup.readonly}
             onSubmit={lessonFeedbackPopup.onSubmit}
@@ -1198,32 +1321,34 @@ export const NewChatComponents = ({
         </div>
       </div>
     ) : null;
-
   return (
     <div
+      data-lesson-print-content='true'
       className={containerClassName}
       style={{ position: 'relative', overflow: 'hidden', padding: 0 }}
     >
       {isSlideMode ? (
         isClassroomMode || isListenModeAvailable ? (
-          <ListenModeSlideRenderer
-            items={slideModeItems}
-            mobileStyle={mobileStyle}
-            chatRef={chatRef as React.RefObject<HTMLDivElement>}
-            isLoading={isLoading}
-            courseAvatar={courseAvatar}
-            courseName={courseName}
-            sectionTitle={lessonTitle}
-            lessonId={lessonId}
-            shifuBid={shifuBid}
-            previewMode={previewMode}
-            lessonStatus={lessonStatus}
-            variant={isClassroomMode ? 'classroom' : 'listen'}
-            onMobileViewModeChange={onListenMobileViewModeChange}
-            onSend={memoizedOnSend}
-            onPlayerVisibilityChange={onListenPlayerVisibilityChange}
-            onLessonFeedbackPromptStateChange={setIsListenFeedbackReady}
-          />
+          <>
+            <ListenModeSlideRenderer
+              items={slideModeItems}
+              mobileStyle={mobileStyle}
+              chatRef={chatRef as React.RefObject<HTMLDivElement>}
+              isLoading={isLoading}
+              courseAvatar={courseAvatar}
+              courseName={courseName}
+              sectionTitle={lessonTitle}
+              lessonId={lessonId}
+              shifuBid={shifuBid}
+              previewMode={previewMode}
+              lessonStatus={lessonStatus}
+              variant={isClassroomMode ? 'classroom' : 'listen'}
+              onMobileViewModeChange={onListenMobileViewModeChange}
+              onSend={memoizedOnSend}
+              onPlayerVisibilityChange={onListenPlayerVisibilityChange}
+              onLessonFeedbackPromptStateChange={setIsListenFeedbackReady}
+            />
+          </>
         ) : (
           <div
             className={cn(
@@ -1235,13 +1360,62 @@ export const NewChatComponents = ({
             )}
           />
         )
-      ) : (
+      ) : null}
+      {(!isSlideMode || isPreparingLessonPdf) && (
         <div
-          className={containerClassName}
-          ref={chatRef}
+          data-lesson-print-scroll='true'
+          className={cn(
+            containerClassName,
+            isSlideMode ? styles.lessonPdfOffscreen : '',
+          )}
+          ref={isSlideMode ? lessonPrintRootRef : chatRef}
+          aria-hidden={isSlideMode ? 'true' : undefined}
           style={{ width: '100%', height: '100%', overflowY: 'auto' }}
         >
           <div>
+            <header
+              data-lesson-print-only='true'
+              className='lesson-pdf-print-header mx-auto max-w-[1000px] border-b border-border px-5 pb-5'
+            >
+              <div className='flex items-center gap-4'>
+                {courseAvatar ? (
+                  <Image
+                    data-lesson-print-course-avatar='true'
+                    src={courseAvatar}
+                    alt=''
+                    width={44}
+                    height={44}
+                    loading='eager'
+                    unoptimized
+                    className='h-11 w-11 shrink-0 rounded-full object-cover'
+                  />
+                ) : null}
+                <div className='min-w-0 flex-1'>
+                  <h1
+                    data-lesson-print-course-name='true'
+                    className='break-words text-2xl font-semibold leading-tight text-foreground'
+                  >
+                    {courseName}
+                  </h1>
+                  <h2
+                    data-lesson-print-lesson-title='true'
+                    className='mt-2 break-words text-lg font-medium leading-tight text-muted-foreground'
+                  >
+                    {lessonTitle}
+                  </h2>
+                </div>
+                <Image
+                  data-lesson-print-site-logo='true'
+                  src={printBrandLogo}
+                  alt=''
+                  width={92}
+                  height={24}
+                  loading='eager'
+                  unoptimized
+                  className='h-6 w-auto shrink-0 object-contain'
+                />
+              </div>
+            </header>
             {shouldShowResetLoading ? (
               <div
                 style={{
@@ -1256,7 +1430,7 @@ export const NewChatComponents = ({
               <></>
             ) : (
               <>
-                {visibleReadModeItems.map((item, idx) => {
+                {renderedReadModeItems.map((item, idx) => {
                   const isLongPressed =
                     longPressedBlockBid === item.element_bid;
                   const baseKey = item.element_bid || `${item.type}-${idx}`;
@@ -1264,6 +1438,7 @@ export const NewChatComponents = ({
                   if (item.type === ChatContentItemType.ASK) {
                     return (
                       <div
+                        data-lesson-print-follow-up='true'
                         key={`ask-${parentKey}`}
                         style={{
                           position: 'relative',
@@ -1274,6 +1449,7 @@ export const NewChatComponents = ({
                       >
                         <AskBlock
                           isExpanded={item.isAskExpanded}
+                          printMode={isPreparingLessonPdf}
                           shifu_bid={shifuBid}
                           outline_bid={resolvedLessonId}
                           preview_mode={previewMode}
@@ -1297,10 +1473,13 @@ export const NewChatComponents = ({
                       parentContentItem?.audioTracks ?? [],
                     );
                     const canRequestAudio =
-                      !previewMode && Boolean(parentElementBid);
+                      !isPreparingLessonPdf &&
+                      !previewMode &&
+                      Boolean(parentElementBid);
                     const hasAudioForElement =
                       hasAudioContentInTrack(parentPrimaryTrack);
                     const shouldAutoPlayElement =
+                      !isPreparingLessonPdf &&
                       autoPlayTargetBlockBid === parentElementBid;
                     const isInteractionFollowUp =
                       parentContentItem?.type ===
@@ -1314,6 +1493,7 @@ export const NewChatComponents = ({
 
                     return (
                       <div
+                        data-lesson-print-exclude='true'
                         key={`like-${parentKey}`}
                         className={cn(!mobileStyle && 'flex justify-end')}
                         style={{
@@ -1339,6 +1519,7 @@ export const NewChatComponents = ({
                           }
                           showGenerateBtn={!mobileStyle && showGenerateBtn}
                           extraActions={
+                            !isPreparingLessonPdf &&
                             !mobileStyle &&
                             shouldShowAudioAction &&
                             (canRequestAudio || hasAudioForElement) ? (
@@ -1380,6 +1561,7 @@ export const NewChatComponents = ({
                   if (item.type === ChatContentItemType.ERROR) {
                     return (
                       <div
+                        data-lesson-print-exclude='true'
                         key={`error-${baseKey}`}
                         style={{
                           position: 'relative',
@@ -1392,9 +1574,6 @@ export const NewChatComponents = ({
                           item={item}
                           mobileStyle={mobileStyle}
                           blockBid={item.element_bid}
-                          confirmButtonText={confirmButtonText}
-                          copyButtonText={copyButtonText}
-                          copiedButtonText={copiedButtonText}
                           onClickCustomButtonAfterContent={handleClickAskButton}
                           onSend={memoizedOnSend}
                           onLongPress={handleLongPress}
@@ -1417,8 +1596,21 @@ export const NewChatComponents = ({
                     );
                   }
 
+                  const isCourseInteraction =
+                    item.type === ChatContentItemType.INTERACTION &&
+                    !shouldExcludeLessonPdfInteraction(item.content);
+
                   return (
                     <div
+                      data-lesson-print-exclude={
+                        item.type === ChatContentItemType.INTERACTION &&
+                        !isCourseInteraction
+                          ? 'true'
+                          : undefined
+                      }
+                      data-lesson-print-interaction={
+                        isCourseInteraction ? 'true' : undefined
+                      }
                       key={`content-${baseKey}`}
                       style={{
                         position: 'relative',
@@ -1446,31 +1638,35 @@ export const NewChatComponents = ({
                       */}
                       <ContentBlock
                         item={item}
+                        printMode={isPreparingLessonPdf && isCourseInteraction}
                         mobileStyle={mobileStyle}
                         blockBid={item.element_bid}
-                        enableStreamingTypewriter={shouldEnableReadModeTypewriter(
-                          item,
-                          readModeTypewriterCache[item.element_bid || ''],
-                          {
-                            keepAliveWhileStreaming:
-                              isOutputInProgress &&
-                              isTrailingVisibleReadModeItemText &&
-                              readModeTypewriterKeepAliveElementBid ===
-                                item.element_bid &&
-                              trailingVisibleReadModeTextBid ===
-                                item.element_bid,
-                          },
-                        )}
-                        confirmButtonText={confirmButtonText}
-                        copyButtonText={copyButtonText}
-                        copiedButtonText={copiedButtonText}
+                        enableStreamingTypewriter={
+                          !isPreparingLessonPdf &&
+                          shouldEnableReadModeTypewriter(
+                            item,
+                            readModeTypewriterCache[item.element_bid || ''],
+                            {
+                              keepAliveWhileStreaming:
+                                isOutputInProgress &&
+                                isTrailingVisibleReadModeItemText &&
+                                readModeTypewriterKeepAliveElementBid ===
+                                  item.element_bid &&
+                                trailingVisibleReadModeTextBid ===
+                                  item.element_bid,
+                            },
+                          )
+                        }
                         onClickCustomButtonAfterContent={handleClickAskButton}
                         onSend={memoizedOnSend}
                         onLongPress={handleLongPress}
                         autoPlayAudio={
+                          !isPreparingLessonPdf &&
                           autoPlayTargetBlockBid === item.element_bid
                         }
-                        showAudioAction={shouldShowAudioAction}
+                        showAudioAction={
+                          !isPreparingLessonPdf && shouldShowAudioAction
+                        }
                         onAudioPlayStateChange={handleAudioPlayStateChange}
                         onAudioEnded={handleAudioEnded}
                         onTypeFinished={handleReadModeTypeFinished}
@@ -1480,8 +1676,9 @@ export const NewChatComponents = ({
                 })}
                 {shouldShowReadModeStreamingDots ? (
                   <div
+                    data-lesson-print-exclude='true'
                     style={{
-                      margin: visibleReadModeItems.length
+                      margin: renderedReadModeItems.length
                         ? '16px auto 0'
                         : '0 auto',
                       maxWidth: mobileStyle ? '100%' : '1000px',
@@ -1495,7 +1692,31 @@ export const NewChatComponents = ({
                 ) : null}
               </>
             )}
+            {lessonPdfCourseUrl ? (
+              <footer
+                data-lesson-print-only='true'
+                data-lesson-print-course-qr='true'
+                className='lesson-pdf-course-qr mx-auto max-w-[1000px] px-5'
+              >
+                <a
+                  href={lessonPdfCourseUrl}
+                  aria-label={lessonPdfCourseQrLabel}
+                  className='lesson-pdf-course-qr-link'
+                >
+                  <QRCodeSVG
+                    value={lessonPdfCourseUrl}
+                    size={144}
+                    level='M'
+                    marginSize={4}
+                    title={lessonPdfCourseQrLabel}
+                    className='lesson-pdf-course-qr-code'
+                  />
+                  <span>{lessonPdfCourseQrLabel}</span>
+                </a>
+              </footer>
+            ) : null}
             <div
+              data-lesson-print-exclude='true'
               ref={chatBoxBottomRef}
               id='chat-box-bottom'
             ></div>
@@ -1540,6 +1761,7 @@ export const NewChatComponents = ({
             )
           : lessonFeedbackPopupContent
         : null}
+      {isPreparingLessonPdf ? <LessonPdfPreparingOverlay /> : null}
       <Dialog
         open={reGenerateConfirm.open}
         onOpenChange={open => {

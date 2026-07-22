@@ -90,7 +90,7 @@ def register_common_handler(app: Flask) -> Flask:
         language = _extract_request_language()
         if language:
             set_language(language)
-        response = jsonify({"code": -1, "message": _("server.common.operationFailed")})
+        response = jsonify({"code": -1, "message": _("server.common.unexpectedError")})
         response.status_code = 200
         return response
 
@@ -105,7 +105,13 @@ def register_common_handler(app: Flask) -> Flask:
 
 def fmt(o):
     if isinstance(o, datetime.datetime):
-        return o.isoformat()
+        # Single serialization choke point for datetimes returned by APIs.
+        # Stored values are UTC (see now_utc()); treat naive values as UTC and
+        # convert aware values to UTC, always emitting ISO 8601 with a 'Z'
+        # suffix. Display-time timezone conversion is a pure frontend concern.
+        if o.tzinfo is None:
+            o = o.replace(tzinfo=datetime.timezone.utc)
+        return o.astimezone(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
     elif isinstance(o, datetime.date):
         return o.isoformat()
     elif isinstance(o, decimal.Decimal):

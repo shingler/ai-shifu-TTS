@@ -15,7 +15,6 @@ import { useTranslation } from 'react-i18next';
 import {
   ChevronLeft,
   Columns2,
-  History,
   Info,
   ListCollapse,
   Loader2,
@@ -32,8 +31,11 @@ import {
   replaceCurrentUrlWithLessonId,
 } from '@/c-utils/urlUtils';
 import { toast } from '@/hooks/useToast';
-import i18n, { normalizeLanguage } from '@/i18n';
+import { normalizeLanguage } from '@/i18n';
+import { formatAdminUtcDateTime } from '@/lib/admin-date-time';
 import { cn } from '@/lib/utils';
+import { parseLessonHistoryDate } from '@/lib/lesson-history-time';
+import { resolveMarkdownFlowLocale } from '@/lib/markdown-flow-locale';
 import { useOnboardingReplayStore, useShifu, useUserStore } from '@/store';
 import {
   DraftMeta,
@@ -103,16 +105,6 @@ export const resolveEditorOnboardingTriggerSource = (
     ? explicitSource
     : DEFAULT_EDITOR_TRIGGER_SOURCE;
 };
-type MarkdownFlowEditorLocale = 'en-US' | 'zh-CN';
-
-const resolveMarkdownFlowEditorLocale = (
-  language?: string | null,
-): MarkdownFlowEditorLocale => {
-  const normalizedLanguage = normalizeLanguage(language);
-  // markdown-flow-ui/editor currently ships only en-US and zh-CN resources.
-  return normalizedLanguage === 'zh-CN' ? 'zh-CN' : 'en-US';
-};
-
 // Collect variable names that truly exist in current markdown content
 const extractVariableNames = (text?: string | null) => {
   if (!text) {
@@ -148,7 +140,7 @@ const ScriptEditor = ({
   initialLessonId = '',
   initialViewMode = 'edit',
 }: ScriptEditorProps) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { t: tOnboarding } = useTranslation('module.onboarding');
   const { trackEvent } = useTracking();
   const searchParams = useSearchParams();
@@ -252,7 +244,7 @@ const ScriptEditor = ({
         i18n.changeLanguage(next);
       }
     }
-  }, [profile]);
+  }, [i18n, profile]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -494,6 +486,7 @@ const ScriptEditor = ({
   }, [
     courseEditorOnboardingOpen,
     editorOnboardingTriggerSource,
+    i18n.language,
     onboardingStatus?.user_segment,
     onboardingStatus?.version,
     profile?.language,
@@ -755,12 +748,9 @@ const ScriptEditor = ({
   }, [currentShifu?.bid, resetDraftConflictState, shouldSkipConflictCheck]);
 
   useEffect(() => {
-    if (shouldSkipConflictCheck) {
-      return;
-    }
     const shifuBid = currentShifu?.bid;
     const outlineBid = currentNode?.bid;
-    if (!shifuBid || !outlineBid) {
+    if (!shifuBid || !outlineBid || !isLessonNode) {
       return;
     }
 
@@ -775,6 +765,9 @@ const ScriptEditor = ({
       ) {
         return;
       }
+      if (shouldSkipConflictCheck) {
+        return;
+      }
       await syncDraftFromRemote(shifuBid, outlineBid, meta, {
         showNotice: false,
         mode: resolveDraftConflictMode(meta),
@@ -787,6 +780,7 @@ const ScriptEditor = ({
   }, [
     currentNode?.bid,
     currentShifu?.bid,
+    isLessonNode,
     resetDraftConflictState,
     resolveDraftConflictMode,
     shouldSkipConflictCheck,
@@ -1415,6 +1409,13 @@ const ScriptEditor = ({
   const historyPageUrl = useMemo(() => {
     return buildUrlWithLessonId(`/shifu/${id}/history`, currentNode?.bid || '');
   }, [currentNode?.bid, id]);
+  const currentLessonHistoryUrl = isLessonNode ? historyPageUrl : null;
+  const currentLessonHistoryUpdatedAt = useMemo(() => {
+    if (!isLessonNode) {
+      return null;
+    }
+    return parseLessonHistoryDate(latestDraftMeta?.updated_at);
+  }, [isLessonNode, latestDraftMeta?.updated_at]);
   const documentPageUrl = useMemo(() => {
     return buildUrlWithLessonId(
       `/shifu/${id}`,
@@ -1568,7 +1569,7 @@ const ScriptEditor = ({
                         const selected =
                           selectedHistoryVersionId === item.version_id;
                         const timeLabel =
-                          item.updated_at_display || item.updated_at || '--';
+                          formatAdminUtcDateTime(item.updated_at) || '--';
                         const userName =
                           item.updated_user_name ||
                           item.updated_user_bid ||
@@ -1685,6 +1686,9 @@ const ScriptEditor = ({
           courseEditorOnboardingStep?.panel === 'shifu_settings'
         }
         publishTargetId={ONBOARDING_TARGET_IDS.editorPublish}
+        lessonHistoryUrl={currentLessonHistoryUrl}
+        lessonHistoryUpdatedAt={currentLessonHistoryUpdatedAt}
+        onLessonHistoryClick={handleHistoryEntryClick}
       />
       <div className='flex flex-1 overflow-hidden'>
         <Rnd
@@ -1815,37 +1819,6 @@ const ScriptEditor = ({
                           ))}
                         </TabsList>
                       </Tabs>
-                      {currentNode?.bid ? (
-                        <Button
-                          asChild
-                          variant='ghost'
-                          size='icon'
-                          className='h-8 w-8 rounded-full text-[rgba(0,0,0,0.65)] hover:bg-muted/50 hover:text-foreground shrink-0'
-                        >
-                          <Link
-                            href={historyPageUrl}
-                            target='_blank'
-                            rel='noopener noreferrer'
-                            onClick={handleHistoryEntryClick}
-                            aria-label={t('module.shifu.history.title')}
-                            title={t('module.shifu.history.title')}
-                          >
-                            <History className='h-4 w-4' />
-                          </Link>
-                        </Button>
-                      ) : (
-                        <Button
-                          type='button'
-                          variant='ghost'
-                          size='icon'
-                          className='h-8 w-8 rounded-full text-[rgba(0,0,0,0.65)] hover:bg-muted/50 hover:text-foreground shrink-0'
-                          aria-label={t('module.shifu.history.title')}
-                          title={t('module.shifu.history.title')}
-                          disabled
-                        >
-                          <History className='h-4 w-4' />
-                        </Button>
-                      )}
                       <Button
                         type='button'
                         size='sm'
@@ -1902,7 +1875,7 @@ const ScriptEditor = ({
                   ) : (
                     <MarkdownFlowEditor
                       key={editorScopeKey}
-                      locale={resolveMarkdownFlowEditorLocale(
+                      locale={resolveMarkdownFlowLocale(
                         i18n.resolvedLanguage ?? i18n.language,
                       )}
                       disabled={currentShifu?.readonly}

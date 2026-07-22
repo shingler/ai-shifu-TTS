@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional, Callable, Dict, List, Type
@@ -78,6 +79,31 @@ class EnvVar:
             return str(value)
 
 
+def _is_valid_rpm_limits_json(value: Any) -> bool:
+    """Validate the MINIMAX_TTS_RPM_LIMITS override map.
+
+    Empty is allowed (no overrides). A non-empty value must be a JSON object
+    whose values are integer-coercible RPM limits.
+    """
+    if not value:
+        return True
+    if isinstance(value, dict):
+        candidate = value
+    else:
+        try:
+            candidate = json.loads(value)
+        except (TypeError, ValueError):
+            return False
+    if not isinstance(candidate, dict):
+        return False
+    for rpm in candidate.values():
+        try:
+            int(rpm)
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
 # Environment variable registry
 ENV_VARS: Dict[str, EnvVar] = {
     # Application Configuration
@@ -125,6 +151,24 @@ ENV_VARS: Dict[str, EnvVar] = {
         name="TZ",
         default="UTC",
         description="Timezone setting for the application",
+        group="app",
+    ),
+    "SHARED_I18N_ROOT": EnvVar(
+        name="SHARED_I18N_ROOT",
+        default="",
+        description=(
+            "Override path of the shared i18n JSON root directory. "
+            "When empty, the backend auto-detects the repository src/i18n layout."
+        ),
+        group="app",
+    ),
+    "SKIP_DEMO_SHIFU_IMPORT": EnvVar(
+        name="SKIP_DEMO_SHIFU_IMPORT",
+        default="",
+        description=(
+            "Skip the demo shifu import during startup migration when set to "
+            "any non-empty value."
+        ),
         group="app",
     ),
     # Frontend Configuration
@@ -1202,6 +1246,13 @@ Generate secure key: python -c "import secrets; print(secrets.token_urlsafe(32))
         secret=True,
         group="content_detection",
     ),
+    "ILIVEDATA_TIMEOUT_SECONDS": EnvVar(
+        name="ILIVEDATA_TIMEOUT_SECONDS",
+        default=5,
+        type=int,
+        description="Timeout in seconds for ILIVEDATA text moderation requests",
+        group="content_detection",
+    ),
     "NETEASE_YIDUN_SECRET_ID": EnvVar(
         name="NETEASE_YIDUN_SECRET_ID",
         default="",
@@ -1220,6 +1271,13 @@ Generate secure key: python -c "import secrets; print(secrets.token_urlsafe(32))
         name="NETEASE_YIDUN_BUSINESS_ID",
         default="",
         description="Netease Yidun business ID",
+        group="content_detection",
+    ),
+    "NETEASE_YIDUN_TIMEOUT_SECONDS": EnvVar(
+        name="NETEASE_YIDUN_TIMEOUT_SECONDS",
+        default=5,
+        type=int,
+        description="Timeout in seconds for Netease Yidun text moderation requests",
         group="content_detection",
     ),
     # Lark/Feishu Integration
@@ -1332,6 +1390,44 @@ Generate secure key: python -c "import secrets; print(secrets.token_urlsafe(32))
         description="Maximum characters per TTS segment",
         group="tts",
     ),
+    "TTS_ALLOWED_MODELS": EnvVar(
+        name="TTS_ALLOWED_MODELS",
+        default=[],
+        type=list,
+        description=(
+            "Comma separated list of allowed TTS models to expose in UI. "
+            "Use provider/model format, e.g. minimax/speech-01-turbo. "
+            "Use provider/default for providers without model selection. "
+            "When empty, all detected TTS models are shown."
+        ),
+        group="tts",
+        required=False,
+    ),
+    "TTS_ALLOWED_MODEL_DISPLAY_NAMES_JSON": EnvVar(
+        name="TTS_ALLOWED_MODEL_DISPLAY_NAMES_JSON",
+        default="",
+        description=(
+            "Optional JSON object for localized TTS model display names. "
+            "Keys must match TTS_ALLOWED_MODELS provider/model values; values "
+            'may be locale maps like {"zh-CN":"名称","en-US":"Name"}.'
+        ),
+        group="tts",
+        required=False,
+    ),
+    "TTS_CHARS_PER_LLM_TOKEN": EnvVar(
+        name="TTS_CHARS_PER_LLM_TOKEN",
+        default=0.216,
+        type=float,
+        description=(
+            "TTS characters synthesized per LLM output token in a task, used to "
+            "put TTS (billed per character) and LLM (billed per token) on one "
+            "shared 1x anchor. Default 0.216 = omega(13.5%) x 1.6 chars/token. "
+            "The picker multiplier is TTS char cost x this factor / the default "
+            "LLM output-token cost, so TTS tiers stay on the same scale as LLM "
+            "model multipliers and track the default LLM price automatically."
+        ),
+        group="tts",
+    ),
     "MINIMAX_TTS_SAMPLE_RATE": EnvVar(
         name="MINIMAX_TTS_SAMPLE_RATE",
         default=24000,
@@ -1350,14 +1446,38 @@ Generate secure key: python -c "import secrets; print(secrets.token_urlsafe(32))
         name="MINIMAX_TTS_RPM_LIMIT",
         default=0,
         type=int,
-        description="MiniMax TTS RPM queue limit; 0 disables queue gating",
+        description=(
+            "Fallback MiniMax TTS RPM queue limit for models without a known "
+            "tier or explicit override; 0 disables queue gating"
+        ),
         group="tts",
+    ),
+    "MINIMAX_TTS_RPM_LIMITS": EnvVar(
+        name="MINIMAX_TTS_RPM_LIMITS",
+        default="",
+        type=str,
+        description=(
+            "Optional JSON map of MiniMax TTS model -> RPM limit that overrides "
+            'the per-tier defaults (e.g. {"speech-2.8-hd": 20})'
+        ),
+        group="tts",
+        validator=_is_valid_rpm_limits_json,
     ),
     "MINIMAX_TTS_QUEUE_MAX_WAIT_SECONDS": EnvVar(
         name="MINIMAX_TTS_QUEUE_MAX_WAIT_SECONDS",
         default=10,
         type=int,
         description="Maximum seconds a MiniMax TTS request waits in the RPM queue",
+        group="tts",
+    ),
+    "MAX_PARALLEL_TTS_SYNTH_COUNT": EnvVar(
+        name="MAX_PARALLEL_TTS_SYNTH_COUNT",
+        default=6,
+        type=int,
+        description=(
+            "Max concurrent block-audio TTS syntheses per (user, outline); "
+            "0 disables the concurrency cap"
+        ),
         group="tts",
     ),
     # Volcengine TTS Configuration (shared by WebSocket + HTTP providers)
@@ -1379,6 +1499,15 @@ Generate secure key: python -c "import secrets; print(secrets.token_urlsafe(32))
         name="VOLCENGINE_TTS_CLUSTER_ID",
         default="volcano_tts",
         description="Volcengine TTS cluster for HTTP v1/tts (e.g., volcano_tts)",
+        group="tts",
+    ),
+    "VOLCENGINE_TTS_RESOURCE_ID": EnvVar(
+        name="VOLCENGINE_TTS_RESOURCE_ID",
+        default="",
+        description=(
+            "Legacy alias of VOLCENGINE_TTS_CLUSTER_ID. Used only when "
+            "VOLCENGINE_TTS_CLUSTER_ID is not explicitly set in the environment."
+        ),
         group="tts",
     ),
     "VOLCENGINE_TTS_SAMPLE_RATE": EnvVar(
@@ -1965,6 +2094,18 @@ def get_config(key: str, default: Any = None) -> Any:
 def has_explicit_env_override(key: str) -> bool:
     """Return whether a config key is explicitly present in the environment."""
     return key in os.environ
+
+
+def get_explicit_env_override(key: str) -> Optional[str]:
+    """Return the raw environment value for a config key, or None when unset.
+
+    Unlike ``get_config``, this never substitutes the registry default and
+    keeps empty strings as-is. Use it for explicit-env-wins precedence rules
+    (e.g. a legacy alias that must not be masked by a declared default, or a
+    testing default that must not be preempted by the registry default)
+    instead of reading ``os.environ`` outside this module.
+    """
+    return os.environ.get(key)
 
 
 def get_redis_key_prefix(app: Flask | None = None) -> str:

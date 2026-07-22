@@ -14,6 +14,7 @@ export const SettingSelectElement = ({
   return (
     <div
       className={clsx(styles.settingSelect, className)}
+      data-clickable='true'
       onClick={onClick}
     >
       <div className={styles.title}>{value && title}</div>
@@ -23,7 +24,7 @@ export const SettingSelectElement = ({
           className={styles.inputElement}
           placeholder={placeholder}
           readOnly={true}
-          value={value}
+          value={value ?? ''}
         />
         <ChevronDownIcon className={styles.icon} />
       </div>

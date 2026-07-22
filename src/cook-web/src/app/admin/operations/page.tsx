@@ -15,6 +15,11 @@ import AdminBreadcrumb from '@/app/admin/components/AdminBreadcrumb';
 import AdminTitle from '@/app/admin/components/AdminTitle';
 import { ADMIN_TABLE_RESIZE_HANDLE_CLASS } from '@/app/admin/components/adminTableStyles';
 import { useAdminResizableColumns } from '@/app/admin/hooks/useAdminResizableColumns';
+import {
+  formatAdminDateRangeEndUtc,
+  formatAdminDateRangeStartUtc,
+  formatAdminUtcDateTime,
+} from '@/app/admin/lib/dateTime';
 import ErrorDisplay from '@/components/ErrorDisplay';
 import Loading from '@/components/loading';
 import {
@@ -394,10 +399,14 @@ const OperationsPage = () => {
           creator_keyword: resolvedFilters.creator_keyword.trim(),
           course_status: resolvedFilters.course_status,
           quick_filter: resolvedQuickFilter,
-          start_time: resolvedFilters.start_time,
-          end_time: resolvedFilters.end_time,
-          updated_start_time: resolvedFilters.updated_start_time,
-          updated_end_time: resolvedFilters.updated_end_time,
+          start_time: formatAdminDateRangeStartUtc(resolvedFilters.start_time),
+          end_time: formatAdminDateRangeEndUtc(resolvedFilters.end_time),
+          updated_start_time: formatAdminDateRangeStartUtc(
+            resolvedFilters.updated_start_time,
+          ),
+          updated_end_time: formatAdminDateRangeEndUtc(
+            resolvedFilters.updated_end_time,
+          ),
         })) as AdminOperationCourseListResponse;
         if (requestId !== requestIdRef.current) {
           return;
@@ -415,7 +424,9 @@ const OperationsPage = () => {
         } else if (err instanceof Error) {
           setError({ message: err.message });
         } else {
-          setError({ message: t('common.core.unknownError') });
+          setError({
+            message: t('module.operationsCourse.messages.loadCoursesFailed'),
+          });
         }
       } finally {
         if (requestId === requestIdRef.current) {
@@ -561,7 +572,9 @@ const OperationsPage = () => {
         if (err instanceof Error) {
           setPromptDetailError(err.message);
         } else {
-          setPromptDetailError(t('common.core.unknownError'));
+          setPromptDetailError(
+            t('module.operationsCourse.messages.loadPromptDetailFailed'),
+          );
         }
       } finally {
         if (requestId === promptRequestIdRef.current) {
@@ -896,7 +909,9 @@ const OperationsPage = () => {
         return;
       }
       setTransferError(
-        error instanceof Error ? error.message : t('common.core.unknownError'),
+        error instanceof Error
+          ? error.message
+          : t('module.operationsCourse.messages.transferCreatorFailed'),
       );
       setTransferLoading(false);
     } finally {
@@ -950,7 +965,9 @@ const OperationsPage = () => {
         return;
       }
       setCopyError(
-        error instanceof Error ? error.message : t('common.core.unknownError'),
+        error instanceof Error
+          ? error.message
+          : t('module.operationsCourse.messages.copyCourseFailed'),
       );
       setCopyLoading(false);
     } finally {
@@ -1201,8 +1218,12 @@ const OperationsPage = () => {
           resolveActorDisplay(course, 'updater').primary,
           resolveActorDisplay(course, 'updater').secondary,
         ],
-        updatedAt: course => [course.updated_at],
-        createdAt: course => [course.created_at],
+        updatedAt: course => [
+          formatAdminUtcDateTime(course.updated_at) || EMPTY_STATE_LABEL,
+        ],
+        createdAt: course => [
+          formatAdminUtcDateTime(course.created_at) || EMPTY_STATE_LABEL,
+        ],
         action: () => [t('common.core.more')],
       };
 

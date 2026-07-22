@@ -42,8 +42,9 @@ from pydantic import BaseModel
 from .models import DraftOutlineItem, LogDraftStruct
 from flaskr.dao import db
 from flaskr.util import generate_id
+from flaskr.util.datetime import to_utc_iso
 import queue
-from datetime import datetime
+from flaskr.util.datetime import now_utc
 import re
 from flaskr.service.user.models import UserInfo
 
@@ -185,7 +186,7 @@ def _build_draft_meta(latest) -> dict:
     )
     return {
         "revision": int(latest.id),
-        "updated_at": latest.updated_at,
+        "updated_at": to_utc_iso(latest.updated_at),
         "updated_user": updated_user,
         "deleted": int(getattr(latest, "deleted", 0) or 0),
     }
@@ -208,7 +209,9 @@ def mask_contact_identifier(identifier: Optional[str]) -> str:
 
 
 def get_shifu_draft_meta(
-    app: Flask, shifu_bid: str, outline_bid: str | None = None
+    app: Flask,
+    shifu_bid: str,
+    outline_bid: str | None = None,
 ) -> dict:
     with app.app_context():
         if outline_bid:
@@ -254,7 +257,7 @@ def __save_shifu_history(
     Returns:
         None
     """
-    now = datetime.now()
+    now = now_utc()
     shifu_history = LogDraftStruct(
         struct_bid=generate_id(app),
         shifu_bid=shifu_bid,
@@ -322,15 +325,30 @@ def __save_new_item_history(
 
     q = queue.Queue()
     q.put(history)
+    parent_found = False
     while not q.empty():
         item = q.get()
         if item.bid == parent_bid:
             item.children.append(
                 HistoryItem(bid=item_bid, id=id, type=type, children=[])
             )
+            parent_found = True
             break
         for child in item.children:
             q.put(child)
+
+    if not parent_found:
+        app.logger.error(
+            "Failed to append %s history node because parent is missing | shifu_bid=%s item_bid=%s item_id=%s parent_bid=%s",
+            type,
+            shifu_bid,
+            item_bid,
+            id,
+            parent_bid,
+        )
+        raise RuntimeError(
+            f"Parent history node not found for {type} {item_bid} under {parent_bid}"
+        )
 
     __save_shifu_history(app, user_id, shifu_bid, history)
 

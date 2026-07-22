@@ -4,14 +4,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import api from '@/api';
-import AdminBreadcrumb from '@/app/admin/components/AdminBreadcrumb';
+import AdminTitle from '@/app/admin/components/AdminTitle';
 import { useEnvStore } from '@/c-store';
 import ErrorDisplay from '@/components/ErrorDisplay';
 import Loading from '@/components/loading';
 import { Card, CardContent } from '@/components/ui/Card';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { ErrorWithCode } from '@/lib/request';
-import { getBrowserTimeZone } from '@/lib/browser-timezone';
 import { resolveContactMode } from '@/lib/resolve-contact-mode';
 import { useUserStore } from '@/store';
 import type {
@@ -85,7 +84,6 @@ export default function AdminDashboardCourseDetailPage() {
   const currencySymbol = useEnvStore(state => state.currencySymbol || '¥');
   const loginMethodsEnabled = useEnvStore(state => state.loginMethodsEnabled);
   const defaultLoginMethod = useEnvStore(state => state.defaultLoginMethod);
-  const timezone = getBrowserTimeZone();
 
   const [detail, setDetail] =
     useState<DashboardCourseDetailResponse>(EMPTY_DETAIL);
@@ -144,7 +142,9 @@ export default function AdminDashboardCourseDetailPage() {
   const fetchDetail = useCallback(async () => {
     if (!shifuBid.trim()) {
       setDetail(EMPTY_DETAIL);
-      setDetailError({ message: t('common.core.unknownError') });
+      setDetailError({
+        message: t('module.dashboard.messages.loadCourseDetailFailed'),
+      });
       return;
     }
 
@@ -155,7 +155,6 @@ export default function AdminDashboardCourseDetailPage() {
     try {
       const response = (await api.getDashboardCourseDetail({
         shifu_bid: shifuBid,
-        ...(timezone ? { timezone } : {}),
       })) as DashboardCourseDetailResponse;
       if (requestId !== detailRequestIdRef.current) {
         return;
@@ -171,14 +170,16 @@ export default function AdminDashboardCourseDetailPage() {
       } else if (err instanceof Error) {
         setDetailError({ message: err.message });
       } else {
-        setDetailError({ message: t('common.core.unknownError') });
+        setDetailError({
+          message: t('module.dashboard.messages.loadCourseDetailFailed'),
+        });
       }
     } finally {
       if (requestId === detailRequestIdRef.current) {
         setDetailLoading(false);
       }
     }
-  }, [shifuBid, t, timezone]);
+  }, [shifuBid, t]);
 
   const fetchLearners = useCallback(
     async (
@@ -192,7 +193,9 @@ export default function AdminDashboardCourseDetailPage() {
     ) => {
       if (!shifuBid.trim()) {
         setLearners(EMPTY_LEARNERS);
-        setLearnersError({ message: t('common.core.unknownError') });
+        setLearnersError({
+          message: t('module.dashboard.messages.loadLearnersFailed'),
+        });
         return;
       }
 
@@ -212,7 +215,6 @@ export default function AdminDashboardCourseDetailPage() {
               : nextFilters.learningStatus,
           last_learning_start_time: nextFilters.lastLearningStart,
           last_learning_end_time: nextFilters.lastLearningEnd,
-          ...(timezone ? { timezone } : {}),
         })) as DashboardCourseLearnersResponse;
         if (requestId !== learnersRequestIdRef.current) {
           return;
@@ -228,7 +230,9 @@ export default function AdminDashboardCourseDetailPage() {
         } else if (err instanceof Error) {
           setLearnersError({ message: err.message });
         } else {
-          setLearnersError({ message: t('common.core.unknownError') });
+          setLearnersError({
+            message: t('module.dashboard.messages.loadLearnersFailed'),
+          });
         }
       } finally {
         if (requestId === learnersRequestIdRef.current) {
@@ -236,7 +240,7 @@ export default function AdminDashboardCourseDetailPage() {
         }
       }
     },
-    [shifuBid, t, timezone],
+    [shifuBid, t],
   );
 
   useEffect(() => {
@@ -473,15 +477,7 @@ export default function AdminDashboardCourseDetailPage() {
     <TooltipProvider delayDuration={150}>
       <div className='h-full overflow-auto pr-1'>
         <div className='pb-6'>
-          <AdminBreadcrumb
-            items={[
-              {
-                label: t('module.dashboard.title'),
-                href: '/admin/dashboard',
-              },
-              { label: t('module.dashboard.detail.title') },
-            ]}
-          />
+          <AdminTitle title={t('module.dashboard.detail.title')} />
           <div className='space-y-5'>
             <Card>
               <CardContent className='p-5'>

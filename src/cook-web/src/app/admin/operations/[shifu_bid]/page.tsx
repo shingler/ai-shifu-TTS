@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 import api from '@/api';
 import AdminTitle from '@/app/admin/components/AdminTitle';
 import { useAdminResizableColumns } from '@/app/admin/hooks/useAdminResizableColumns';
-import { formatAdminNaiveDateTime } from '@/app/admin/lib/dateTime';
+import { formatAdminUtcDateTime } from '@/app/admin/lib/dateTime';
 import { formatAdminCount } from '@/app/admin/lib/numberFormat';
 import { useEnvStore } from '@/c-store';
 import { copyText } from '@/c-utils/textutils';
@@ -397,7 +397,21 @@ export default function AdminOperationCourseDetailPage() {
     [shifuBid],
   );
   const emptyValue = '--';
-  const unknownErrorMessage = t('common.core.unknownError');
+  const courseDetailLoadErrorMessage = t(
+    'module.operationsCourse.messages.loadCourseDetailFailed',
+  );
+  const courseUsersLoadErrorMessage = t(
+    'module.operationsCourse.messages.loadCourseUsersFailed',
+  );
+  const creditUsageLoadErrorMessage = t(
+    'module.operationsCourse.messages.loadCreditUsageFailed',
+  );
+  const creditUsageDetailsLoadErrorMessage = t(
+    'module.operationsCourse.messages.loadCreditUsageDetailsFailed',
+  );
+  const chapterDetailLoadErrorMessage = t(
+    'module.operationsCourse.messages.loadChapterDetailFailed',
+  );
   useEffect(() => {
     const tab = searchParams.get('tab');
     if (tab === 'chapters' || tab === 'users' || tab === 'creditUsage') {
@@ -433,7 +447,7 @@ export default function AdminOperationCourseDetailPage() {
   );
   const fetchDetail = useCallback(async () => {
     if (!shifuBid.trim()) {
-      setError({ message: unknownErrorMessage });
+      setError({ message: courseDetailLoadErrorMessage });
       return;
     }
 
@@ -451,17 +465,17 @@ export default function AdminOperationCourseDetailPage() {
       } else if (err instanceof Error) {
         setError({ message: err.message });
       } else {
-        setError({ message: unknownErrorMessage });
+        setError({ message: courseDetailLoadErrorMessage });
       }
     } finally {
       setLoading(false);
     }
-  }, [shifuBid, unknownErrorMessage]);
+  }, [shifuBid, courseDetailLoadErrorMessage]);
 
   const fetchCourseUsers = useCallback(
     async (targetPage: number, nextFilters?: CourseUserFilters) => {
       if (!shifuBid.trim()) {
-        setCourseUsersError({ message: unknownErrorMessage });
+        setCourseUsersError({ message: courseUsersLoadErrorMessage });
         setCourseUsers(EMPTY_COURSE_USERS_RESPONSE);
         return;
       }
@@ -502,7 +516,7 @@ export default function AdminOperationCourseDetailPage() {
         } else if (err instanceof Error) {
           setCourseUsersError({ message: err.message });
         } else {
-          setCourseUsersError({ message: unknownErrorMessage });
+          setCourseUsersError({ message: courseUsersLoadErrorMessage });
         }
       } finally {
         if (requestId === courseUsersRequestIdRef.current) {
@@ -510,7 +524,7 @@ export default function AdminOperationCourseDetailPage() {
         }
       }
     },
-    [courseUserFilters, shifuBid, unknownErrorMessage],
+    [courseUserFilters, shifuBid, courseUsersLoadErrorMessage],
   );
 
   const fetchCourseCreditUsages = useCallback(
@@ -519,7 +533,7 @@ export default function AdminOperationCourseDetailPage() {
       nextFilters?: AdminOperationCourseCreditUsageFilters,
     ) => {
       if (!shifuBid.trim()) {
-        setCourseCreditUsagesError({ message: unknownErrorMessage });
+        setCourseCreditUsagesError({ message: creditUsageLoadErrorMessage });
         setCourseCreditUsages(EMPTY_COURSE_CREDIT_USAGE_RESPONSE);
         return;
       }
@@ -569,7 +583,7 @@ export default function AdminOperationCourseDetailPage() {
         } else if (err instanceof Error) {
           setCourseCreditUsagesError({ message: err.message });
         } else {
-          setCourseCreditUsagesError({ message: unknownErrorMessage });
+          setCourseCreditUsagesError({ message: creditUsageLoadErrorMessage });
         }
       } finally {
         if (requestId === courseCreditUsagesRequestIdRef.current) {
@@ -577,13 +591,13 @@ export default function AdminOperationCourseDetailPage() {
         }
       }
     },
-    [courseCreditUsageFilters, shifuBid, unknownErrorMessage],
+    [courseCreditUsageFilters, shifuBid, creditUsageLoadErrorMessage],
   );
 
   const fetchCourseCreditUsageDetails = useCallback(
     async (row: AdminOperationCourseCreditUsageItem, page: number) => {
       if (!shifuBid.trim()) {
-        throw new Error(unknownErrorMessage);
+        throw new Error(creditUsageDetailsLoadErrorMessage);
       }
       return (await api.getAdminOperationCourseCreditUsageDetails({
         shifu_bid: shifuBid,
@@ -595,7 +609,7 @@ export default function AdminOperationCourseDetailPage() {
         mode: row.usage_mode === 'mixed' ? '' : row.usage_mode,
       })) as AdminOperationCourseCreditUsageDetailListResponse;
     },
-    [shifuBid, unknownErrorMessage],
+    [shifuBid, creditUsageDetailsLoadErrorMessage],
   );
 
   useEffect(() => {
@@ -1122,7 +1136,7 @@ export default function AdminOperationCourseDetailPage() {
         const message =
           err instanceof ErrorWithCode || err instanceof Error
             ? err.message
-            : t('common.core.unknownError');
+            : chapterDetailLoadErrorMessage;
         fail(message);
         setSelectedChapter(null);
       })
@@ -1135,7 +1149,11 @@ export default function AdminOperationCourseDetailPage() {
     return () => {
       isActive = false;
     };
-  }, [selectedChapter?.outline_item_bid, shifuBid, t]);
+  }, [
+    chapterDetailLoadErrorMessage,
+    selectedChapter?.outline_item_bid,
+    shifuBid,
+  ]);
 
   const estimateChapterColumnWidth = useCallback(
     (text: string, multiplier = 7) => {
@@ -1214,7 +1232,9 @@ export default function AdminOperationCourseDetailPage() {
             ? emptyValue
             : formatCount(chapter.rating_count, i18n.language),
         ],
-        updatedAt: chapter => [chapter.updated_at],
+        updatedAt: chapter => [
+          formatAdminUtcDateTime(chapter.updated_at) || emptyValue,
+        ],
       };
 
       const multiplierMap: Partial<Record<ChapterColumnKey, number>> = {
@@ -1318,9 +1338,15 @@ export default function AdminOperationCourseDetailPage() {
             : tOperations('detail.boolean.no'),
         ],
         totalPaidAmount: user => [resolveCourseUserPaidAmountDisplay(user)],
-        lastLearnedAt: user => [user.last_learning_at || emptyValue],
-        joinedAt: user => [user.joined_at || emptyValue],
-        lastLoginAt: user => [user.last_login_at || emptyValue],
+        lastLearnedAt: user => [
+          formatAdminUtcDateTime(user.last_learning_at) || emptyValue,
+        ],
+        joinedAt: user => [
+          formatAdminUtcDateTime(user.joined_at) || emptyValue,
+        ],
+        lastLoginAt: user => [
+          formatAdminUtcDateTime(user.last_login_at) || emptyValue,
+        ],
         action: () => [emptyValue],
       };
 
@@ -1425,15 +1451,12 @@ export default function AdminOperationCourseDetailPage() {
       {
         label: tOperations('detail.fields.createdAt'),
         value:
-          // Course metadata timestamps currently come from backend payloads as
-          // wall-clock values, so preserve them without browser-timezone
-          // conversion until those fields migrate to timezone-qualified ISO.
-          formatAdminNaiveDateTime(detail.basic_info.created_at) || emptyValue,
+          formatAdminUtcDateTime(detail.basic_info.created_at) || emptyValue,
       },
       {
         label: tOperations('detail.fields.updatedAt'),
         value:
-          formatAdminNaiveDateTime(detail.basic_info.updated_at) || emptyValue,
+          formatAdminUtcDateTime(detail.basic_info.updated_at) || emptyValue,
       },
     ],
     [
@@ -1543,7 +1566,7 @@ export default function AdminOperationCourseDetailPage() {
                   resolveContentStatusLabel={resolveContentStatusLabel}
                   resolveModifierDisplay={resolveModifierDisplay}
                   formatCount={formatCount}
-                  formatAdminNaiveDateTime={formatAdminNaiveDateTime}
+                  formatAdminUtcDateTime={formatAdminUtcDateTime}
                   getColumnStyle={getChapterColumnStyle}
                   getResizeHandleProps={getChapterResizeHandleProps}
                   tOperations={tOperations}

@@ -1,5 +1,5 @@
 'use client';
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import Link from 'next/link';
 
@@ -7,15 +7,17 @@ import { useShifu } from '@/store';
 import Loading from '../loading';
 import { useAlert } from '@/components/ui/UseAlert';
 import api from '@/api';
+import { ErrorWithCode } from '@/lib/request';
 import {
   BookOpen,
   ChevronDown,
   ChevronLeft,
   CircleAlert,
-  CircleCheck,
   CircleHelp,
   Copy,
   Headphones,
+  History,
+  Link2,
   Presentation,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -46,6 +48,10 @@ import {
   PUBLISH_LEARNING_MODES,
 } from './publishLearningMode';
 import { buildOnboardingTargetProps } from '@/lib/onboardingTargets';
+import {
+  formatLessonRelativeTime,
+  parseLessonHistoryDate,
+} from '@/lib/lesson-history-time';
 
 const publishModeIcons: Record<LearningMode, LucideIcon> = {
   read: BookOpen,
@@ -85,6 +91,9 @@ type HeaderProps = {
   settingsShouldStayOpen?: boolean;
   previewTargetId?: string;
   publishTargetId?: string;
+  lessonHistoryUrl?: string | null;
+  lessonHistoryUpdatedAt?: Date | string | null;
+  onLessonHistoryClick?: () => void;
 };
 
 const Header = ({
@@ -94,13 +103,17 @@ const Header = ({
   settingsShouldStayOpen,
   previewTargetId,
   publishTargetId,
+  lessonHistoryUrl,
+  lessonHistoryUpdatedAt,
+  onLessonHistoryClick,
 }: HeaderProps) => {
   const { t } = useTranslation();
   const alert = useAlert();
   const [publishing, setPublishing] = useState(false);
+  const [relativeTimeNow, setRelativeTimeNow] = useState(() => Date.now());
   const { toast } = useToast();
   const { trackEvent } = useTracking();
-  const { isSaving, lastSaveTime, currentShifu, error, actions } = useShifu();
+  const { isSaving, currentShifu, error, actions } = useShifu();
   // Only allow publish when backend grants explicit publish permission.
   const canPublish =
     Boolean(currentShifu?.bid) && currentShifu?.canPublish === true;
@@ -109,6 +122,41 @@ const Header = ({
       await actions.loadShifu(currentShifu.bid, { silent: true });
     }
   };
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setRelativeTimeNow(Date.now());
+    }, 30_000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const lessonHistoryDate = useMemo(() => {
+    return parseLessonHistoryDate(lessonHistoryUpdatedAt);
+  }, [lessonHistoryUpdatedAt]);
+  const lessonHistoryLabel = useMemo(() => {
+    if (!lessonHistoryDate) {
+      return '';
+    }
+    return formatLessonRelativeTime(
+      lessonHistoryDate,
+      {
+        justNow: t('component.header.justNow'),
+        minutesAgo: count => t('component.header.minutesAgo', { count }),
+        hoursAgo: count => t('component.header.hoursAgo', { count }),
+        daysAgo: count => t('component.header.daysAgo', { count }),
+      },
+      new Date(relativeTimeNow),
+    );
+  }, [lessonHistoryDate, relativeTimeNow, t]);
+  const lastModifiedLabel = t('component.header.lastLessonModified');
+  const lessonHistoryText = lessonHistoryLabel
+    ? t('component.header.lastLessonModifiedWithRelativeTime', {
+        relativeTime: lessonHistoryLabel,
+      })
+    : lastModifiedLabel;
+  const historyTooltip = t('module.shifu.history.title');
+  const showHistoryEntry = !error && !isSaving && Boolean(lessonHistoryUrl);
   const getCourseUrl = () =>
     buildCourseLearningUrl(currentShifu?.bid || '', currentShifu?.url);
   const getLearningModeUrl = (mode: LearningMode) =>
@@ -229,7 +277,7 @@ const Header = ({
               <button
                 type='button'
                 aria-label={t('component.header.copyLearningLink')}
-                className='flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-blue-600 transition-colors hover:bg-blue-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300'
+                className='flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-blue-600 transition-colors hover:bg-blue-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300'
                 onClick={() => {
                   void copyPublishedUrl(publishedUrl, mode);
                 }}
@@ -293,12 +341,17 @@ const Header = ({
       }
 
       showPublishSuccessAlert(result);
-    } catch {
+    } catch (error) {
       pendingWindow?.close();
-      toast({
-        title: t('common.core.actionFailed'),
-        variant: 'destructive',
-      });
+      // API errors already surface their specific message through the unified
+      // request-layer toast; re-toasting a generic title here would replace it
+      // (TOAST_LIMIT is 1). Only unexpected non-API errors need a fallback.
+      if (!(error instanceof ErrorWithCode)) {
+        toast({
+          title: t('common.core.actionFailed'),
+          variant: 'destructive',
+        });
+      }
     } finally {
       setPublishing(false);
     }
@@ -352,14 +405,6 @@ const Header = ({
 
             <div className='flex items-center'>
               {isSaving && <Loading className='h-4 w-4 mr-1' />}
-              {!error && !isSaving && lastSaveTime && (
-                <span className='flex flex-row items-center'>
-                  <CircleCheck
-                    size={16}
-                    className='mr-2  text-green-500'
-                  />
-                </span>
-              )}
               {error && (
                 <span className='flex flex-row items-center text-red-500'>
                   <CircleAlert
@@ -369,15 +414,29 @@ const Header = ({
                   {error}
                 </span>
               )}
-              {lastSaveTime && (
-                <div
-                  key={lastSaveTime.getTime()}
-                  style={{ color: 'rgba(0, 0, 0, 0.45)' }}
-                  className='text-sm not-italic font-normal bg-white leading-5 tracking-normal transform transition-all duration-300 ease-in-out translate-x-0 animate-slide-in'
-                >
-                  {t('component.header.saved')} {lastSaveTime?.toLocaleString()}
-                </div>
-              )}
+              {showHistoryEntry ? (
+                <TooltipProvider delayDuration={200}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Link
+                        href={lessonHistoryUrl || '#'}
+                        target='_blank'
+                        rel='noopener noreferrer'
+                        onClick={onLessonHistoryClick}
+                        className='inline-flex items-center text-sm font-normal leading-5 text-[rgba(0,0,0,0.45)] transition-colors hover:text-foreground'
+                        aria-label={historyTooltip}
+                        title={historyTooltip}
+                      >
+                        <History className='mr-2 h-4 w-4 shrink-0' />
+                        <span className='underline decoration-dashed decoration-1 underline-offset-[3px]'>
+                          {lessonHistoryText}
+                        </span>
+                      </Link>
+                    </TooltipTrigger>
+                    <TooltipContent>{historyTooltip}</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              ) : null}
             </div>
           </div>
         </div>
@@ -443,7 +502,7 @@ const Header = ({
                         void copyLearningModeUrl(mode);
                       }}
                     >
-                      <Copy className='h-3.5 w-3.5' />
+                      <Link2 className='h-3.5 w-3.5' />
                     </button>
                   );
                   const rowContent = (
@@ -460,7 +519,7 @@ const Header = ({
                         disabled={modeDisabled}
                         className={cn(
                           'min-w-0 flex-1 bg-transparent px-3 py-2 text-sm focus:bg-transparent',
-                          unavailableLabel
+                          modeDisabled
                             ? 'cursor-not-allowed'
                             : 'cursor-pointer',
                         )}
@@ -471,10 +530,7 @@ const Header = ({
                         <button
                           type='button'
                           disabled={modeDisabled}
-                          className={cn(
-                            'flex min-w-0 items-center gap-2.5 text-left',
-                            unavailableLabel ? 'cursor-not-allowed' : '',
-                          )}
+                          className='flex min-w-0 items-center gap-2.5 text-left'
                         >
                           <ModeIcon className='h-4 w-4 shrink-0 text-muted-foreground/70' />
                           <span className='truncate'>

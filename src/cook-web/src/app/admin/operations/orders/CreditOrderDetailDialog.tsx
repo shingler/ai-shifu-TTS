@@ -3,10 +3,7 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import api from '@/api';
-import {
-  formatAdminNaiveDateTime,
-  formatAdminUtcDateTime,
-} from '@/app/admin/lib/dateTime';
+import { formatAdminUtcDateTime } from '@/app/admin/lib/dateTime';
 import {
   formatAdminCredits,
   formatAdminPrice,
@@ -141,7 +138,11 @@ export default function CreditOrderDetailDialog({
       } else if (requestError instanceof Error) {
         setError({ message: requestError.message });
       } else {
-        setError({ message: t('common.core.unknownError') });
+        setError({
+          message: t(
+            'module.operationsOrder.messages.loadCreditOrderDetailFailed',
+          ),
+        });
       }
     } finally {
       if (requestId === fetchRequestIdRef.current) {
@@ -258,9 +259,7 @@ export default function CreditOrderDetailDialog({
                 />
                 <DetailRow
                   label={t('module.order.fields.createdAt')}
-                  value={
-                    formatAdminNaiveDateTime(order.created_at) || emptyValue
-                  }
+                  value={formatAdminUtcDateTime(order.created_at) || emptyValue}
                 />
                 <DetailRow
                   label={tOperationsOrder('creditOrders.detail.labels.paidAt')}
@@ -414,7 +413,7 @@ export default function CreditOrderDetailDialog({
 
               {metadata ? (
                 <details className='rounded-xl border border-border bg-white p-4'>
-                  <summary className='cursor-pointer text-sm font-semibold text-foreground'>
+                  <summary className='text-sm font-semibold text-foreground'>
                     {tOperationsOrder('creditOrders.detail.sections.metadata')}
                   </summary>
                   <pre className='mt-3 overflow-x-auto rounded-lg bg-slate-50 p-3 text-xs leading-6 text-slate-700'>

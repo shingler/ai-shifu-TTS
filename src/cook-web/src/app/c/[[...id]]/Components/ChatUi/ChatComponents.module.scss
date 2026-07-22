@@ -237,6 +237,13 @@
   }
 }
 
+.lessonPdfOffscreen {
+  position: absolute;
+  top: 0;
+  left: -10000px;
+  pointer-events: none;
+}
+
 .scrollToBottom {
   position: absolute;
   bottom: 90px;
@@ -252,7 +259,6 @@
   align-items: center;
   justify-content: center;
   border: 1px solid rgba(0, 0, 0, 0.08);
-  cursor: pointer;
   color: #666;
   transition: all 0.3s ease;
   opacity: 0;

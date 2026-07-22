@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
-from flask import Flask, has_app_context
+from flask import has_app_context
 
 from flaskr.common.config import get_config as get_common_config
 from flaskr.service.config.funcs import get_config
@@ -15,7 +15,7 @@ from flaskr.service.metering.consts import (
     BILL_USAGE_SCENE_PREVIEW,
     BILL_USAGE_SCENE_PROD,
 )
-from flaskr.util.timezone import serialize_with_app_timezone
+from flaskr.util.datetime import to_utc_iso
 
 from .consts import BILL_CONFIG_KEY_CREDIT_PRECISION, BILL_CONFIG_KEY_ENABLED
 from .value_objects import JsonObjectMap
@@ -138,31 +138,11 @@ def coerce_bool(value: Any, *, default: bool = False) -> bool:
     return normalized in {"1", "true", "yes", "on"}
 
 
-def safe_to_decimal(value: Any, *, default: Any) -> Decimal:
-    try:
-        return to_decimal(value)
-    except Exception:
-        return to_decimal(default)
-
-
 def safe_to_positive_int(value: Any, *, default: int) -> int:
     candidate = safe_int(value)
     if candidate is None or candidate <= 0:
         return default
     return candidate
-
-
-def parse_config_datetime(value: Any) -> datetime | None:
-    normalized = str(value or "").strip()
-    if not normalized:
-        return None
-    try:
-        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
-    return parsed
 
 
 def coerce_datetime(value: Any) -> datetime | None:
@@ -173,23 +153,37 @@ def coerce_datetime(value: Any) -> datetime | None:
     if isinstance(value, (int, float)):
         if value <= 0:
             return None
-        return datetime.fromtimestamp(value)
+        return datetime.fromtimestamp(value, timezone.utc).replace(tzinfo=None)
     text = str(value).strip()
     if not text:
         return None
     if text.isdigit():
-        return datetime.fromtimestamp(int(text))
+        epoch_seconds = int(text)
+        if epoch_seconds <= 0:
+            return None
+        return datetime.fromtimestamp(epoch_seconds, timezone.utc).replace(tzinfo=None)
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def normalize_mysql_datetime(value: datetime) -> datetime:
+    """Normalize to MySQL DATETIME(0)'s default fractional-second rounding."""
+
+    if value.microsecond >= 500_000:
+        value = value + timedelta(seconds=1)
+    return value.replace(microsecond=0)
 
 
 def normalize_json_value(value: Any) -> Any:
     if isinstance(value, Decimal):
         return decimal_to_number(value)
     if isinstance(value, datetime):
-        return value.isoformat()
+        return to_utc_iso(value)
     if isinstance(value, list):
         return [normalize_json_value(item) for item in value]
     if isinstance(value, JsonObjectMap):
@@ -222,12 +216,3 @@ def normalize_json_object(value: Any) -> JsonObjectMap:
     if isinstance(normalized, JsonObjectMap):
         return normalized
     return JsonObjectMap()
-
-
-def serialize_dt(
-    app: Flask,
-    value: datetime | None,
-    *,
-    timezone_name: str | None = None,
-) -> str | None:
-    return serialize_with_app_timezone(app, value, timezone_name)

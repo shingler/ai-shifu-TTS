@@ -15,7 +15,7 @@ import {
   ADMIN_TABLE_RESIZE_HANDLE_CLASS,
 } from '@/app/admin/components/adminTableStyles';
 import { useAdminResizableColumns } from '@/app/admin/hooks/useAdminResizableColumns';
-import { formatAdminNaiveDateTime } from '@/app/admin/lib/dateTime';
+import { formatAdminUtcDateTime } from '@/app/admin/lib/dateTime';
 import { formatAdminCount } from '@/app/admin/lib/numberFormat';
 import { useEnvStore } from '@/c-store';
 import ErrorDisplay from '@/components/ErrorDisplay';
@@ -262,7 +262,9 @@ export default function AdminOperationCourseRatingsPage() {
     return rawValue?.trim() || '';
   }, [params]);
   const { isReady } = useOperatorGuard();
-  const unknownErrorMessage = t('common.core.unknownError');
+  const ratingsLoadErrorMessage = t(
+    'module.operationsCourse.messages.loadRatingsFailed',
+  );
   const emptyValue = tOperations('detail.ratings.emptyValue');
   const clearLabel = t('common.core.close');
   const defaultUserName = t('module.user.defaultUserName');
@@ -310,7 +312,7 @@ export default function AdminOperationCourseRatingsPage() {
         setRatings(EMPTY_RATINGS_RESPONSE);
         setFullSummary(EMPTY_RATINGS_RESPONSE.summary);
         fullSummaryLoadedRef.current = false;
-        setError({ message: unknownErrorMessage });
+        setError({ message: ratingsLoadErrorMessage });
         setLoading(false);
         return;
       }
@@ -368,7 +370,7 @@ export default function AdminOperationCourseRatingsPage() {
         } else if (err instanceof Error) {
           setError({ message: err.message });
         } else {
-          setError({ message: unknownErrorMessage });
+          setError({ message: ratingsLoadErrorMessage });
         }
       } finally {
         if (requestId === requestIdRef.current) {
@@ -376,7 +378,7 @@ export default function AdminOperationCourseRatingsPage() {
         }
       }
     },
-    [shifuBid, unknownErrorMessage],
+    [shifuBid, ratingsLoadErrorMessage],
   );
 
   useEffect(() => {
@@ -443,7 +445,7 @@ export default function AdminOperationCourseRatingsPage() {
         key: 'latestRatedAt',
         label: tOperations('detail.ratings.summary.latestRatedAt'),
         value:
-          formatAdminNaiveDateTime(fullSummary.latest_rated_at) || emptyValue,
+          formatAdminUtcDateTime(fullSummary.latest_rated_at) || emptyValue,
         tone: 'timestamp' as const,
       },
     ],
@@ -722,7 +724,7 @@ export default function AdminOperationCourseRatingsPage() {
       <div className='p-6'>
         <ErrorDisplay
           errorCode={0}
-          errorMessage={unknownErrorMessage}
+          errorMessage={ratingsLoadErrorMessage}
           onRetry={() => router.push('/admin/operations')}
         />
       </div>
@@ -993,7 +995,7 @@ export default function AdminOperationCourseRatingsPage() {
                                       style={getColumnStyle('ratedAt')}
                                     >
                                       <AdminTooltipText
-                                        text={formatAdminNaiveDateTime(
+                                        text={formatAdminUtcDateTime(
                                           item.rated_at,
                                         )}
                                         emptyValue={emptyValue}
