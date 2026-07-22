@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 
 import LogoWithText from '@/c-components/logo/LogoWithText';
@@ -9,6 +9,8 @@ import MainMenuModalBase from '@/c-components/NavDrawer/MainMenuModal';
 import { useDisclosure } from '@/c-common/hooks/useDisclosure';
 import { useUiLayoutStore } from '@/c-store/useUiLayoutStore';
 import { FRAME_LAYOUT_MOBILE } from '@/c-constants/uiConstants';
+import { shifu } from '@/c-service/Shifu';
+import { buildLoginRedirectPath } from '@/c-utils/urlUtils';
 
 // Legacy /c components (forwardRef without generics, loose prop types).
 // Cast to any to avoid per-attribute @ts-expect-error, consistent with the
@@ -48,6 +50,29 @@ export default function HomeHeader() {
     },
     [onMenuClose],
   );
+
+  const gotoLogin = useCallback(() => {
+    const redirectPath = buildLoginRedirectPath(window.location.href);
+    router.push(`/login?redirect=${encodeURIComponent(redirectPath)}`);
+  }, [router]);
+
+  // The home page reuses /c's MainMenuModal, whose login entry only dispatches
+  // the global OPEN_LOGIN_MODAL event. /c's page listens for it and jumps to
+  // /login; the home page has no such listener, so wire one up here. Mirrors
+  // the gotoLogin pattern in src/app/c/[[...id]]/page.tsx.
+  useEffect(() => {
+    const handler = () => {
+      onMenuClose();
+      gotoLogin();
+    };
+    shifu.events.addEventListener(shifu.EventTypes.OPEN_LOGIN_MODAL, handler);
+    return () => {
+      shifu.events.removeEventListener(
+        shifu.EventTypes.OPEN_LOGIN_MODAL,
+        handler,
+      );
+    };
+  }, [gotoLogin, onMenuClose]);
 
   return (
     <header className='sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur'>

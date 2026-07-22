@@ -2,10 +2,24 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import React from 'react';
 
 import HomeHeader from './HomeHeader';
+import { shifu } from '@/c-service/Shifu';
 
+const mockPush = jest.fn();
 jest.mock('next/navigation', () => ({
-  useRouter: () => ({ push: jest.fn() }),
+  useRouter: () => ({ push: mockPush }),
 }));
+// Mock shifu with a real EventTarget so the OPEN_LOGIN_MODAL listener can be
+// exercised without pulling in the full /c dependency chain (store → studyV2
+// → sse.js, whose ESM syntax jest does not transform).
+jest.mock('@/c-service/Shifu', () => {
+  const events = new EventTarget();
+  return {
+    shifu: {
+      EventTypes: { OPEN_LOGIN_MODAL: 'OPEN_LOGIN_MODAL' },
+      events,
+    },
+  };
+});
 jest.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
@@ -64,4 +78,19 @@ test('hides personal info item and anchors the menu flush below the trigger', ()
   expect(style).toContain('"right":0');
   expect(style).toContain('"top":"100%"');
   expect(style).toContain('"left":"auto"');
+});
+
+beforeEach(() => {
+  mockPush.mockClear();
+});
+
+test('OPEN_LOGIN_MODAL event navigates to /login with a redirect param', () => {
+  render(<HomeHeader />);
+
+  shifu.events.dispatchEvent(new CustomEvent(shifu.EventTypes.OPEN_LOGIN_MODAL));
+
+  expect(mockPush).toHaveBeenCalledTimes(1);
+  expect(mockPush).toHaveBeenCalledWith(
+    expect.stringMatching(/^\/login\?redirect=/),
+  );
 });
