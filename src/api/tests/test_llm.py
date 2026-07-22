@@ -13,6 +13,12 @@ def _install_litellm_stub() -> None:
         return
 
     litellm_stub = types.ModuleType("litellm")
+    litellm_stub.model_cost = {}
+
+    def register_model(model_map):
+        litellm_stub.model_cost.update(model_map)
+
+    litellm_stub.register_model = register_model
     litellm_stub.get_max_tokens = lambda _model: 4096
     litellm_stub.completion = lambda *args, **kwargs: iter([])
     sys.modules["litellm"] = litellm_stub
@@ -94,6 +100,7 @@ from flaskr.service.billing.consts import (
     CREDIT_USAGE_RATE_STATUS_ACTIVE,
 )
 from flaskr.service.billing.models import CreditUsageRate
+from flaskr.service.common import credit_rate_references
 from flaskr.service.metering.consts import (
     BILL_USAGE_SCENE_DEBUG,
     BILL_USAGE_SCENE_PREVIEW,
@@ -208,6 +215,7 @@ def _configure_model_list(monkeypatch):
     )
     config = {
         "DEFAULT_LLM_MODEL": "qwen/deepseek-v4-flash",
+        "LLM_CREDIT_1X_PER_1000_OUTPUT_TOKENS": "0.066667",
         "LLM_ALLOWED_MODELS": ",".join(available_models),
         "LLM_ALLOWED_MODEL_DISPLAY_NAMES": (
             "DeepSeek-V4-Flash,Doubao-Seed-2.0-lite,No Rate"
@@ -215,6 +223,11 @@ def _configure_model_list(monkeypatch):
     }
     monkeypatch.setattr(
         llm, "get_config", lambda key, default=None: config.get(key, default)
+    )
+    monkeypatch.setattr(
+        credit_rate_references,
+        "get_config",
+        lambda key, default=None: config.get(key, default),
     )
 
 
@@ -268,7 +281,7 @@ def test_get_current_models_adds_output_token_credit_multiplier(monkeypatch, app
                     rate_bid="doubao-output",
                     provider="ark",
                     model="ark/doubao-seed-2-0-lite-260428",
-                    credits_per_unit="0.00018",
+                    credits_per_unit="0.0001800009",
                 ),
             ]
         )
@@ -281,11 +294,104 @@ def test_get_current_models_adds_output_token_credit_multiplier(monkeypatch, app
 
     by_model = {item["model"]: item for item in models}
     assert by_model["qwen/deepseek-v4-flash"]["credit_multiplier"] == 1
+    assert by_model["qwen/deepseek-v4-flash"]["credit_multiplier_label"] == "1x"
+    assert by_model["qwen/deepseek-v4-flash"]["is_default"] is True
     assert by_model["ark/doubao-seed-2-0-lite-260428"]["credit_multiplier"] == 3
+    assert (
+        by_model["ark/doubao-seed-2-0-lite-260428"]["credit_multiplier_label"] == "2.7x"
+    )
     assert by_model["qwen/no-rate-model"]["credit_multiplier"] is None
+    assert by_model["qwen/no-rate-model"]["credit_multiplier_label"] is None
     assert by_model["ark/doubao-seed-2-0-lite-260428"]["display_name"] == (
         "Doubao-Seed-2.0-lite"
     )
+
+
+def test_get_current_models_uses_fixed_credit_1x_anchor(monkeypatch, app):
+    _configure_model_list(monkeypatch)
+    with app.app_context():
+        db.session.query(CreditUsageRate).delete()
+        db.session.add_all(
+            [
+                _create_credit_rate(
+                    rate_bid="default-original-output",
+                    provider="qwen",
+                    model="qwen/deepseek-v4-flash",
+                    credits_per_unit="0.000066667",
+                    effective_from=datetime(2026, 1, 1, 0, 0, 0),
+                ),
+                _create_credit_rate(
+                    rate_bid="default-edited-output",
+                    provider="qwen",
+                    model="qwen/deepseek-v4-flash",
+                    credits_per_unit="0.000466669",
+                    effective_from=datetime(2026, 2, 1, 0, 0, 0),
+                ),
+                _create_credit_rate(
+                    rate_bid="doubao-output",
+                    provider="ark",
+                    model="ark/doubao-seed-2-0-lite-260428",
+                    credits_per_unit="0.0001800009",
+                    effective_from=datetime(2026, 1, 1, 0, 0, 0),
+                ),
+            ]
+        )
+        db.session.commit()
+
+        models = llm.get_current_models(app)
+
+        db.session.query(CreditUsageRate).delete()
+        db.session.commit()
+
+    by_model = {item["model"]: item for item in models}
+    assert by_model["qwen/deepseek-v4-flash"]["credit_multiplier"] == pytest.approx(7)
+    assert by_model["qwen/deepseek-v4-flash"]["credit_multiplier_label"] == "7x"
+    assert by_model["qwen/deepseek-v4-flash"]["is_default"] is True
+    assert (
+        by_model["ark/doubao-seed-2-0-lite-260428"]["credit_multiplier_label"] == "2.7x"
+    )
+
+
+def test_get_current_models_hides_multiplier_when_credit_1x_anchor_missing(
+    monkeypatch, app
+):
+    _configure_model_list(monkeypatch)
+    missing_anchor_config = {
+        "DEFAULT_LLM_MODEL": "qwen/deepseek-v4-flash",
+        "LLM_ALLOWED_MODELS": (
+            "qwen/deepseek-v4-flash,ark/doubao-seed-2-0-lite-260428"
+        ),
+    }
+    monkeypatch.setattr(
+        llm,
+        "get_config",
+        lambda key, default=None: missing_anchor_config.get(key, default),
+    )
+    monkeypatch.setattr(
+        credit_rate_references,
+        "get_config",
+        lambda key, default=None: missing_anchor_config.get(key, default),
+    )
+
+    with app.app_context():
+        db.session.query(CreditUsageRate).delete()
+        db.session.add(
+            _create_credit_rate(
+                rate_bid="default-output",
+                provider="qwen",
+                model="qwen/deepseek-v4-flash",
+                credits_per_unit="0.000066667",
+            )
+        )
+        db.session.commit()
+
+        models = llm.get_current_models(app)
+
+        db.session.query(CreditUsageRate).delete()
+        db.session.commit()
+
+    assert all(item["credit_multiplier"] is None for item in models)
+    assert all(item.get("credit_multiplier_label") is None for item in models)
 
 
 def test_get_current_models_keeps_list_when_credit_rate_lookup_fails(monkeypatch, app):
@@ -386,6 +492,11 @@ def test_qwen_prefixed_model_routes_without_fetched_alias(monkeypatch, app):
     monkeypatch.setattr(llm, "MODEL_ALIAS_MAP", {})
     monkeypatch.setattr(
         llm,
+        "MODEL_MAX_OUTPUT_TOKENS",
+        {"qwen/deepseek-v4-flash": 393216},
+    )
+    monkeypatch.setattr(
+        llm,
         "PROVIDER_CONFIG_HINTS",
         {"qwen": "QWEN_API_KEY,QWEN_API_URL"},
     )
@@ -406,6 +517,146 @@ def test_qwen_prefixed_model_routes_without_fetched_alias(monkeypatch, app):
     assert captured["model"] == "deepseek-v4-flash"
     assert captured["kwargs"]["temperature"] == 0.7
     assert captured["kwargs"]["extra_body"] == {"enable_thinking": False}
+    assert captured["kwargs"]["max_tokens"] == 393216
+
+
+def test_load_and_register_model_max_output_tokens(monkeypatch):
+    configured = {
+        "qwen/deepseek-v4-flash": 393216,
+        "ark/doubao-seed-2-0-lite-260428": 131072,
+    }
+    captured = {}
+
+    monkeypatch.setattr(
+        llm,
+        "get_config",
+        lambda key, default=None: (
+            configured if key == "LLM_MODEL_MAX_OUTPUT_TOKENS" else default
+        ),
+    )
+    monkeypatch.setattr(
+        llm.litellm,
+        "register_model",
+        lambda model_map: captured.update(model_map),
+        raising=False,
+    )
+
+    limits = llm._load_and_register_model_max_output_tokens()
+
+    assert limits == configured
+    assert captured == {
+        "qwen/deepseek-v4-flash": {"max_output_tokens": 393216},
+        "ark/doubao-seed-2-0-lite-260428": {"max_output_tokens": 131072},
+    }
+
+
+def test_load_model_max_output_tokens_ignores_invalid_config(monkeypatch):
+    monkeypatch.setattr(
+        llm,
+        "get_config",
+        lambda key, default=None: (
+            '{"qwen/model": 0}' if key == "LLM_MODEL_MAX_OUTPUT_TOKENS" else default
+        ),
+    )
+    monkeypatch.setattr(
+        llm.litellm,
+        "register_model",
+        lambda _model_map: pytest.fail("invalid limits must not be registered"),
+        raising=False,
+    )
+
+    assert llm._load_and_register_model_max_output_tokens() == {}
+
+
+def test_stream_litellm_completion_falls_back_to_litellm_limit(monkeypatch, app):
+    captured = {}
+    monkeypatch.setattr(llm, "MODEL_MAX_OUTPUT_TOKENS", {})
+    monkeypatch.setattr(llm.litellm, "get_max_tokens", lambda model: 8192)
+    monkeypatch.setattr(
+        llm.litellm,
+        "completion",
+        lambda *args, **kwargs: captured.update(kwargs) or iter([]),
+    )
+
+    list(
+        llm._stream_litellm_completion(
+            app,
+            "openai/gpt-test",
+            "gpt-test",
+            [],
+            {},
+            {},
+        )
+    )
+
+    assert captured["max_tokens"] == 8192
+
+
+@pytest.mark.parametrize(
+    ("requested_max_tokens", "expected_max_tokens"),
+    [(None, 131072), (4096, 4096), (200000, 131072)],
+)
+def test_stream_litellm_completion_applies_configured_limit_as_ceiling(
+    monkeypatch,
+    app,
+    requested_max_tokens,
+    expected_max_tokens,
+):
+    captured = {}
+    monkeypatch.setattr(
+        llm,
+        "MODEL_MAX_OUTPUT_TOKENS",
+        {"ark/doubao-seed-2-0-lite-260428": 131072},
+    )
+    monkeypatch.setattr(
+        llm.litellm,
+        "completion",
+        lambda *args, **kwargs: captured.update(kwargs) or iter([]),
+    )
+    kwargs = {}
+    if requested_max_tokens is not None:
+        kwargs["max_tokens"] = requested_max_tokens
+
+    list(
+        llm._stream_litellm_completion(
+            app,
+            "ark/doubao-seed-2-0-lite-260428",
+            "doubao-seed-2-0-lite-260428",
+            [],
+            {},
+            kwargs,
+        )
+    )
+
+    assert captured["max_tokens"] == expected_max_tokens
+
+
+def test_stream_litellm_completion_omits_unknown_limit(monkeypatch, app):
+    captured = {}
+
+    def raise_unknown(_model):
+        raise ValueError("unknown model")
+
+    monkeypatch.setattr(llm, "MODEL_MAX_OUTPUT_TOKENS", {})
+    monkeypatch.setattr(llm.litellm, "get_max_tokens", raise_unknown)
+    monkeypatch.setattr(
+        llm.litellm,
+        "completion",
+        lambda *args, **kwargs: captured.update(kwargs) or iter([]),
+    )
+
+    list(
+        llm._stream_litellm_completion(
+            app,
+            "qwen/unknown-model",
+            "unknown-model",
+            [],
+            {},
+            {},
+        )
+    )
+
+    assert "max_tokens" not in captured
 
 
 def test_qwen_provider_config_keeps_prefix_fallback():

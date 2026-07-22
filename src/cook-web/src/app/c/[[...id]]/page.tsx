@@ -40,6 +40,7 @@ import {
 } from '@/c-api/user';
 import { shifu } from '@/c-service/Shifu';
 import apiService from '@/api';
+import type { EnvStoreState } from '@/c-types/store';
 import {
   buildLoginRedirectPath,
   getLessonIdFromQuery,
@@ -183,6 +184,16 @@ export default function ChatPage() {
    */
   const { frameLayout, updateFrameLayout } = useUiLayoutStore(state => state);
   const mobileStyle = frameLayout === FRAME_LAYOUT_MOBILE;
+  const enableWxcode = useEnvStore(
+    (state: EnvStoreState) => state.enableWxcode,
+  );
+  // WeChat JSAPI payment needs an openid, which is only obtainable when the
+  // WeChat code flow is enabled (i.e. not on custom domains). Without it,
+  // guide the user to pay in an external browser instead.
+  const wxcodeEnabled =
+    typeof enableWxcode === 'string' && enableWxcode.toLowerCase() === 'true';
+  const wechatPayUnavailable = inWechat() && !inMiniProgram() && !wxcodeEnabled;
+  const showPayGuide = inMiniProgram() || wechatPayUnavailable;
   const [listenMobileViewMode, setListenMobileViewMode] =
     useState<MobileViewMode>(DEFAULT_LISTEN_MOBILE_VIEW_MODE);
   const [isLandscapeViewport, setIsLandscapeViewport] = useState(false);
@@ -999,14 +1010,24 @@ export default function ChatPage() {
           />
         ) : null} */}
 
-        {payModalOpen && inMiniProgram() ? (
+        {payModalOpen && showPayGuide ? (
           <MiniProgramPayGuide
             open={payModalOpen}
             onClose={_onPayModalCancel}
+            titleKey={
+              wechatPayUnavailable
+                ? 'module.pay.externalBrowserNotSupported'
+                : undefined
+            }
+            descriptionKey={
+              wechatPayUnavailable
+                ? 'module.pay.externalBrowserGuide'
+                : undefined
+            }
           />
         ) : null}
 
-        {payModalOpen && !inMiniProgram() && mobileStyle ? (
+        {payModalOpen && !showPayGuide && mobileStyle ? (
           <PayModalM
             open={payModalOpen}
             onCancel={_onPayModalCancel}
@@ -1016,7 +1037,7 @@ export default function ChatPage() {
           />
         ) : null}
 
-        {payModalOpen && !inMiniProgram() && !mobileStyle ? (
+        {payModalOpen && !showPayGuide && !mobileStyle ? (
           <PayModal
             open={payModalOpen}
             onCancel={_onPayModalCancel}

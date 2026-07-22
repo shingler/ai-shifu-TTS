@@ -24,7 +24,10 @@ from flaskr.api.langfuse import (
     get_request_id,
     resolve_langfuse_trace_id,
 )
-from flaskr.common.config import get_explicit_env_override
+from flaskr.common.config import (
+    get_explicit_env_override,
+    parse_llm_model_max_output_tokens,
+)
 from flaskr.service.config import get_config
 from flaskr.util.datetime import now_utc
 from flaskr.service.common.models import raise_error_with_args
@@ -33,13 +36,16 @@ from flaskr.service.billing.consts import (
     CREDIT_USAGE_RATE_STATUS_ACTIVE,
 )
 from flaskr.service.billing.models import CreditUsageRate
+from flaskr.service.billing.rate_references import (
+    format_credit_multiplier,
+    load_llm_credit_1x_unit_cost,
+)
 from flaskr.service.metering import UsageContext, record_llm_usage
 from flaskr.service.metering.consts import (
     BILL_USAGE_SCENE_PROD,
     BILL_USAGE_TYPE_LLM,
     normalize_usage_scene,
 )
-from litellm import get_max_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +115,7 @@ class ProviderState:
 
 MODEL_ALIAS_MAP: Dict[str, Tuple[str, str]] = {}
 PROVIDER_STATES: Dict[str, ProviderState] = {}
+MODEL_MAX_OUTPUT_TOKENS: Dict[str, int] = {}
 _USAGE_OUTPUT_TEXT_MAX_LENGTH = 12000
 
 
@@ -229,6 +236,37 @@ def _resolve_allowed_model_config() -> tuple[list[str], list[str]]:
     return allowed, display_names
 
 
+def _load_and_register_model_max_output_tokens() -> Dict[str, int]:
+    raw_limits = get_config("LLM_MODEL_MAX_OUTPUT_TOKENS", "")
+    try:
+        limits = parse_llm_model_max_output_tokens(raw_limits)
+    except ValueError as exc:
+        _log_warning(f"Ignoring invalid LLM_MODEL_MAX_OUTPUT_TOKENS: {exc}")
+        return {}
+    if not limits:
+        return {}
+
+    register_model = getattr(litellm, "register_model", None)
+    if not callable(register_model):
+        _log_warning(
+            "LiteLLM register_model is unavailable; using configured model "
+            "output limits without extending LiteLLM metadata"
+        )
+        return limits
+    try:
+        register_model(
+            {
+                model: {"max_output_tokens": max_output_tokens}
+                for model, max_output_tokens in limits.items()
+            }
+        )
+    except Exception as exc:
+        _log_warning(
+            f"Registering LLM_MODEL_MAX_OUTPUT_TOKENS with LiteLLM failed: {exc}"
+        )
+    return limits
+
+
 def _register_provider_models(
     config: ProviderConfig, raw_models: List[Union[str, Tuple[str, str]]]
 ) -> List[str]:
@@ -335,14 +373,33 @@ def _is_litellm_repeated_stream_chunk_error(exc: Exception) -> bool:
 
 
 def _stream_litellm_completion(
-    app: Flask, model: str, messages: list, params: dict, kwargs: dict
+    app: Flask,
+    requested_model: str,
+    model: str,
+    messages: list,
+    params: dict,
+    kwargs: dict,
 ):
     try:
-        try:
-            max_tokens = get_max_tokens(model)
-            kwargs["max_tokens"] = max_tokens
-        except Exception as exc:
-            _log_warning(f"get max tokens for {model} failed: {exc}")
+        # Routed ids are the application-level identity. LiteLLM completion uses
+        # the stripped provider model id, which can collide across routes (for
+        # example, a Qwen-hosted DeepSeek model and the direct DeepSeek provider).
+        max_tokens = MODEL_MAX_OUTPUT_TOKENS.get(requested_model)
+        if max_tokens is None:
+            try:
+                max_tokens = litellm.get_max_tokens(model)
+            except Exception as exc:
+                _log_warning(f"get max tokens for {model} failed: {exc}")
+        if max_tokens is not None:
+            requested_max_tokens = kwargs.get("max_tokens")
+            if (
+                isinstance(requested_max_tokens, int)
+                and not isinstance(requested_max_tokens, bool)
+                and requested_max_tokens > 0
+            ):
+                kwargs["max_tokens"] = min(requested_max_tokens, max_tokens)
+            else:
+                kwargs["max_tokens"] = max_tokens
         app.logger.info(
             f"stream_litellm_completion: {model} {messages} {params} {kwargs}"
         )
@@ -602,6 +659,8 @@ for config in LITELLM_PROVIDER_CONFIGS:
     PROVIDER_STATES[config.key] = _init_litellm_provider(config)
     PROVIDER_CONFIG_HINTS[config.key] = config.config_hint or config.api_key_env
 
+MODEL_MAX_OUTPUT_TOKENS.update(_load_and_register_model_max_output_tokens())
+
 
 any_litellm_enabled = any(state.enabled for state in PROVIDER_STATES.values())
 if not any_litellm_enabled:
@@ -718,6 +777,7 @@ def invoke_llm(
             )
         response = _stream_litellm_completion(
             app,
+            model,
             invoke_model,
             messages,
             params,
@@ -887,6 +947,7 @@ def chat_llm(
         kwargs["stream_options"] = {"include_usage": True}
         response = _stream_litellm_completion(
             app,
+            model,
             invoke_model,
             messages,
             params,
@@ -1123,23 +1184,13 @@ def _attach_credit_multipliers(
     app: Flask, options: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     default_model = str(get_config("DEFAULT_LLM_MODEL", "") or "").strip()
-    if not options or not default_model:
+    if not options:
         return [{**option, "credit_multiplier": None} for option in options]
 
     try:
         rows = _load_llm_output_rate_rows(app)
         now = now_utc()
-        default_provider, default_model_candidates = _resolve_billing_rate_identity(
-            default_model
-        )
-        default_rate = _rate_per_token(
-            _select_credit_usage_rate(
-                rows,
-                provider=default_provider,
-                model_candidates=default_model_candidates,
-                now=now,
-            )
-        )
+        default_rate = load_llm_credit_1x_unit_cost()
         if default_rate is None or default_rate <= 0:
             return [{**option, "credit_multiplier": None} for option in options]
 
@@ -1156,13 +1207,21 @@ def _attach_credit_multipliers(
                 )
             )
             multiplier = None
+            multiplier_label = None
             if model_rate is not None and model_rate > 0:
+                multiplier_value = model_rate / default_rate
                 multiplier = int(
-                    (model_rate / default_rate).to_integral_value(
-                        rounding=ROUND_CEILING
-                    )
+                    multiplier_value.to_integral_value(rounding=ROUND_CEILING)
                 )
-            enriched.append({**option, "credit_multiplier": multiplier})
+                multiplier_label = format_credit_multiplier(multiplier_value)
+            enriched.append(
+                {
+                    **option,
+                    "credit_multiplier": multiplier,
+                    "credit_multiplier_label": multiplier_label,
+                    "is_default": model == default_model,
+                }
+            )
         return enriched
     except Exception as exc:
         _log_warning(f"load LLM credit multipliers error: {exc}")

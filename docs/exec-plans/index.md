@@ -12,6 +12,7 @@ Active and completed ExecPlans live here. The structure and required sections ar
 - [Backend Overhaul Master Plan: Inventory and Optimization](./active/backend-overhaul-master.md)
 - [ExecPlan: Billing Credit Notifications](./active/billing-credit-notifications.md)
 - [课程发现页「可听课」徽章 — ExecPlan](./active/course-discovery-tts-badge.md)
+- [Creator Brand Domain And Payments](./active/creator-brand-domain-payments.md)
 - [Creator Dashboard Course Ownership Optimization](./active/creator-dashboard-course-ownership-optimization.md)
 - [Creator Dashboard Course Ratings](./active/creator-dashboard-course-ratings.md)
 - [Creator Dashboard Learners SQL Optimization](./active/creator-dashboard-learners-sql-optimization.md)
