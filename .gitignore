@@ -190,6 +190,9 @@ docker/storage/
 # Logs
 src/api/logs/
 
+# Local file storage (runtime uploaded assets served via /api/storage)
+src/api/storage/
+
 # Harness runtime artifacts
 artifacts/runs/
 
@@ -197,4 +200,7 @@ artifacts/runs/
 # Never ignore these files (exceptions to above rules)
 ###############################################################################
 !src/api/tests
+.spec-workflow
+*.sql
 .claude/*
+!.claude/rules/
