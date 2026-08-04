@@ -11,11 +11,18 @@ from flaskr.service.learn.models import LearnProgressRecord
 from flaskr.service.order.consts import (
     LEARN_STATUS_COMPLETED,
     LEARN_STATUS_IN_PROGRESS,
+    LEARN_STATUS_NOT_STARTED,
+    LEARN_STATUS_RESET,
     ORDER_STATUS_SUCCESS,
 )
 from flaskr.service.order.models import Order
+from flaskr.service.shifu.consts import UNIT_TYPE_VALUE_GUEST, UNIT_TYPE_VALUE_TRIAL
 from flaskr.service.shifu.discovery_funcs import get_published_course_catalog
-from flaskr.service.shifu.models import PublishedShifu, ShifuUserArchive
+from flaskr.service.shifu.models import (
+    PublishedOutlineItem,
+    PublishedShifu,
+    ShifuUserArchive,
+)
 
 _PREFIX = "disc-"
 
@@ -24,7 +31,13 @@ def _cleanup_all(app) -> None:
     """Remove any leftover discovery fixtures so session-scoped db stays clean."""
     like = _PREFIX + "%"
     with app.app_context():
-        for model in (PublishedShifu, ShifuUserArchive, Order, LearnProgressRecord):
+        for model in (
+            PublishedShifu,
+            ShifuUserArchive,
+            Order,
+            LearnProgressRecord,
+            PublishedOutlineItem,
+        ):
             model.query.filter(model.shifu_bid.like(like)).delete(
                 synchronize_session=False
             )
@@ -106,6 +119,26 @@ def _seed_progress(
                 outline_item_bid=outline_item_bid,
                 user_bid=user_bid,
                 status=status,
+            )
+        )
+        dao.db.session.commit()
+
+
+def _seed_outline_item(
+    app,
+    shifu_bid: str,
+    outline_item_bid: str,
+    item_type: int = UNIT_TYPE_VALUE_TRIAL,
+    parent_bid: str = "",
+) -> None:
+    with app.app_context():
+        dao.db.session.add(
+            PublishedOutlineItem(
+                outline_item_bid=outline_item_bid,
+                shifu_bid=shifu_bid,
+                title="L",
+                type=item_type,
+                parent_bid=parent_bid,
             )
         )
         dao.db.session.commit()
@@ -199,10 +232,13 @@ def test_badges_owner_priority_and_progress(app):
 
     _seed_published(app, shifu_bid=bought_ip, owner_bid="creator-IP")
     _seed_order(app, user, bought_ip)
+    _seed_outline_item(app, bought_ip, "o1")
     _seed_progress(app, user, bought_ip, "o1", LEARN_STATUS_IN_PROGRESS)
 
     _seed_published(app, shifu_bid=bought_done, owner_bid="creator-DONE")
     _seed_order(app, user, bought_done)
+    _seed_outline_item(app, bought_done, "o1")
+    _seed_outline_item(app, bought_done, "o2")
     _seed_progress(app, user, bought_done, "o1", LEARN_STATUS_COMPLETED)
     _seed_progress(app, user, bought_done, "o2", LEARN_STATUS_COMPLETED)
 
@@ -216,6 +252,69 @@ def test_badges_owner_priority_and_progress(app):
     assert by[bought_ip]["is_purchased"] is True
     assert by[bought_ip]["learn_status"] == LEARN_STATUS_IN_PROGRESS
     assert by[bought_done]["learn_status"] == LEARN_STATUS_COMPLETED
+
+
+def test_reset_record_does_not_block_completed_badge(app):
+    """A leftover LEARN_STATUS_RESET (608) row must not pin a course to
+    "in progress" once its real progress records are all completed.
+
+    Reproduces production pollution: ``reset_learn_record`` flips a row to 608
+    without soft-deleting it, so the row kept participating in the completion
+    aggregation unless explicitly excluded.
+    """
+    user = _PREFIX + "R-user"
+    bid = _PREFIX + "R-course"
+    _cleanup_all(app)
+    _seed_published(app, shifu_bid=bid, owner_bid="creator-R")
+    _seed_order(app, user, bid)
+    # Two leaf lessons fully completed.
+    _seed_outline_item(app, bid, "o1")
+    _seed_outline_item(app, bid, "o2")
+    _seed_progress(app, user, bid, "o1", LEARN_STATUS_COMPLETED)
+    _seed_progress(app, user, bid, "o2", LEARN_STATUS_COMPLETED)
+    # o1 also has a stale RESET(608) row (reset did not soft-delete it).
+    with app.app_context():
+        dao.db.session.add(
+            LearnProgressRecord(
+                progress_record_bid=f"p-{user}-{bid}-o1-reset",
+                shifu_bid=bid,
+                outline_item_bid="o1",
+                user_bid=user,
+                status=LEARN_STATUS_RESET,
+            )
+        )
+        dao.db.session.commit()
+
+    result = get_published_course_catalog(app, user, 1, 10)
+
+    by = {item["shifu_bid"]: item for item in result.data}
+    assert by[bid]["learn_status"] == LEARN_STATUS_COMPLETED
+
+
+def test_container_placeholder_does_not_block_completion(app):
+    """A container (section/root) placeholder row must not pin a course to
+    "in progress" when all leaf lessons are completed. The recursive walker
+    that flips container status is unreliable (flips early, misses flips), so
+    container rows are excluded from the completion aggregation.
+    """
+    user = _PREFIX + "C-user"
+    bid = _PREFIX + "C-course"
+    _cleanup_all(app)
+    _seed_published(app, shifu_bid=bid, owner_bid="creator-C")
+    _seed_order(app, user, bid)
+    # A container (section) with a placeholder row stuck at NOT_STARTED(601).
+    _seed_outline_item(app, bid, "sec1", item_type=UNIT_TYPE_VALUE_GUEST)
+    _seed_progress(app, user, bid, "sec1", LEARN_STATUS_NOT_STARTED)
+    # Two leaf lessons fully completed.
+    _seed_outline_item(app, bid, "o1", item_type=UNIT_TYPE_VALUE_TRIAL)
+    _seed_progress(app, user, bid, "o1", LEARN_STATUS_COMPLETED)
+    _seed_outline_item(app, bid, "o2", item_type=UNIT_TYPE_VALUE_TRIAL)
+    _seed_progress(app, user, bid, "o2", LEARN_STATUS_COMPLETED)
+
+    result = get_published_course_catalog(app, user, 1, 10)
+
+    by = {item["shifu_bid"]: item for item in result.data}
+    assert by[bid]["learn_status"] == LEARN_STATUS_COMPLETED
 
 
 def test_pagination(app):

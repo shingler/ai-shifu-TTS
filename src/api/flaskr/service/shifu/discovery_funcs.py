@@ -22,10 +22,16 @@ from flaskr.service.learn.models import LearnProgressRecord
 from flaskr.service.order.consts import (
     LEARN_STATUS_COMPLETED,
     LEARN_STATUS_IN_PROGRESS,
+    LEARN_STATUS_RESET,
     ORDER_STATUS_SUCCESS,
 )
 from flaskr.service.order.models import Order
-from flaskr.service.shifu.models import PublishedShifu, ShifuUserArchive
+from flaskr.service.shifu.consts import UNIT_TYPE_VALUE_GUEST
+from flaskr.service.shifu.models import (
+    PublishedOutlineItem,
+    PublishedShifu,
+    ShifuUserArchive,
+)
 from flaskr.service.shifu.utils import get_shifu_res_url_dict
 
 
@@ -154,29 +160,53 @@ def _load_progress_map(user_id: str, shifu_bids: list[str]) -> dict[str, int]:
     """
     Aggregate per-course learn status for the visible page items.
 
-    Rules (see spec §5.3):
-      - all items completed (>=1) -> LEARN_STATUS_COMPLETED
-      - otherwise any in-progress -> LEARN_STATUS_IN_PROGRESS
+    Completion is decided against the full set of leaf lessons taken from the
+    published outline, NOT against whatever progress rows happen to exist.
+    Container (section/root) placeholder rows are ignored entirely: their
+    status is flipped by a recursive walker that is unreliable (it both flips
+    early and misses flips), so they must not gate completion. LEARN_STATUS_RESET
+    rows are also ignored (reset does not soft-delete).
+
+    Rules:
+      - every leaf lesson completed -> LEARN_STATUS_COMPLETED
+      - any leaf lesson touched but not all done -> LEARN_STATUS_IN_PROGRESS
       - otherwise omitted (None)
     """
     if not shifu_bids:
         return {}
-    rows = (
-        LearnProgressRecord.query.filter(
-            LearnProgressRecord.user_bid == user_id,
-            LearnProgressRecord.shifu_bid.in_(shifu_bids),
-            LearnProgressRecord.deleted == 0,
-        )
-        .all()
-    )
-    grouped: dict[str, list[int]] = {}
-    for row in rows:
-        grouped.setdefault(row.shifu_bid, []).append(row.status)
+    # Leaf lessons (type != GUEST container) per shifu, from the published outline.
+    leaf_bids_per_shifu: dict[str, set[str]] = {}
+    for shifu_bid, outline_item_bid in db.session.query(
+        PublishedOutlineItem.shifu_bid,
+        PublishedOutlineItem.outline_item_bid,
+    ).filter(
+        PublishedOutlineItem.shifu_bid.in_(shifu_bids),
+        PublishedOutlineItem.deleted == 0,
+        PublishedOutlineItem.type != UNIT_TYPE_VALUE_GUEST,
+    ):
+        leaf_bids_per_shifu.setdefault(shifu_bid, set()).add(outline_item_bid)
+
+    completed: dict[str, set[str]] = {}
+    touched: dict[str, set[str]] = {}
+    for row in LearnProgressRecord.query.filter(
+        LearnProgressRecord.user_bid == user_id,
+        LearnProgressRecord.shifu_bid.in_(shifu_bids),
+        LearnProgressRecord.deleted == 0,
+        LearnProgressRecord.status != LEARN_STATUS_RESET,
+    ):
+        leaf_set = leaf_bids_per_shifu.get(row.shifu_bid)
+        if not leaf_set or row.outline_item_bid not in leaf_set:
+            continue  # container placeholder or unknown outline -> ignore
+        touched.setdefault(row.shifu_bid, set()).add(row.outline_item_bid)
+        if row.status == LEARN_STATUS_COMPLETED:
+            completed.setdefault(row.shifu_bid, set()).add(row.outline_item_bid)
 
     result: dict[str, int] = {}
-    for bid, statuses in grouped.items():
-        if statuses and all(s == LEARN_STATUS_COMPLETED for s in statuses):
+    for bid, leaf_set in leaf_bids_per_shifu.items():
+        if not leaf_set:
+            continue
+        if completed.get(bid, set()) == leaf_set:
             result[bid] = LEARN_STATUS_COMPLETED
-        elif LEARN_STATUS_IN_PROGRESS in statuses:
+        elif touched.get(bid):
             result[bid] = LEARN_STATUS_IN_PROGRESS
     return result
