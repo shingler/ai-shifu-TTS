@@ -237,6 +237,9 @@
     justify-content: center;
     overflow-y: auto;
     padding-top: 64px;
+    // Reserve scrollable space so content never sits behind the fixed/absolute
+    // footer overlay (mirrors the 64px top clearance used for the header).
+    padding-bottom: var(--chat-footer-height);
     box-sizing: border-box;
   }
 
