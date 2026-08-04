@@ -1,6 +1,7 @@
 'use client';
 
 import { useTranslation } from 'react-i18next';
+import { Check } from 'lucide-react';
 
 import { Badge } from '@/components/ui/Badge';
 
@@ -91,7 +92,10 @@ export default function CourseCard({
             <Badge variant='outline'>{t('common.core.courseInProgress')}</Badge>
           )}
           {showCompleted && (
-            <Badge variant='outline'>{t('common.core.courseCompleted')}</Badge>
+            <Badge variant='success' className='gap-1'>
+              <Check size={12} strokeWidth={3} className='shrink-0' />
+              {t('common.core.courseCompleted')}
+            </Badge>
           )}
           {showArchived && (
             <Badge variant='outline'>{t('common.core.archived')}</Badge>
