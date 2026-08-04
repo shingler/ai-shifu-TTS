@@ -1,6 +1,7 @@
 import styles from './MainMenuModal.module.scss';
 
 import { memo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { useShallow } from 'zustand/react/shallow';
 import { normalizeLanguage } from '@/i18n';
@@ -28,7 +29,7 @@ import Image from 'next/image';
 import imgPersonal from '@/c-assets/newchat/light/personal.png';
 import imgMultiLanguage from '@/c-assets/newchat/light/multiLanguage.png';
 import imgSignIn from '@/c-assets/newchat/light/signin.png';
-import { Monitor, BookPlus, KeyRound, Compass } from 'lucide-react';
+import { Home, Monitor, BookPlus, KeyRound, Compass } from 'lucide-react';
 
 import LanguageSelect from '@/components/language-select';
 
@@ -45,6 +46,7 @@ const MainMenuModal = ({
   modalStyle = {},
 }) => {
   const { t } = useTranslation();
+  const router = useRouter();
 
   const htmlRef = useRef(null);
   const { isLoggedIn, logout, userInfo, refreshUserInfo } = useUserStore(
@@ -61,6 +63,7 @@ const MainMenuModal = ({
     state => state.requestReplayAll,
   );
   const loginMethodsEnabled = useEnvStore(state => state.loginMethodsEnabled);
+  const homeUrl = useEnvStore(state => state.homeUrl);
   const isPasswordEnabled = Array.isArray(loginMethodsEnabled)
     ? loginMethodsEnabled.includes('password')
     : false;
@@ -93,6 +96,20 @@ const MainMenuModal = ({
     }
 
     onPersonalInfoClick?.();
+  };
+
+  const onGoHomeClick = (evt: React.MouseEvent) => {
+    evt.preventDefault();
+    evt.stopPropagation();
+    trackEvent(EVENT_NAMES.USER_MENU_HOME, {});
+    const target = homeUrl || '/';
+    if (target === '/') {
+      router.push('/');
+    } else {
+      window.open(target, '_blank', 'noreferrer');
+    }
+    // @ts-expect-error EXPECT
+    onClose?.(evt);
   };
 
   const [setPasswordModalOpen, setSetPasswordModalOpen] = useState(false);
@@ -231,6 +248,19 @@ const MainMenuModal = ({
         >
           {!isAdmin ? (
             <>
+              <div
+                className={cn(styles.mainMenuModalRow, 'px-2.5')}
+                onClick={onGoHomeClick}
+                title={t('component.menus.navigationMenus.home')}
+              >
+                <Home
+                  className={styles.rowIcon}
+                  size={16}
+                />
+                <div className={styles.rowTitle}>
+                  {t('component.menus.navigationMenus.home')}
+                </div>
+              </div>
               {showPersonalInfo && (
                 <div
                   className={cn(styles.mainMenuModalRow, 'px-2.5')}

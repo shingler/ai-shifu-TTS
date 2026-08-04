@@ -1,11 +1,13 @@
 import styles from './ChatMobileHeader.module.scss';
 
 import { memo } from 'react';
+import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { useShallow } from 'zustand/react/shallow';
 import { useSystemStore } from '@/c-store/useSystemStore';
-import { Menu, X } from 'lucide-react';
+import { useEnvStore } from '@/c-store/envStore';
+import { Home, Menu, X } from 'lucide-react';
 import MobileHeaderIconPopover from './MobileHeaderIconPopover';
 import { useDisclosure } from '@/c-common/hooks/useDisclosure';
 import { shifu } from '@/c-service/Shifu';
@@ -25,8 +27,19 @@ export const ChatMobileHeader = ({
   lessonTitle,
 }) => {
   const { t } = useTranslation();
+  const router = useRouter();
+  const homeUrl = useEnvStore(state => state.homeUrl);
   const { onOpen: onIconPopoverOpen, onClose: onIconPopoverClose } =
     useDisclosure();
+
+  const onGoHomeClick = () => {
+    const target = homeUrl || '/';
+    if (target === '/') {
+      router.push('/');
+    } else {
+      window.open(target, '_blank', 'noreferrer');
+    }
+  };
 
   const hasPopoverContentControl = shifu.hasControl(
     shifu.ControlTypes.MOBILE_HEADER_ICON_POPOVER,
@@ -56,6 +69,18 @@ export const ChatMobileHeader = ({
       ) : null}
       {previewMode ? <PreviewHeaderBanner /> : null}
       <div className={styles.headerRow}>
+        <button
+          type='button'
+          aria-label={t('component.menus.navigationMenus.home')}
+          className={cn(styles.iconButton, 'mr-3')}
+          onClick={onGoHomeClick}
+        >
+          <Home
+            size={20}
+            strokeWidth={2}
+            className='text-neutral-500'
+          />
+        </button>
         <CourseHeaderSummary />
 
         <div className={styles.actionGroup}>

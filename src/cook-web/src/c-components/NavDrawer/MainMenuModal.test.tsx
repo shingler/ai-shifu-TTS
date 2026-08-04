@@ -6,9 +6,11 @@ const mockUpdateUserInfo = jest.fn();
 const mockTrackEvent = jest.fn();
 const mockRefreshUserInfo = jest.fn();
 const mockRequestReplayAll = jest.fn();
+const mockRouterPush = jest.fn();
 
 const mockEnvState = {
   loginMethodsEnabled: ['password', 'phone'],
+  homeUrl: undefined as string | undefined,
 };
 
 const mockUserStoreState = {
@@ -48,6 +50,10 @@ jest.mock('@/lib/utils', () => ({
     values.filter(Boolean).join(' '),
 }));
 
+jest.mock('next/navigation', () => ({
+  useRouter: () => ({ push: mockRouterPush }),
+}));
+
 jest.mock('@/c-store/envStore', () => ({
   __esModule: true,
   useEnvStore: (selector: (state: typeof mockEnvState) => unknown) =>
@@ -74,6 +80,7 @@ jest.mock('@/c-common/hooks/useTracking', () => ({
     USER_MENU_BASIC_INFO: 'USER_MENU_BASIC_INFO',
     USER_MENU_PERSONALIZED: 'USER_MENU_PERSONALIZED',
     USER_MENU_SET_PASSWORD: 'USER_MENU_SET_PASSWORD',
+    USER_MENU_HOME: 'USER_MENU_HOME',
     POP_LOGIN: 'POP_LOGIN',
   },
   useTracking: () => ({
@@ -166,6 +173,8 @@ describe('MainMenuModal', () => {
     mockRefreshUserInfo.mockReset();
     mockUpdateUserInfo.mockReset();
     mockRequestReplayAll.mockReset();
+    mockRouterPush.mockReset();
+    mockEnvState.homeUrl = undefined;
     mockUserStoreState.isLoggedIn = true;
     mockUserStoreState.userInfo = {
       mobile: '13800000000',
@@ -261,5 +270,49 @@ describe('MainMenuModal', () => {
     expect(
       screen.queryByText('module.settings.setPassword'),
     ).not.toBeInTheDocument();
+  });
+
+  test('shows home entry in learner menu and navigates to / on click', () => {
+    render(
+      <MainMenuModal
+        open
+        onClose={jest.fn()}
+        onBasicInfoClick={jest.fn()}
+        onPersonalInfoClick={jest.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByText('component.menus.navigationMenus.home'),
+    );
+
+    expect(mockRouterPush).toHaveBeenCalledWith('/');
+    expect(mockTrackEvent).toHaveBeenCalledWith('USER_MENU_HOME', {});
+  });
+
+  test('opens an external homeUrl in a new tab when configured', () => {
+    mockEnvState.homeUrl = 'https://other.example.com';
+    const openSpy = jest.spyOn(window, 'open').mockImplementation(() => null);
+
+    render(
+      <MainMenuModal
+        open
+        onClose={jest.fn()}
+        onBasicInfoClick={jest.fn()}
+        onPersonalInfoClick={jest.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByText('component.menus.navigationMenus.home'),
+    );
+
+    expect(openSpy).toHaveBeenCalledWith(
+      'https://other.example.com',
+      '_blank',
+      'noreferrer',
+    );
+    expect(mockRouterPush).not.toHaveBeenCalled();
+    openSpy.mockRestore();
   });
 });

@@ -135,6 +135,7 @@ export type I18nKey =
   | 'component.mdfConvert.textTooShort'
   | 'component.menus.navigationMenus.adminConsole'
   | 'component.menus.navigationMenus.createCourse'
+  | 'component.menus.navigationMenus.home'
   | 'component.menus.navigationMenus.language'
   | 'component.menus.navigationMenus.personalInfo'
   | 'component.navigation.contactUs'

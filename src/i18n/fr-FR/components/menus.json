@@ -3,6 +3,7 @@
   "navigationMenus": {
     "adminConsole": "Console d’administration",
     "createCourse": "Créer un cours",
+    "home": "Accueil",
     "language": "Langue",
     "personalInfo": "Paramètres personnels"
   }
