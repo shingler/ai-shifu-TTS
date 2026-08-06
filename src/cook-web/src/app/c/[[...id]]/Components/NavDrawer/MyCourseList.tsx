@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useState } from 'react';
 import styles from './MyCourseList.module.scss';
 import { useTranslation } from 'react-i18next';
 import { BookOpen } from 'lucide-react';
@@ -16,6 +16,29 @@ interface MyCourseListProps {
   currentCourseBid: string;
   onCourseSelect: (shifu_bid: string) => void;
 }
+
+const CourseIcon = memo(function CourseIcon({
+  avatar,
+  title,
+}: Pick<CourseItem, 'avatar' | 'title'>) {
+  const [imageFailed, setImageFailed] = useState(false);
+  const showAvatar = Boolean(avatar) && !imageFailed;
+
+  return (
+    <div className={styles.courseIcon}>
+      {showAvatar ? (
+        <img
+          src={avatar}
+          alt={title}
+          className={styles.courseAvatar}
+          onError={() => setImageFailed(true)}
+        />
+      ) : (
+        <BookOpen className={styles.courseIconDefault} size={16} />
+      )}
+    </div>
+  );
+});
 
 export const MyCourseList = memo(function MyCourseList({
   courses,
@@ -45,17 +68,7 @@ export const MyCourseList = memo(function MyCourseList({
               className={`${styles.courseItem} ${isActive ? styles.courseItemActive : ''}`}
               onClick={() => onCourseSelect(course.shifu_bid)}
             >
-              <div className={styles.courseIcon}>
-                {course.avatar ? (
-                  <img
-                    src={course.avatar}
-                    alt={course.title}
-                    className={styles.courseAvatar}
-                  />
-                ) : (
-                  <BookOpen className={styles.courseIconDefault} size={16} />
-                )}
-              </div>
+              <CourseIcon avatar={course.avatar} title={course.title} />
               <div className={styles.courseInfo}>
                 <span className={styles.courseTitle}>{course.title}</span>
                 {course.is_owned && (
