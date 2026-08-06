@@ -440,19 +440,6 @@ Default: "phone".""",
         description="Vertical logo URL for Cook Web",
         group="frontend",
     ),
-    "GEN_MDF_API_URL": EnvVar(
-        name="GEN_MDF_API_URL",
-        default="",
-        description="API URL for generating MDF (Markdown Flow) content",
-        group="integrations",
-    ),
-    "GEN_MDF_APP_ID": EnvVar(
-        name="GEN_MDF_APP_ID",
-        default="",
-        description="Application ID for MDF API authentication (X-App-Id header)",
-        secret=True,
-        group="integrations",
-    ),
     "WECHAT_APP_ID": EnvVar(
         name="WECHAT_APP_ID",
         default="",
@@ -637,6 +624,19 @@ Qwen: qwen-long, qwen-max, qwen-max-longcontext, qwen-plus, qwen-turbo, qwen2-*
 DeepSeek: deepseek-chat
 Gemini: gemini-1.5-flash, gemini-1.5-flash-8b, gemini-1.5-pro""",
         group="llm",
+    ),
+    "LLM_CREDIT_1X_PER_1000_OUTPUT_TOKENS": EnvVar(
+        name="LLM_CREDIT_1X_PER_1000_OUTPUT_TOKENS",
+        default="",
+        example="0.066667",
+        description=(
+            "Fixed global 1x credit anchor for LLM output tokens, expressed as "
+            "credits consumed per 1000 output tokens. This value is used for "
+            "operator rate multiplier display, save conversion, and model-picker "
+            "multiplier labels. It must not be derived from DEFAULT_LLM_MODEL."
+        ),
+        group="llm",
+        required=False,
     ),
     "LLM_ALLOWED_MODELS": EnvVar(
         name="LLM_ALLOWED_MODELS",
@@ -1535,6 +1535,22 @@ Generate secure key: python -c "import secrets; print(secrets.token_urlsafe(32))
         group="tts",
         required=False,
     ),
+    "TTS_DEFAULT_MODEL": EnvVar(
+        name="TTS_DEFAULT_MODEL",
+        default="",
+        description=(
+            "Default TTS model preselected by editor UI and CLI when the "
+            "creator has not explicitly chosen one. Use provider/model format, "
+            "e.g. tencent_texttovoice/large-model; use provider/default for "
+            "providers without model selection. Must be one of the exposed "
+            "model options (TTS_ALLOWED_MODELS when set); empty or invalid "
+            "values fall back to the first option. Only marks is_default in "
+            "the TTS config payload; it does not relax strict runtime TTS "
+            "validation."
+        ),
+        group="tts",
+        required=False,
+    ),
     "TTS_ALLOWED_MODEL_DISPLAY_NAMES_JSON": EnvVar(
         name="TTS_ALLOWED_MODEL_DISPLAY_NAMES_JSON",
         default="",
@@ -1554,9 +1570,10 @@ Generate secure key: python -c "import secrets; print(secrets.token_urlsafe(32))
             "TTS characters synthesized per LLM output token in a task, used to "
             "put TTS (billed per character) and LLM (billed per token) on one "
             "shared 1x anchor. Default 0.216 = omega(13.5%) x 1.6 chars/token. "
-            "The picker multiplier is TTS char cost x this factor / the default "
-            "LLM output-token cost, so TTS tiers stay on the same scale as LLM "
-            "model multipliers and track the default LLM price automatically."
+            "The picker multiplier is TTS char cost x this factor / the fixed "
+            "LLM_CREDIT_1X_PER_1000_OUTPUT_TOKENS anchor, so TTS tiers stay on "
+            "the same scale as LLM model multipliers without depending on the "
+            "current DEFAULT_LLM_MODEL price."
         ),
         group="tts",
     ),

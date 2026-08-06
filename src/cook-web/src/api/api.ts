@@ -216,6 +216,8 @@ const api = {
     'GET /shifu/admin/operations/profile-onboarding',
   updateAdminOperationProfileOnboardingConfig:
     'POST /shifu/admin/operations/profile-onboarding',
+  getAdminOperationConfigRates: 'GET /shifu/admin/operations/config/rates',
+  updateAdminOperationConfigRate: 'POST /shifu/admin/operations/config/rates',
   getAdminOperationReferrals: 'GET /shifu/admin/operations/referrals',
   getAdminOperationReferralsOverview:
     'GET /shifu/admin/operations/referrals/overview',
@@ -259,10 +261,6 @@ const api = {
   hideUnusedProfileItems: 'POST /profiles/hide-unused-profile-items',
   getProfileVariableUsage: 'GET /profiles/profile-variable-usage',
   updateProfileHiddenState: 'POST /profiles/update-profile-hidden-state',
-
-  // MDF Conversion
-  genMdfConvert: 'POST /gen_mdf/convert',
-  genMdfConfigStatus: 'GET /gen_mdf/config-status',
 
   // dashboard (teacher analytics)
   getDashboardEntry: 'GET /dashboard/entry',

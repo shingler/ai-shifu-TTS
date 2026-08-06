@@ -7,6 +7,7 @@ This module provides integration with multiple Text-to-Speech providers:
 - Baidu (Short Text Online Synthesis API)
 - Aliyun (NLS RESTful TTS API)
 - Tencent (TRTC conversational SSE API)
+- Tencent TextToVoice (standard Tencent Cloud TTS API)
 
 The provider can be selected per-Shifu configuration.
 """
@@ -22,15 +23,9 @@ from flaskr.common.config import get_config
 from flaskr.util.datetime import now_utc
 from flaskr.common.log import AppLoggerProxy
 from flaskr.i18n import get_current_language
-from flaskr.service.billing.consts import (
-    BILLING_METRIC_LLM_OUTPUT_TOKENS,
-    BILLING_METRIC_TTS_OUTPUT_CHARS,
-)
-from flaskr.service.metering.consts import (
-    BILL_USAGE_SCENE_PROD,
-    BILL_USAGE_TYPE_LLM,
-    BILL_USAGE_TYPE_TTS,
-)
+from flaskr.service.billing.consts import BILLING_METRIC_TTS_OUTPUT_CHARS
+from flaskr.service.billing.rate_references import load_llm_credit_1x_unit_cost
+from flaskr.service.metering.consts import BILL_USAGE_SCENE_PROD, BILL_USAGE_TYPE_TTS
 
 # Re-export base classes for backward compatibility
 from flaskr.api.tts.base import (
@@ -47,6 +42,7 @@ from flaskr.api.tts.baidu_provider import BaiduTTSProvider
 from flaskr.api.tts.aliyun_provider import AliyunTTSProvider
 from flaskr.api.tts.aliyun_nls_token import is_aliyun_nls_token_configured
 from flaskr.api.tts.tencent_provider import TencentTTSProvider
+from flaskr.api.tts.tencent_texttovoice_provider import TencentTextToVoiceProvider
 
 
 logger = AppLoggerProxy(logging.getLogger(__name__))
@@ -60,6 +56,7 @@ _PROVIDER_REGISTRY = {
     "baidu": BaiduTTSProvider,
     "aliyun": AliyunTTSProvider,
     "tencent": TencentTTSProvider,
+    "tencent_texttovoice": TencentTextToVoiceProvider,
 }
 _PROVIDER_PRIORITY = (
     "minimax",
@@ -68,6 +65,7 @@ _PROVIDER_PRIORITY = (
     "baidu",
     "aliyun",
     "tencent",
+    "tencent_texttovoice",
 )
 _AUTO_DETECT_PROVIDER_PRIORITY = (
     "minimax",
@@ -251,6 +249,17 @@ def _parse_allowed_tts_model_keys() -> list[str]:
     return keys
 
 
+def _parse_default_tts_model_key() -> str:
+    value = str(get_config("TTS_DEFAULT_MODEL") or "").strip()
+    if not value:
+        return ""
+    if "/" not in value:
+        logger.warning("Ignoring invalid TTS_DEFAULT_MODEL: %s", value)
+        return ""
+    provider, model = value.split("/", 1)
+    return _normalize_tts_model_key(provider, model)
+
+
 def _parse_tts_display_names() -> dict:
     configured = get_config("TTS_ALLOWED_MODEL_DISPLAY_NAMES_JSON")
     if isinstance(configured, dict):
@@ -343,13 +352,10 @@ def _resolve_localized_tts_label(
 
 def _resolve_credit_multiplier_label(provider_name: str, model: str) -> str | None:
     try:
-        # One shared 1x anchor for LLM and TTS: the default LLM output-token
-        # price (DeepSeek-V4-Flash). TTS is priced per character, so translate
-        # its per-character cost into the same per-LLM-token dimension using
-        # chars-synthesized-per-token, then take the ratio. The label is
-        # therefore "TTS task consumption / LLM task consumption" on the very
-        # same scale as the LLM model multipliers.
-        baseline_cost = _load_default_llm_unit_cost()
+        # One shared fixed 1x anchor for LLM and TTS. TTS is priced per
+        # character, so translate its per-character cost into the same
+        # per-LLM-token dimension using chars-synthesized-per-token.
+        baseline_cost = load_llm_credit_1x_unit_cost()
         if baseline_cost is None or baseline_cost <= 0:
             return None
         chars_per_token = _load_tts_chars_per_llm_token()
@@ -371,35 +377,11 @@ def _resolve_credit_multiplier_label(provider_name: str, model: str) -> str | No
         return None
 
 
-def _resolve_default_llm_rate_identity() -> tuple[str, list[str]]:
-    default_model = str(get_config("DEFAULT_LLM_MODEL", "") or "").strip()
-    if not default_model:
-        return "", [""]
-    try:
-        from flaskr.api.llm import _resolve_billing_rate_identity
-
-        return _resolve_billing_rate_identity(default_model)
-    except Exception:
-        return "", [default_model]
-
-
-def _load_default_llm_unit_cost() -> Decimal | None:
-    provider, model_candidates = _resolve_default_llm_rate_identity()
-    return _load_usage_rate_unit_cost(
-        usage_type=BILL_USAGE_TYPE_LLM,
-        provider=provider,
-        model_candidates=model_candidates or [""],
-        billing_metric=BILLING_METRIC_LLM_OUTPUT_TOKENS,
-    )
-
-
 def _load_tts_chars_per_llm_token() -> Decimal | None:
-    # TTS is billed per character but the 1x anchor is an LLM output token, so we
-    # need "how many TTS characters one LLM token turns into" to compare them on
-    # one scale. This is omega x 1.6 (TTS-token share of a task x token->char
-    # ratio); see TTS_CHARS_PER_LLM_TOKEN. Keeping it a factor over the shared
-    # LLM baseline (rather than a standalone TTS baseline) means the TTS 1x
-    # tracks the default LLM price automatically.
+    # TTS is billed per character but the fixed 1x anchor is an LLM output token,
+    # so we need "how many TTS characters one LLM token turns into" to compare
+    # them on one scale. This is omega x 1.6 (TTS-token share of a task x
+    # token->char ratio); see TTS_CHARS_PER_LLM_TOKEN.
     try:
         raw = get_config("TTS_CHARS_PER_LLM_TOKEN", "")
         if raw is None or str(raw).strip() == "":
@@ -509,15 +491,26 @@ def _build_tts_model_options(provider_payloads: list[tuple[str, dict]]) -> list[
             options.append(option)
 
     allowed_keys = _parse_allowed_tts_model_keys()
-    if not allowed_keys:
-        return options
+    if allowed_keys:
+        option_map = {option["value"]: option for option in options}
+        filtered = [option_map[key] for key in allowed_keys if key in option_map]
+        missing = [key for key in allowed_keys if key not in option_map]
+        if missing:
+            logger.warning(
+                "Ignoring unavailable TTS_ALLOWED_MODELS entries: %s", missing
+            )
+        options = filtered
 
-    option_map = {option["value"]: option for option in options}
-    filtered = [option_map[key] for key in allowed_keys if key in option_map]
-    missing = [key for key in allowed_keys if key not in option_map]
-    if missing:
-        logger.warning("Ignoring unavailable TTS_ALLOWED_MODELS entries: %s", missing)
-    return filtered
+    default_key = _parse_default_tts_model_key()
+    if default_key and default_key not in {option["value"] for option in options}:
+        logger.warning(
+            "Ignoring TTS_DEFAULT_MODEL not in available model options: %s",
+            default_key,
+        )
+        default_key = ""
+    for option in options:
+        option["is_default"] = option["value"] == default_key
+    return options
 
 
 def get_all_provider_configs() -> dict:

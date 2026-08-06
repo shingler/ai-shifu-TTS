@@ -382,6 +382,34 @@ class TestAdminBillingRoutes:
         assert payload["data"]["items"][0]["subscription_bid"] == "sub-past-due"
         assert payload["data"]["items"][0]["has_attention"] is True
 
+    def test_admin_bill_subscriptions_support_creator_keyword_filter(
+        self, admin_billing_client
+    ) -> None:
+        client = admin_billing_client["client"]
+
+        response = client.get(
+            "/api/admin/billing/subscriptions?page_index=1&page_size=10&creator_keyword=13800138002"
+        )
+        payload = response.get_json(force=True)
+
+        assert payload["code"] == 0
+        assert payload["data"]["total"] == 1
+        assert payload["data"]["items"][0]["creator_bid"] == "creator-2"
+
+    def test_admin_bill_subscriptions_creator_keyword_requires_exact_match(
+        self, admin_billing_client
+    ) -> None:
+        client = admin_billing_client["client"]
+
+        response = client.get(
+            "/api/admin/billing/subscriptions?page_index=1&page_size=10&creator_keyword=1380013800"
+        )
+        payload = response.get_json(force=True)
+
+        assert payload["code"] == 0
+        assert payload["data"]["total"] == 0
+        assert payload["data"]["items"] == []
+
     def test_admin_billing_ledger_adjust_positive_creates_manual_subscription_bucket(
         self, admin_billing_client
     ) -> None:
@@ -901,6 +929,9 @@ class TestAdminBillingRoutes:
             assert entity is not None
             assert entity.is_creator == 1
             assert entity.state == 1102
+            # The console chains branding/domain calls right after the first
+            # grant, so the response must expose the resolved creator_bid.
+            assert payload["data"]["creator_bid"] == entity.user_bid
 
     def test_admin_billing_entitlements_can_filter_independent_configs(
         self,
@@ -1164,6 +1195,8 @@ class TestAdminBillingRoutes:
         assert payload["data"] == {
             "logo_wide_url": "/api/storage/courses/creator-branding/creator-1/wide.png",
             "logo_square_url": "/api/storage/courses/creator-branding/creator-1/square.png",
+            "favicon_url": "",
+            "home_url": "",
         }
 
         get_response = client.get("/api/admin/billing/customization/creator-1")

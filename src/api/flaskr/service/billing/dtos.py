@@ -201,6 +201,7 @@ class BillingEntitlementsDTO(BillingBaseDTO):
 class BillingWalletBucketDTO(BillingBaseDTO):
     wallet_bucket_bid: str
     category: str
+    credit_asset_kind: str = "unknown"
     source_type: str
     source_bid: str
     available_credits: int | float
@@ -267,6 +268,7 @@ class BillingLedgerItemDTO(BillingBaseDTO):
     entry_type: str
     source_type: str
     source_bid: str
+    credit_asset_kind: str = "unknown"
     idempotency_key: str
     amount: int | float
     balance_after: int | float
@@ -784,7 +786,6 @@ class RuntimeConfigDTO(BillingBaseDTO):
     officialSiteUrl: str
     currencySymbol: str
     legalUrls: RuntimeLegalUrlsDTO
-    genMdfApiUrl: str
     entitlements: RuntimeBillingEntitlementsDTO
     branding: RuntimeBillingBrandingDTO
     domain: RuntimeBillingDomainDTO

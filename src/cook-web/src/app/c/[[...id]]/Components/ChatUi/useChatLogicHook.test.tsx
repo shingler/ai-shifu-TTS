@@ -1,9 +1,16 @@
-import React from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { toast } from '@/hooks/useToast';
+import { toast, toastOnce } from '@/hooks/useToast';
 import useChatLogicHook, { ChatContentItemType } from './useChatLogicHook';
-import { AppContext } from '../AppContext';
 import { SSE_INPUT_TYPE, SSE_OUTPUT_TYPE } from '@/c-api/studyV2';
+import {
+  buildBaseParams,
+  createDeferred,
+  mobileWrapper,
+  MockRunSource,
+  wrapper,
+  type ActiveRun,
+  type RunRequestBody,
+} from './useChatLogicHook.testUtils';
 import { stopAllActiveLessonStreams } from '@/app/c/[[...id]]/events';
 import { useLessonRunContentStore } from '@/c-store/useLessonRunContentStore';
 
@@ -13,6 +20,10 @@ jest.mock('react-i18next', () => ({
     i18n: { language: 'en-US', changeLanguage: jest.fn() },
     ready: true,
   }),
+}));
+
+jest.mock('i18next', () => ({
+  t: (key: string) => key,
 }));
 
 jest.mock('@/i18n', () => ({
@@ -34,6 +45,7 @@ jest.mock('remark-flow', () => ({
 jest.mock('@/hooks/useToast', () => ({
   show: jest.fn(),
   toast: jest.fn(),
+  toastOnce: jest.fn(),
   fail: jest.fn(),
 }));
 
@@ -166,39 +178,8 @@ jest.mock('@/c-api/studyV2', () => {
   };
 });
 
-type Listener = (event?: Event) => void;
-
-class MockRunSource {
-  readyState = 0;
-
-  private listeners = new Map<string, Listener[]>();
-
-  addEventListener = jest.fn((type: string, listener: Listener) => {
-    const existing = this.listeners.get(type) ?? [];
-    existing.push(listener);
-    this.listeners.set(type, existing);
-  });
-
-  close = jest.fn(() => {
-    this.readyState = 2;
-    this.emit('readystatechange');
-  });
-
-  emit(type: string, event?: Event) {
-    for (const listener of this.listeners.get(type) ?? []) {
-      listener(event);
-    }
-  }
-}
-
 describe('useChatLogicHook stream cleanup', () => {
-  let activeRun:
-    | {
-        source: MockRunSource;
-        onMessage: (response: any) => Promise<void> | void;
-        onError: (error: unknown) => void;
-      }
-    | undefined;
+  let activeRun: ActiveRun | undefined;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -227,10 +208,7 @@ describe('useChatLogicHook stream cleanup', () => {
         _shifuBid: string,
         _outlineBid: string,
         _previewMode: boolean,
-        _body: {
-          input: string | Record<string, any>;
-          input_type: SSE_INPUT_TYPE;
-        },
+        _body: RunRequestBody,
         onMessage: (response: any) => Promise<void> | void,
         onError: (error: unknown) => void,
       ) => {
@@ -243,60 +221,6 @@ describe('useChatLogicHook stream cleanup', () => {
         return source;
       },
     );
-  });
-
-  const wrapper = ({ children }: { children: React.ReactNode }) => (
-    <AppContext.Provider
-      value={{
-        isLoggedIn: false,
-        mobileStyle: false,
-        userInfo: null,
-        theme: 'light',
-        frameLayout: 0,
-      }}
-    >
-      {children}
-    </AppContext.Provider>
-  );
-
-  const mobileWrapper = ({ children }: { children: React.ReactNode }) => (
-    <AppContext.Provider
-      value={{
-        isLoggedIn: false,
-        mobileStyle: true,
-        userInfo: null,
-        theme: 'light',
-        frameLayout: 0,
-      }}
-    >
-      {children}
-    </AppContext.Provider>
-  );
-
-  const createDeferred = <T,>() => {
-    let resolve!: (value: T) => void;
-    const promise = new Promise<T>(next => {
-      resolve = next;
-    });
-    return { promise, resolve };
-  };
-
-  const buildBaseParams = () => ({
-    shifuBid: 'shifu-1',
-    outlineBid: 'lesson-1',
-    lessonId: 'lesson-1',
-    lessonHasContentUpdate: false,
-    trackEvent: jest.fn(),
-    trackTrailProgress: jest.fn(),
-    lessonUpdate: jest.fn(),
-    chapterUpdate: jest.fn(),
-    updateSelectedLesson: jest.fn(),
-    getNextLessonId: jest.fn(() => null),
-    scrollToLesson: jest.fn(),
-    showOutputInProgressToast: jest.fn(),
-    onPayModalOpen: jest.fn(),
-    chatBoxBottomRef: { current: document.createElement('div') },
-    onGoChapter: jest.fn(),
   });
 
   it('sends listen=false in the run body when listen requests are disabled', async () => {
@@ -1583,6 +1507,80 @@ describe('useChatLogicHook stream cleanup', () => {
     expect(activeRun?.source.close).toHaveBeenCalled();
 
     jest.useRealTimers();
+  });
+
+  it('shows a deduped friendly toast for technical AI service stream errors', async () => {
+    renderHook(
+      () =>
+        useChatLogicHook({
+          ...buildBaseParams(),
+          isListenMode: false,
+        }),
+      {
+        wrapper,
+      },
+    );
+
+    await waitFor(() => expect(activeRun).toBeDefined());
+
+    await act(async () => {
+      await activeRun?.onMessage({
+        type: SSE_OUTPUT_TYPE.ERROR,
+        content: '模型 deepseek 调用失败：provider unavailable',
+      });
+    });
+
+    expect(toast).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: expect.stringContaining('deepseek'),
+      }),
+    );
+    expect(toastOnce).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dedupeKey: 'ai-service-unavailable',
+        title: 'module.chat.contentGenerationUnavailable',
+        variant: 'destructive',
+        duration: 8000,
+      }),
+    );
+  });
+
+  it('uses the deduped friendly toast for preview credit errors with AI-service details', async () => {
+    renderHook(
+      () =>
+        useChatLogicHook({
+          ...buildBaseParams(),
+          previewMode: true,
+        }),
+      {
+        wrapper,
+      },
+    );
+
+    await waitFor(() => expect(activeRun).toBeDefined());
+
+    act(() => {
+      activeRun?.onError({
+        detail: {
+          code: 7101,
+          message: '模型 deepseek 调用失败：provider unavailable',
+        },
+      });
+    });
+
+    expect(toast).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: expect.stringContaining('deepseek'),
+      }),
+    );
+    expect(toastOnce).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dedupeKey: 'ai-service-unavailable',
+        title: 'module.chat.contentGenerationUnavailable',
+        variant: 'destructive',
+        duration: 8000,
+      }),
+    );
   });
 
   it('uses the longer run stream idle timeout on mobile', async () => {

@@ -1,13 +1,17 @@
 import contextlib
 import json
 import queue
+import sys
 import threading
 import time
 import traceback
+import uuid
 from datetime import datetime
 from typing import Any, Generator, Optional
 
 from flask import Flask
+from sqlalchemy import text as sa_text
+from sqlalchemy.exc import InterfaceError, OperationalError, ResourceClosedError
 
 from flaskr.service.common.models import AppException, raise_error
 from flaskr.service.user.repository import load_user_aggregate
@@ -21,7 +25,12 @@ from flaskr.service.learn.learn_dtos import (
     RunStatusDTO,
 )
 from flaskr.common.cache_provider import cache as cache_provider
-from flaskr.dao import db
+from flaskr.dao import (
+    db,
+    invalidate_session,
+    is_abnormal_stream_termination,
+    is_protocol_interrupt_error,
+)
 from flaskr.service.learn.const import INPUT_TYPE_ASK
 from flaskr.service.shifu.shifu_struct_manager import (
     get_shifu_dto,
@@ -53,10 +62,95 @@ DEFAULT_MAX_PARALLEL_ASK_COUNT = 3
 
 
 def _remove_db_session_safely(app: Flask, *, source: str) -> None:
+    # In finally blocks sys.exc_info still sees a propagating
+    # GreenletExit/GeneratorExit that never reached an except handler
+    # (injected into IO inside the generator frame); discard the connection
+    # before removal in that case instead of letting remove() emit a
+    # ROLLBACK on a possibly desynced stream. Uses this module's ``db`` so
+    # tests that monkeypatch runscript_v2.db keep working.
+    exc = sys.exc_info()[1]
+    if exc is not None and is_abnormal_stream_termination(exc):
+        invalidate_session(source=source, session=db.session)
     try:
         db.session.remove()
     except Exception:
         app.logger.warning("%s db session cleanup failed", source, exc_info=True)
+
+
+# Shared termination classification lives in flaskr.dao; keep the historical
+# module-level name because tests and callers import it from here.
+_is_protocol_desync_error = is_protocol_interrupt_error
+
+
+def _discard_session_connection(app: Flask, *, source: str) -> None:
+    """Drop the session's DB connection instead of returning it to the pool.
+
+    Used when the streaming generator terminates abnormally: the close (or a
+    protocol error) can leave an unconsumed response owed on the wire, and
+    rolling back on such a connection consumes stale packets and returns a
+    poisoned connection to the pool. Delegates to the shared dao helper,
+    which resolves the REAL Session through the scoped registry -
+    scoped_session does not proxy ``Session.invalidate``, so calling
+    ``db.session.invalidate()`` directly raises AttributeError and silently
+    does nothing.
+    """
+    invalidate_session(source=source, session=db.session)
+
+
+# Number of connection checkouts to probe before giving up: the pool may hold
+# more than one poisoned connection, so retry a couple of fresh checkouts.
+_CONNECTION_PROBE_ATTEMPTS = 3
+
+
+def _ensure_healthy_db_connection(app: Flask) -> None:
+    """Drop pooled connections whose MySQL protocol stream is desynced.
+
+    A streaming run interrupted mid-IO can return a connection to the pool
+    with an unread response packet still buffered. pool_pre_ping cannot catch
+    this: the ping reads the stale packet and "succeeds", leaving every later
+    query on that connection off by one response, which surfaces as
+    ResourceClosedError on SELECTs and pymysql 2014 "Command Out of Sync" on
+    rollback. Probe with a nonce echo before the run touches business tables;
+    on any mismatch invalidate the connection and retry on a fresh checkout.
+    The probe leaves the session transaction open so the run keeps using the
+    verified connection.
+    """
+    last_error: Exception | None = None
+    for attempt in range(1, _CONNECTION_PROBE_ATTEMPTS + 1):
+        nonce = uuid.uuid4().hex
+        try:
+            echoed = db.session.execute(
+                sa_text("SELECT :nonce"), {"nonce": nonce}
+            ).scalar()
+            if echoed == nonce:
+                return
+            last_error = None
+            app.logger.warning(
+                "db connection probe echoed %r instead of the nonce "
+                "(attempt %d/%d); invalidating desynced connection",
+                echoed,
+                attempt,
+                _CONNECTION_PROBE_ATTEMPTS,
+            )
+        except (ResourceClosedError, OperationalError, InterfaceError) as exc:
+            last_error = exc
+            app.logger.warning(
+                "db connection probe failed (attempt %d/%d); "
+                "invalidating desynced connection: %s",
+                attempt,
+                _CONNECTION_PROBE_ATTEMPTS,
+                exc,
+            )
+        # Session.invalidate() both resets the session state WITHOUT emitting
+        # SQL and discards the raw connection - a rollback here would send a
+        # ROLLBACK on the very stream that just proved desynced.
+        _discard_session_connection(app, source="db connection probe failure")
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(
+        "db connection probe kept returning mismatched results; "
+        "no healthy connection available"
+    )
 
 
 def _get_max_parallel_ask_count(app: Flask) -> int:
@@ -251,6 +345,7 @@ def run_script_inner(
         run_script_context: RunScriptContextV2 | None = None
         resolved_shifu_bid = shifu_bid
         try:
+            _ensure_healthy_db_connection(app)
             user_info = load_user_aggregate(user_bid)
             if not user_info:
                 raise_error("USER.USER_NOT_FOUND")
@@ -364,7 +459,12 @@ def run_script_inner(
             if reload_generated_block_bid or reload_element_bid:
                 if stop_event and stop_event.is_set():
                     app.logger.info("run_script_inner cancelled before reload")
-                    db.session.rollback()
+                    # Cancellation means the client walked away mid-stream: an
+                    # exchange may have been interrupted, so discard rather
+                    # than roll back on a possibly desynced connection.
+                    _discard_session_connection(
+                        app, source="run_script_inner stop_event cancel"
+                    )
                     return
                 yield from _iter_run_events(
                     run_script_context.reload(
@@ -385,7 +485,9 @@ def run_script_inner(
                 )
                 if stop_event and stop_event.is_set():
                     app.logger.info("run_script_inner cancelled by stop_event")
-                    db.session.rollback()
+                    _discard_session_connection(
+                        app, source="run_script_inner stop_event cancel"
+                    )
                     return
                 app.logger.info("run_script_context.run")
                 yield from _iter_run_events(
@@ -402,11 +504,20 @@ def run_script_inner(
             db.session.commit()
             app.logger.info("BreakException")
         except GeneratorExit:
-            db.session.rollback()
+            # The close lands at an arbitrary yield point (client disconnect),
+            # so the connection's protocol state is unknowable: this is the
+            # exact checkin path the pool-level desync detector caught in
+            # production. Discard the connection instead of rolling back on it.
+            _discard_session_connection(app, source="run_script_inner GeneratorExit")
             app.logger.info("GeneratorExit")
-        except Exception:
+        except Exception as exc:
             _finalize_langfuse_if_available(run_script_context)
-            db.session.rollback()
+            if _is_protocol_desync_error(exc):
+                # Rolling back on a desynced connection consumes stale packets
+                # ("Command Out of Sync") and re-pools the poisoned stream.
+                _discard_session_connection(app, source="run_script_inner stream error")
+            else:
+                db.session.rollback()
             raise
         finally:
             _remove_db_session_safely(app, source="run_script_inner")
@@ -678,6 +789,8 @@ def run_script(
                     element_adapter=element_adapter,
                     manage_app_context=False,
                 )
+                producer_exc: BaseException | None = None
+                exhausted = False
                 try:
                     for item in res:
                         if stop_event.is_set():
@@ -687,17 +800,37 @@ def run_script(
                                 output_queue.put(("data", converted_item))
                             continue
                         output_queue.put(("data", item))
+                    else:
+                        # for/else: only a fully exhausted generator reaches
+                        # here - every break (stop_event) leaves it False.
+                        exhausted = True
                 except Exception as exc:
+                    producer_exc = exc
                     if stop_event.is_set():
                         app.logger.info(
                             "run_script producer stopped due to client disconnect: %s",
                             type(exc).__name__,
                         )
-                        return
-                    output_queue.put(("error", exc))
+                    else:
+                        output_queue.put(("error", exc))
+                except BaseException as exc:  # noqa: BLE001 - GreenletExit etc.
+                    producer_exc = exc
+                    raise
                 finally:
                     with contextlib.suppress(Exception):
                         res.close()
+                    if not exhausted or producer_exc is not None:
+                        # Anything short of natural exhaustion may have
+                        # interrupted a DB exchange (the close above injects
+                        # GeneratorExit into the generator's yield point, and
+                        # element_adapter.process runs outside the generator's
+                        # own cleanup). Discard the connection; when
+                        # run_script_inner already invalidated and removed the
+                        # session this resolves a fresh registry Session and
+                        # invalidating it is a harmless no-op.
+                        _discard_session_connection(
+                            app, source="run_script producer abort"
+                        )
                     _remove_db_session_safely(app, source="run_script producer")
                     output_queue.put(("done", None))
 

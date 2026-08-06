@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import shutil
+from importlib import import_module
 from pathlib import Path
 import pytest
 
@@ -25,6 +26,10 @@ for _key in list(ENV_VARS.keys()):
     os.environ.pop(_key, None)
 
 # Force SQLite for tests unless explicitly overridden.
+# NOTE: this MUST stay a file-backed database (not :memory:). The
+# session-termination principle invalidates connections on abnormal
+# stream terminations; on an in-memory SQLite (StaticPool) an
+# invalidate would destroy the entire database mid-test.
 _test_db_uri = os.environ.get("TEST_SQLALCHEMY_DATABASE_URI")
 _test_db_dir = None
 if not _test_db_uri:
@@ -112,8 +117,32 @@ def app():
         "ai_shifu_saas": _test_db_uri,
         "ai_shifu_admin": _test_db_uri,
     }
+    # The binds above give the SaaS plugin a working SQLite database, so mark
+    # it enabled whenever the plugin package is importable. Runtime deployments
+    # set this flag during plugin initialization instead.
+    try:
+        import_module("flaskr.plugins.ai_shifu_saas_plugin")
+        app.config["SAAS_PLUGIN_ENABLED"] = True
+    except ModuleNotFoundError as exc:
+        # Only swallow "the plugin package itself is absent"; a missing
+        # transitive dependency inside an installed plugin must surface
+        # instead of silently disabling the plugin-path tests.
+        if not str(exc.name or "").startswith("flaskr.plugins.ai_shifu_saas_plugin"):
+            raise
     app.extensions.pop("sqlalchemy", None)
     dao.db.init_app(app)
+    # The second init_app above registered another Flask-SQLAlchemy teardown
+    # AFTER dao's interrupt guard; teardowns run LIFO, so move the guard back
+    # to the end to preserve guard-before-session-removal ordering. This
+    # matches production, where init_app runs exactly once inside init_db.
+    _teardown_funcs = app.teardown_appcontext_funcs
+    for _func in list(_teardown_funcs):
+        if (
+            getattr(_func, "__name__", "")
+            == "_invalidate_session_on_interrupted_teardown"
+        ):
+            _teardown_funcs.remove(_func)
+            _teardown_funcs.append(_func)
 
     with app.app_context():
         # Allow skipping DB migrations in CI/unit-only runs

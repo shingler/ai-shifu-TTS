@@ -109,12 +109,15 @@ from flaskr.service.learn.context_v2 import (
     MdflowContextV2,
     PaidException,
     _find_outline_path_or_raise,
+    _resolve_runtime_language_context,
     _resolve_runtime_output_language,
     RUNLLMProvider,
     RunScriptContextV2,
     RunScriptPreviewContextV2,
     _PreviewContextStore,
 )
+from markdown_flow import MarkdownFlow, USER_ANSWER_CONTEXT_KEY
+from markdown_flow.llm import LLMResult
 from flaskr.service.learn.const import CONTEXT_INTERACTION_NEXT
 from flaskr.service.learn.learn_dtos import (
     ElementType,
@@ -1215,6 +1218,48 @@ class RuntimeOutputLanguageTests(unittest.TestCase):
 
         self.assertEqual(output_language, "zh-CN")
 
+    def test_runtime_language_overlays_stale_production_prompt_variables(self):
+        stored_profile = {
+            "sys_user_language": "zh-CN",
+            "language": "zh-CN",
+            "sys_user_nickname": "Learner",
+        }
+
+        with patch(
+            "flaskr.service.learn.context_v2.get_current_language",
+            return_value="fr-FR",
+        ):
+            runtime_profile, output_language = _resolve_runtime_language_context(
+                stored_profile,
+                use_learner_language=True,
+            )
+
+        self.assertEqual(output_language, "fr-FR")
+        self.assertEqual(runtime_profile["sys_user_language"], "fr-FR")
+        self.assertEqual(runtime_profile["language"], "fr-FR")
+        self.assertEqual(runtime_profile["sys_user_nickname"], "Learner")
+        self.assertEqual(stored_profile["sys_user_language"], "zh-CN")
+        self.assertEqual(stored_profile["language"], "zh-CN")
+
+    def test_runtime_language_keeps_profile_variables_when_feature_is_disabled(self):
+        stored_profile = {
+            "sys_user_language": "zh-CN",
+            "language": "zh-CN",
+        }
+
+        with patch(
+            "flaskr.service.learn.context_v2.get_current_language",
+            return_value="fr-FR",
+        ):
+            runtime_profile, output_language = _resolve_runtime_language_context(
+                stored_profile,
+                use_learner_language=False,
+            )
+
+        self.assertEqual(output_language, "fr-FR")
+        self.assertEqual(runtime_profile, stored_profile)
+        self.assertIsNot(runtime_profile, stored_profile)
+
 
 class PreviewResolveLlmSettingsTests(unittest.TestCase):
     def test_falls_back_to_allowlist_when_persisted_model_not_allowed(self):
@@ -1911,6 +1956,71 @@ def _make_preview_store(
     return store, cache, doc
 
 
+class PreviewSentPromptCaptureTests(unittest.TestCase):
+    """The preview flow stores the exact user message markdown-flow sent to
+    the LLM (LLMResult.prompt) instead of a locally re-rendered block, so the
+    replayed preview context stays byte-identical to the sent request."""
+
+    def test_iter_preview_generated_events_captures_prompt(self):
+        app = Flask("preview-prompt-capture")
+        preview_ctx = RunScriptPreviewContextV2(app)
+        sent_prompt_chunks: list[str] = []
+
+        list(
+            preview_ctx._iter_preview_generated_events(
+                result=(
+                    chunk
+                    for chunk in [
+                        LLMResult(
+                            content="Hello preview",
+                            type="text",
+                            number=0,
+                            prompt="P-PREVIEW",
+                        )
+                    ]
+                ),
+                outline_bid="outline-1",
+                block_index=0,
+                current_block=types.SimpleNamespace(block_type="content"),
+                is_user_input_validation=False,
+                content_chunks=[],
+                langfuse_output_chunks=[],
+                sent_prompt_chunks=sent_prompt_chunks,
+            )
+        )
+
+        self.assertEqual(sent_prompt_chunks, ["P-PREVIEW"])
+
+    def test_update_preview_context_prefers_sent_prompt(self):
+        app = Flask("preview-prompt-store")
+        preview_ctx = RunScriptPreviewContextV2(app)
+        appended: list[tuple] = []
+        store = types.SimpleNamespace(
+            append_context=lambda *args: appended.append(args)
+        )
+        request = PlaygroundPreviewRequest(block_index=0)
+
+        preview_ctx._update_preview_context(
+            store,
+            "doc",
+            request,
+            ["generated "],
+            "re-rendered block",
+            sent_prompt="P-PREVIEW",
+        )
+        preview_ctx._update_preview_context(
+            store,
+            "doc",
+            request,
+            ["generated "],
+            "re-rendered block",
+        )
+
+        self.assertEqual(appended[0][2], "P-PREVIEW")
+        # Without a captured prompt the legacy rendering still applies.
+        self.assertEqual(appended[1][2], "re-rendered block")
+
+
 class PreviewContextStoreTruncationTests(unittest.TestCase):
     def _populate(self, store, doc, indices):
         for idx in indices:
@@ -2165,12 +2275,173 @@ class BuildContextFromBlocksTests(unittest.TestCase):
             )
 
 
+class BuildContextGenerationPromptReplayTests(unittest.TestCase):
+    """Content blocks replay the persisted generation_prompt verbatim so the
+    rebuilt history stays byte-identical to the request previously sent to
+    the LLM (keeping provider-side prefix caching effective); legacy rows
+    without it fall back to re-rendering the block source with the current
+    variables."""
+
+    DOC = (
+        "Content one {{nickname}}.\n"
+        "---\n"
+        "?[%{{nickname}} ...What is your name?]\n"
+        "---\n"
+        "Second content."
+    )
+
+    STORED_PROMPT = (
+        'Content one """UNKNOWN""".\n\n'
+        "The next interaction will appear immediately after this content."
+    )
+
+    def test_stored_prompt_replayed_verbatim_ignoring_current_variables(self):
+        blocks = [
+            types.SimpleNamespace(
+                type=BLOCK_TYPE_MDCONTENT_VALUE,
+                position=0,
+                generated_content="reply zero",
+                generation_prompt=self.STORED_PROMPT,
+            ),
+        ]
+        app = Flask(__name__)
+        with app.app_context():
+            messages = MdflowContextV2.build_context_from_blocks(
+                blocks, self.DOC, {"nickname": "Alice"}
+            )
+
+        # The stored prompt wins even though nickname now resolves to Alice.
+        self.assertEqual(messages[0]["role"], "user")
+        self.assertEqual(messages[0]["content"], self.STORED_PROMPT)
+
+    def test_missing_or_empty_prompt_falls_back_to_current_rendering(self):
+        blocks = [
+            # Legacy row persisted before the column existed.
+            types.SimpleNamespace(
+                type=BLOCK_TYPE_MDCONTENT_VALUE,
+                position=0,
+                generated_content="reply zero",
+            ),
+            # Row persisted with an empty prompt.
+            types.SimpleNamespace(
+                type=BLOCK_TYPE_MDCONTENT_VALUE,
+                position=2,
+                generated_content="reply two",
+                generation_prompt="",
+            ),
+        ]
+        app = Flask(__name__)
+        with app.app_context():
+            messages = MdflowContextV2.build_context_from_blocks(
+                blocks, self.DOC, {"nickname": "Alice"}
+            )
+
+        user_messages = [m for m in messages if m["role"] == "user"]
+        self.assertEqual(len(user_messages), 2)
+        self.assertIn("Alice", user_messages[0]["content"])
+        self.assertEqual(user_messages[1]["content"], "Second content.")
+
+
+class StreamContentBlockPromptCaptureTests(unittest.TestCase):
+    """_phase_stream_content_block captures LLMResult.prompt (the exact user
+    message markdown-flow sent to the LLM) and hands it to the recorder;
+    prompt-less streams (preserved content) freeze the variables-rendered
+    block source instead."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = Flask("stream-prompt-capture-tests")
+        cls.app.config.update(
+            SQLALCHEMY_DATABASE_URI="sqlite:///:memory:",
+            SQLALCHEMY_BINDS={
+                "ai_shifu_saas": "sqlite:///:memory:",
+                "ai_shifu_admin": "sqlite:///:memory:",
+            },
+            SQLALCHEMY_TRACK_MODIFICATIONS=False,
+        )
+        dao.db.init_app(cls.app)
+        with cls.app.app_context():
+            dao.db.create_all()
+
+    def _run_stream_phase(self, stream_items):
+        ctx = _make_context()
+        ctx.app = self.app
+        ctx._input_type = "normal"
+        ctx._preview_mode = False
+        ctx._listen = False
+        ctx._current_attend = types.SimpleNamespace(
+            progress_record_bid="progress-prompt-1",
+            shifu_bid="shifu-prompt-1",
+        )
+        # _recorder is a lazy read-only property backed by __dict__.
+        ctx.__dict__["_run_recorder"] = MagicMock()
+
+        def fake_stream():
+            yield from stream_items
+
+        mdflow_context = types.SimpleNamespace(process=lambda **kwargs: fake_stream())
+        attend = types.SimpleNamespace(shifu_bid="shifu-prompt-1")
+        state = types.SimpleNamespace(
+            run_script_info=types.SimpleNamespace(
+                attend=attend,
+                outline_bid="outline-prompt-1",
+                block_position=0,
+                mdflow="",
+            ),
+            block_list=[object(), object()],
+            user_profile={"nickname": "Alice"},
+            message_list=[],
+            llm_provider=MagicMock(),
+            mdflow_context=mdflow_context,
+            block=types.SimpleNamespace(content="Preserved {{nickname}} text."),
+        )
+        generated_block = LearnGeneratedBlock(
+            generated_block_bid="gb-prompt-capture-1",
+            progress_record_bid="progress-prompt-1",
+            user_bid="user-prompt-1",
+            outline_item_bid="outline-prompt-1",
+            shifu_bid="shifu-prompt-1",
+            position=0,
+            generated_content="",
+            block_content_conf="",
+            status=1,
+        )
+        with self.app.app_context():
+            events = list(
+                ctx._phase_stream_content_block(self.app, state, generated_block)
+            )
+            dao.db.session.rollback()
+        return ctx, events
+
+    def test_llm_prompt_captured_and_passed_to_finalize(self):
+        ctx, _events = self._run_stream_phase(
+            [
+                LLMResult(content="Hello ", type="text", number=0, prompt="P-EXACT"),
+                LLMResult(content="world", type="text", number=0, prompt="P-EXACT"),
+            ]
+        )
+        finalize_call = ctx._recorder.finalize_streamed_block.call_args
+        self.assertEqual(finalize_call.kwargs["generation_prompt"], "P-EXACT")
+        self.assertEqual(finalize_call.args[1], "Hello world")
+
+    def test_promptless_stream_falls_back_to_rendered_block_source(self):
+        ctx, _events = self._run_stream_phase(
+            [LLMResult(content="Preserved Alice text.", type="text", number=0)]
+        )
+        finalize_call = ctx._recorder.finalize_streamed_block.call_args
+        self.assertEqual(
+            finalize_call.kwargs["generation_prompt"],
+            'Preserved """Alice""" text.',
+        )
+
+
 class BuildContextNoVariableInteractionTests(unittest.TestCase):
-    """No-variable interactions carry a real learner answer, but markdown-flow
-    has no variable to recover it from and would collapse the turn into
-    {user: "ok"} + {assistant: "ok"}, dropping the answer.
-    build_context_from_blocks must reuse the value captured in
-    generated_content, and skip the turn entirely when it is empty."""
+    """No-variable interactions carry a real learner answer with no variable
+    to recover it from. build_context_from_blocks attaches the answer stored
+    in generated_content to the interaction message via the user_answer
+    extension field (markdown-flow >= 0.3.0); the library then expands it
+    into {user: answer} + {assistant: "ok"}, or skips the turn when the
+    answer is empty."""
 
     DOC = (
         "Content one.\n"
@@ -2179,6 +2450,7 @@ class BuildContextNoVariableInteractionTests(unittest.TestCase):
         "---\n"
         "Second content."
     )
+    INTERACTION = "?[网络招聘网站 | 猎头公司 | 人才测评 | 培训业务]"
 
     def _blocks(self, selection):
         return [
@@ -2194,7 +2466,7 @@ class BuildContextNoVariableInteractionTests(unittest.TestCase):
             ),
         ]
 
-    def test_selection_reused_instead_of_collapsing_to_ok(self):
+    def test_selection_attached_via_user_answer_field(self):
         app = Flask(__name__)
         with app.app_context():
             messages = MdflowContextV2.build_context_from_blocks(
@@ -2206,31 +2478,72 @@ class BuildContextNoVariableInteractionTests(unittest.TestCase):
             [
                 {"role": "user", "content": "Content one."},
                 {"role": "assistant", "content": "reply zero"},
-                {"role": "user", "content": "猎头公司"},
-                {"role": "assistant", "content": "ok"},
+                {
+                    "role": "assistant",
+                    "content": self.INTERACTION,
+                    USER_ANSWER_CONTEXT_KEY: "猎头公司",
+                },
             ],
         )
-        # No raw ?[...] leaks and the user turn is the real choice, not "ok".
-        self.assertTrue(all("?[" not in m["content"] for m in messages))
 
-    def test_empty_selection_skips_the_interaction_turn(self):
+    def test_empty_selection_carries_empty_user_answer(self):
         app = Flask(__name__)
         with app.app_context():
             messages = MdflowContextV2.build_context_from_blocks(
                 self._blocks("   "), self.DOC, {}
             )
 
-        # Only the content block survives; the empty interaction contributes
-        # nothing rather than a fabricated {user: "ok"} pair.
+        # The empty answer travels with the message; the library skips the
+        # turn instead of fabricating a {user: "ok"} pair.
         self.assertEqual(
-            messages,
+            messages[-1],
+            {
+                "role": "assistant",
+                "content": self.INTERACTION,
+                USER_ANSWER_CONTEXT_KEY: "",
+            },
+        )
+
+    def test_library_expands_answer_and_skips_empty_turns(self):
+        """End-to-end: the context built here goes through markdown-flow's
+        message transform and comes out with the real answer, no raw ?[...]
+        syntax, and no fabricated "ok" for unanswered interactions."""
+        app = Flask(__name__)
+        with app.app_context():
+            answered = MdflowContextV2.build_context_from_blocks(
+                self._blocks("猎头公司"), self.DOC, {}
+            )
+            unanswered = MdflowContextV2.build_context_from_blocks(
+                self._blocks(""), self.DOC, {}
+            )
+
+        mdflow = MarkdownFlow(self.DOC)
+        transformed = mdflow._transform_context_messages(answered, {})
+        self.assertEqual(
+            transformed,
+            [
+                {"role": "user", "content": "Content one."},
+                {"role": "assistant", "content": "reply zero"},
+                {"role": "user", "content": "猎头公司"},
+                {"role": "assistant", "content": "ok"},
+            ],
+        )
+        self.assertTrue(all("?[" not in m["content"] for m in transformed))
+        self.assertTrue(
+            all(USER_ANSWER_CONTEXT_KEY not in m for m in transformed),
+            "extension fields must never reach the LLM",
+        )
+
+        transformed_empty = mdflow._transform_context_messages(unanswered, {})
+        self.assertEqual(
+            transformed_empty,
             [
                 {"role": "user", "content": "Content one."},
                 {"role": "assistant", "content": "reply zero"},
             ],
         )
 
-    def test_variable_free_text_input_reuses_the_learner_answer(self):
+    def test_variable_free_text_input_carries_the_learner_answer(self):
         document = "Content one.\n---\n?[...What is your name?]\n---\nSecond content."
         app = Flask(__name__)
         with app.app_context():
@@ -2239,15 +2552,16 @@ class BuildContextNoVariableInteractionTests(unittest.TestCase):
             )
 
         self.assertEqual(
-            messages,
-            [
-                {"role": "user", "content": "Content one."},
-                {"role": "assistant", "content": "reply zero"},
-                {"role": "user", "content": "Alice"},
-                {"role": "assistant", "content": "ok"},
-            ],
+            messages[-1],
+            {
+                "role": "assistant",
+                "content": "?[...What is your name?]",
+                USER_ANSWER_CONTEXT_KEY: "Alice",
+            },
         )
-        self.assertTrue(all("?[" not in message["content"] for message in messages))
+        transformed = MarkdownFlow(document)._transform_context_messages(messages, {})
+        self.assertIn({"role": "user", "content": "Alice"}, transformed)
+        self.assertTrue(all("?[" not in m["content"] for m in transformed))
 
 
 if __name__ == "__main__":

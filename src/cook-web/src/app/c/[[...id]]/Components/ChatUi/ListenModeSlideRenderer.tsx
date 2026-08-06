@@ -22,7 +22,6 @@ import {
 } from '@/components/ui/Popover';
 import { lessonFeedbackInteractionDefaultValueOptions } from '@/c-utils/lesson-feedback-interaction-defaults';
 import { resolveInteractionSubmission } from '@/c-utils/interaction-user-input';
-import { adaptMarkdownFlowInteractionForRender } from '@/c-utils/markdown-flow-interaction';
 import { isLessonFeedbackInteractionContent } from '@/c-utils/lesson-feedback-interaction';
 import {
   isSystemInteractionContent,
@@ -46,6 +45,7 @@ import {
   buildListenMarkerSequenceKey,
   getListenMarkerIdentityKey,
   reconcileListenPlaybackStepCount,
+  resetListenPlaybackStateForSequence,
   resolveCurrentStepAudioCompletion,
   type ListenPlaybackState,
 } from './listenPlaybackState';
@@ -617,7 +617,7 @@ const buildSlideElementList = ({
         fallbackSequence: sequenceNumber,
       }),
       type: 'interaction',
-      content: adaptMarkdownFlowInteractionForRender(localizedContent),
+      content: localizedContent,
       is_marker: item.is_marker ?? true,
       is_renderable: item.is_renderable ?? true,
       is_new: item.is_new ?? true,
@@ -1684,15 +1684,9 @@ const ListenModeSlideRenderer = ({
 
   useEffect(() => {
     previousMarkerStepKeyRef.current = '';
-    setPlaybackState({
-      currentStepIndex: -1,
-      totalStepCount: markerStepCount,
-      currentStepHasAudio: false,
-      currentStepHasBlockingInteraction: false,
-      hasCompletedCurrentStepAudio: false,
-      isAudioPlaying: false,
-      isAudioWaiting: false,
-    });
+    setPlaybackState(prevState =>
+      resetListenPlaybackStateForSequence(prevState, markerStepCount),
+    );
     setHasSettledTailInteraction(false);
   }, [lessonId, markerSequenceKey, markerStepCount]);
 

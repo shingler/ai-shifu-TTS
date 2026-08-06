@@ -1,4 +1,5 @@
 import { useShifu } from '@/store';
+import * as React from 'react';
 import {
   Select,
   SelectContent,
@@ -11,23 +12,39 @@ import { useTranslation } from 'react-i18next';
 import { ModelOption } from '@/types/shifu';
 
 const MODEL_SELECT_ITEM_INDICATOR_CLASS_NAME = 'right-3';
+const MODEL_OPTIONS_REFRESH_TTL_MS = 30_000;
+let lastModelOptionsRefreshAt = 0;
 
 function ModelOptionLabel({
   label,
   creditMultiplier,
   creditMultiplierLabel,
+  promoLabel,
+  promoOriginalLabel,
 }: {
   label: string;
   creditMultiplier?: number | null;
   creditMultiplierLabel?: string;
+  promoLabel?: string;
+  promoOriginalLabel?: string;
 }) {
   const multiplierLabel =
     creditMultiplierLabel || (creditMultiplier ? `${creditMultiplier}x` : '');
   return (
     <span className='flex w-full min-w-0 items-center'>
       <span className='min-w-0 flex-1 truncate text-left'>{label}</span>
+      {promoLabel ? (
+        <span className='ml-2 shrink-0 rounded-full border border-destructive/20 bg-destructive/10 px-2 py-0.5 text-xs font-medium leading-none text-destructive'>
+          {promoLabel}
+        </span>
+      ) : null}
       {multiplierLabel ? (
         <span className='ml-2 shrink-0 rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-xs font-medium leading-none text-primary'>
+          {promoOriginalLabel ? (
+            <span className='mr-1 line-through opacity-60'>
+              {promoOriginalLabel}
+            </span>
+          ) : null}
           {multiplierLabel}
         </span>
       ) : null}
@@ -54,8 +71,26 @@ export default function ModelList({
   options?: ModelOption[];
   showDefaultOption?: boolean;
 }) {
-  const { models } = useShifu();
+  const { models, actions } = useShifu();
   const { t } = useTranslation();
+
+  const refreshModelOptions = React.useCallback(
+    (open: boolean) => {
+      if (!open || options || disabled) {
+        return;
+      }
+      const now = Date.now();
+      if (
+        lastModelOptionsRefreshAt &&
+        now - lastModelOptionsRefreshAt < MODEL_OPTIONS_REFRESH_TTL_MS
+      ) {
+        return;
+      }
+      lastModelOptionsRefreshAt = now;
+      void actions.loadModels();
+    },
+    [actions, disabled, options],
+  );
 
   const modelOptions: ModelOption[] = options || models || [];
 
@@ -64,11 +99,13 @@ export default function ModelList({
   const DEFAULT_MODEL_OPTION_VALUE = '__empty__';
   const displayValue =
     showDefaultOption && value === '' ? DEFAULT_MODEL_OPTION_VALUE : value;
+  const defaultModelOption =
+    modelOptions.find(item => item.isDefault) || modelOptions[0];
   const defaultOption: ModelOption = {
     value: DEFAULT_MODEL_OPTION_VALUE,
     label: t('common.core.default'),
-    creditMultiplier: 1,
-    creditMultiplierLabel: '',
+    creditMultiplier: defaultModelOption?.creditMultiplier ?? null,
+    creditMultiplierLabel: defaultModelOption?.creditMultiplierLabel || '',
   };
   const selectedOption =
     showDefaultOption && displayValue === DEFAULT_MODEL_OPTION_VALUE
@@ -85,6 +122,7 @@ export default function ModelList({
   return (
     <Select
       onValueChange={handleChange}
+      onOpenChange={refreshModelOptions}
       value={displayValue}
       disabled={disabled}
     >
@@ -104,6 +142,8 @@ export default function ModelList({
                 label={selectedOption.label}
                 creditMultiplier={selectedOption.creditMultiplier}
                 creditMultiplierLabel={selectedOption.creditMultiplierLabel}
+                promoLabel={selectedOption.promoLabel}
+                promoOriginalLabel={selectedOption.promoOriginalLabel}
               />
             ) : (
               t('common.core.selectModel')
@@ -139,6 +179,8 @@ export default function ModelList({
                 label={item.label}
                 creditMultiplier={item.creditMultiplier}
                 creditMultiplierLabel={item.creditMultiplierLabel}
+                promoLabel={item.promoLabel}
+                promoOriginalLabel={item.promoOriginalLabel}
               />
             </SelectItem>
           );

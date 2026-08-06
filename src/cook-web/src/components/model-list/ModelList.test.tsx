@@ -1,14 +1,18 @@
 import React from 'react';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 
 import ModelList from './ModelList';
+
+const mockLoadModels = jest.fn();
 
 const mockShifuState = {
   models: [
     {
       value: 'qwen/deepseek-v4-flash',
       label: 'DeepSeek-V4-Flash',
-      creditMultiplier: 1,
+      creditMultiplier: 6,
+      creditMultiplierLabel: '6x',
+      isDefault: true,
     },
     {
       value: 'ark/doubao-seed-2-0-lite-260428',
@@ -21,6 +25,9 @@ const mockShifuState = {
       creditMultiplier: null,
     },
   ],
+  actions: {
+    loadModels: mockLoadModels,
+  },
 };
 
 jest.mock('@/store', () => ({
@@ -36,7 +43,19 @@ jest.mock('react-i18next', () => ({
 
 jest.mock('../ui/Select', () => ({
   __esModule: true,
-  Select: ({ children }: React.PropsWithChildren) => <div>{children}</div>,
+  Select: ({
+    children,
+    onOpenChange,
+  }: React.PropsWithChildren<{
+    onOpenChange?: (open: boolean) => void;
+  }>) => (
+    <div
+      data-testid='model-select'
+      onClick={() => onOpenChange?.(true)}
+    >
+      {children}
+    </div>
+  ),
   SelectTrigger: ({
     children,
     className,
@@ -65,6 +84,7 @@ jest.mock('../ui/Select', () => ({
   }>) => (
     <div
       role='option'
+      aria-selected='false'
       data-value={value}
       data-indicator-class={indicatorClassName}
       data-class={className}
@@ -75,6 +95,10 @@ jest.mock('../ui/Select', () => ({
 }));
 
 describe('ModelList', () => {
+  beforeEach(() => {
+    mockLoadModels.mockClear();
+  });
+
   test('renders multiplier badges only for models that have a multiplier', () => {
     render(
       <ModelList
@@ -87,7 +111,7 @@ describe('ModelList', () => {
     expect(screen.getByText('DeepSeek-V4-Flash')).toBeInTheDocument();
     expect(screen.getByText('Doubao-Seed-2.0-lite')).toBeInTheDocument();
     expect(screen.getByText('No Rate')).toBeInTheDocument();
-    expect(screen.getAllByText('1x')).toHaveLength(3);
+    expect(screen.getAllByText('6x')).toHaveLength(3);
     expect(screen.getByText('3x')).toBeInTheDocument();
 
     const trigger = screen.getByRole('button');
@@ -98,7 +122,7 @@ describe('ModelList', () => {
     expect(
       within(trigger).getByText('common.core.default'),
     ).toBeInTheDocument();
-    expect(within(trigger).getByText('1x')).toBeInTheDocument();
+    expect(within(trigger).getByText('6x')).toBeInTheDocument();
 
     const noRateOption = screen.getByText('No Rate').closest('[role="option"]');
     expect(noRateOption).toBeTruthy();
@@ -117,7 +141,7 @@ describe('ModelList', () => {
       expect.stringContaining('right-3'),
     );
     expect(
-      within(defaultOption as HTMLElement).getByText('1x'),
+      within(defaultOption as HTMLElement).getByText('6x'),
     ).toBeInTheDocument();
   });
 
@@ -143,5 +167,80 @@ describe('ModelList', () => {
     expect(
       screen.getByRole('listbox').querySelector('[data-value="__empty__"]'),
     ).toBeNull();
+  });
+
+  test('renders promo badge only for options that carry a promoLabel', () => {
+    render(
+      <ModelList
+        value='minimax/speech-2.8-turbo'
+        onChange={() => undefined}
+        showDefaultOption={false}
+        options={[
+          {
+            value: 'minimax/speech-2.8-turbo',
+            label: 'Premium Voice',
+            creditMultiplierLabel: '2x',
+            promoLabel: 'Limited-time 95% off',
+            promoOriginalLabel: '44x',
+          },
+          {
+            value: 'tencent_texttovoice/premium',
+            label: 'Basic Voice',
+            creditMultiplierLabel: '3x',
+          },
+        ]}
+      />,
+    );
+
+    // Promo badge shows in both the trigger and the dropdown option; the
+    // struck-through pre-promo rate sits inside the multiplier badge, right
+    // before the current rate.
+    expect(screen.getAllByText('Limited-time 95% off')).toHaveLength(2);
+    expect(screen.getAllByText('2x')).toHaveLength(2);
+    const originalRates = screen.getAllByText('44x');
+    expect(originalRates).toHaveLength(2);
+    originalRates.forEach(node => {
+      expect(node).toHaveClass('line-through');
+      // Exact textContent locks both co-location and order: the struck-through
+      // pre-promo rate first, the current rate right after.
+      expect(node.parentElement?.textContent).toBe('44x2x');
+    });
+
+    const basicOption = screen
+      .getByText('Basic Voice')
+      .closest('[role="option"]');
+    expect(basicOption).toBeTruthy();
+    expect(
+      within(basicOption as HTMLElement).queryByText('Limited-time 95% off'),
+    ).toBeNull();
+    expect(within(basicOption as HTMLElement).queryByText('44x')).toBeNull();
+    expect(
+      within(basicOption as HTMLElement).getByText('3x'),
+    ).toBeInTheDocument();
+  });
+
+  test('refreshes model options on open with a short ttl', () => {
+    const initialNow = Date.now() + 1_000_000;
+    const nowSpy = jest.spyOn(Date, 'now');
+    nowSpy.mockReturnValue(initialNow);
+
+    try {
+      render(
+        <ModelList
+          value=''
+          onChange={() => undefined}
+        />,
+      );
+
+      fireEvent.click(screen.getByTestId('model-select'));
+      fireEvent.click(screen.getByTestId('model-select'));
+      expect(mockLoadModels).toHaveBeenCalledTimes(1);
+
+      nowSpy.mockReturnValue(initialNow + 31_000);
+      fireEvent.click(screen.getByTestId('model-select'));
+      expect(mockLoadModels).toHaveBeenCalledTimes(2);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 });

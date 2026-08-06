@@ -172,6 +172,7 @@ def test_billing_dto_json_serializes_metric_breakdowns_and_bucket_lists() -> Non
             {
                 "wallet_bucket_bid": "bucket-1",
                 "category": "subscription",
+                "credit_asset_kind": "unknown",
                 "source_type": "subscription",
                 "source_bid": "sub-1",
                 "available_credits": 97.5,
@@ -225,7 +226,6 @@ def test_runtime_config_dto_json_uses_public_aliases() -> None:
                 }
             ),
         ),
-        genMdfApiUrl="",
         entitlements=RuntimeBillingEntitlementsDTO(
             branding_enabled=True,
             custom_domain_enabled=True,

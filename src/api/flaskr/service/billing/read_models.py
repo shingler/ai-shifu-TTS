@@ -49,10 +49,15 @@ from .consts import (
 )
 from .campaigns import resolve_catalog_campaign_payload
 from .bucket_categories import (
-    build_wallet_bucket_runtime_sort_key,
-    load_billing_order_type_by_bid,
+    OrderTypeLoader,
+    resolve_credit_bucket_priority,
 )
-from .credit_notifications import resolve_creator_limit_state
+from .credit_grant_allocation_views import (
+    CreditAllocationView,
+    build_credit_allocation_view,
+    build_credit_grant_view,
+)
+from .credit_notifications import build_creator_limit_state_for_available_credits
 from .dtos import (
     AdminBillingDailyLedgerSummaryPageDTO,
     AdminBillingFocusTeacherDTO,
@@ -101,6 +106,7 @@ from .queries import (
 from .primitives import normalize_bid as _normalize_bid
 from .primitives import normalize_json_object as _normalize_json_object
 from .primitives import credit_decimal_to_number
+from .primitives import is_billing_enabled
 from .primitives import quantize_credit_amount as _quantize_credit_amount
 from .primitives import to_decimal as _to_decimal
 from .serializers import (
@@ -118,7 +124,10 @@ from .serializers import (
     serialize_wallet_bucket as _serialize_wallet_bucket,
 )
 from .trials import resolve_new_creator_trial_offer as _resolve_new_creator_trial_offer
-from .wallets import adjust_credit_wallet_balance
+from .wallets import (
+    adjust_credit_wallet_balance,
+    calculate_credit_wallet_snapshot_values,
+)
 
 _OPERATOR_PRODUCT_FILTER_LANGUAGES = ("zh-CN", "en-US", "fr-FR")
 _ADMIN_BILLING_FOCUS_ATTENTION_REASON_ORDER = (
@@ -129,6 +138,18 @@ _ADMIN_BILLING_FOCUS_ATTENTION_REASON_ORDER = (
     "debug_preview_heavy",
     "sustained_activity",
 )
+
+
+def _filter_out_reserved_credit_grant_ledgers(query):
+    bucket_credit_state_expr = db.func.lower(
+        db.func.trim(
+            db.func.coalesce(
+                CreditLedgerEntry.metadata_json["bucket_credit_state"].as_string(),
+                "",
+            )
+        )
+    )
+    return query.filter(bucket_credit_state_expr.notin_(("reserved", "absorbed")))
 
 
 def _parse_stat_date(value: str) -> datetime.date | None:
@@ -467,11 +488,7 @@ def _load_matching_creator_bids_for_keyword(keyword: str) -> list[str]:
 
     users = UserEntity.query.filter(
         UserEntity.deleted == 0,
-        (
-            (UserEntity.user_bid == normalized)
-            | (UserEntity.user_identify == normalized)
-            | (UserEntity.user_identify.ilike(f"%{normalized}%"))
-        ),
+        UserEntity.user_identify == normalized,
     ).yield_per(200)
     for user in users:
         user_bid = str(user.user_bid or "").strip()
@@ -481,7 +498,7 @@ def _load_matching_creator_bids_for_keyword(keyword: str) -> list[str]:
     credentials = AuthCredential.query.filter(
         AuthCredential.deleted == 0,
         AuthCredential.provider_name.in_(["phone", "email"]),
-        AuthCredential.identifier.ilike(f"%{normalized}%"),
+        AuthCredential.identifier == normalized,
     ).yield_per(200)
     for credential in credentials:
         user_bid = str(credential.user_bid or "").strip()
@@ -607,8 +624,29 @@ def build_billing_overview(
         subscription = _load_current_subscription(normalized_creator_bid)
 
         wallet_payload = _serialize_wallet(wallet)
+        available_credits = Decimal("0")
+        if wallet is not None:
+            available_credits, reserved_credits = (
+                calculate_credit_wallet_snapshot_values(
+                    wallet,
+                    snapshot_at=now_utc(),
+                )
+            )
+            wallet_payload.available_credits = credit_decimal_to_number(
+                available_credits
+            )
+            wallet_payload.reserved_credits = credit_decimal_to_number(reserved_credits)
         subscription_payload = _serialize_subscription(app, subscription)
-        limit_state = resolve_creator_limit_state(app, normalized_creator_bid)
+        limit_state = (
+            build_creator_limit_state_for_available_credits(available_credits)
+            if is_billing_enabled()
+            else {
+                "state": "normal",
+                "debug_allowed": True,
+                "available_credits": "0",
+                "softlimit_threshold": "0",
+            }
+        )
         softlimit_threshold = limit_state.get("softlimit_threshold")
         return BillingOverviewDTO(
             creator_bid=normalized_creator_bid,
@@ -640,15 +678,131 @@ def build_billing_wallet_buckets(
             .order_by(CreditWalletBucket.id.asc())
             .all()
         )
-        rows.sort(
-            key=lambda row: build_wallet_bucket_runtime_sort_key(
+        load_order_type = _build_wallet_bucket_order_type_loader(
+            rows,
+            creator_bid=normalized_creator_bid,
+        )
+        bucket_views = [
+            (
                 row,
-                load_order_type=load_billing_order_type_by_bid,
+                build_credit_allocation_view(
+                    row,
+                    load_order_type=load_order_type,
+                ),
             )
+            for row in rows
+        ]
+        bucket_views.sort(
+            key=lambda pair: _wallet_bucket_view_sort_key(pair[0], pair[1])
         )
-        return BillingWalletBucketListDTO(
-            items=[_serialize_wallet_bucket(app, row) for row in rows]
+        items = []
+        for row, allocation_view in bucket_views:
+            items.append(
+                _serialize_wallet_bucket(
+                    app,
+                    row,
+                    category_code=allocation_view.runtime_bucket_category,
+                    credit_asset_kind=allocation_view.asset_kind,
+                )
+            )
+        return BillingWalletBucketListDTO(items=items)
+
+
+def _wallet_bucket_view_sort_key(
+    row: CreditWalletBucket,
+    allocation_view: CreditAllocationView,
+) -> tuple[int, bool, datetime, datetime, int]:
+    return (
+        resolve_credit_bucket_priority(allocation_view.runtime_bucket_category),
+        row.effective_to is None,
+        row.effective_to or datetime.max,
+        row.created_at or datetime.min,
+        int(row.id or 0),
+    )
+
+
+def _build_wallet_bucket_order_type_loader(
+    rows: list[CreditWalletBucket],
+    *,
+    creator_bid: str,
+) -> OrderTypeLoader:
+    order_bids = {
+        _normalize_bid(_normalize_json_object(row.metadata_json).get("bill_order_bid"))
+        for row in rows
+    }
+    order_bids.discard("")
+
+    return _build_creator_order_type_loader(order_bids, creator_bid=creator_bid)
+
+
+def _build_creator_order_type_loader(
+    order_bids: set[str],
+    *,
+    creator_bid: str,
+) -> OrderTypeLoader:
+    safe_order_bids = {_normalize_bid(order_bid) for order_bid in order_bids}
+    safe_order_bids.discard("")
+
+    orders = (
+        BillingOrder.query.filter(
+            BillingOrder.deleted == 0,
+            BillingOrder.creator_bid == _normalize_bid(creator_bid),
+            BillingOrder.bill_order_bid.in_(safe_order_bids),
+        ).all()
+        if safe_order_bids
+        else []
+    )
+    order_type_by_bid = {
+        _normalize_bid(order.bill_order_bid): int(order.order_type or 0)
+        for order in orders
+    }
+
+    def _load_order_type(order_bid: str) -> int | None:
+        return order_type_by_bid.get(_normalize_bid(order_bid))
+
+    return _load_order_type
+
+
+def _load_ledger_bucket_map(
+    rows: list[CreditLedgerEntry],
+    *,
+    creator_bid: str,
+) -> dict[str, CreditWalletBucket]:
+    bucket_bids = {
+        _normalize_bid(row.wallet_bucket_bid)
+        for row in rows
+        if _normalize_bid(row.wallet_bucket_bid)
+    }
+    if not bucket_bids:
+        return {}
+
+    buckets = CreditWalletBucket.query.filter(
+        CreditWalletBucket.deleted == 0,
+        CreditWalletBucket.creator_bid == _normalize_bid(creator_bid),
+        CreditWalletBucket.wallet_bucket_bid.in_(bucket_bids),
+    ).all()
+    return {_normalize_bid(bucket.wallet_bucket_bid): bucket for bucket in buckets}
+
+
+def _build_ledger_page_order_type_loader(
+    rows: list[CreditLedgerEntry],
+    *,
+    creator_bid: str,
+    bucket_map: dict[str, CreditWalletBucket],
+) -> OrderTypeLoader:
+    order_bids = {
+        _normalize_bid(_normalize_json_object(row.metadata_json).get("bill_order_bid"))
+        for row in rows
+    }
+    order_bids.update(
+        _normalize_bid(
+            _normalize_json_object(bucket.metadata_json).get("bill_order_bid")
         )
+        for bucket in bucket_map.values()
+    )
+    order_bids.discard("")
+
+    return _build_creator_order_type_loader(order_bids, creator_bid=creator_bid)
 
 
 def build_billing_ledger_page(
@@ -666,7 +820,10 @@ def build_billing_ledger_page(
         query = CreditLedgerEntry.query.filter(
             CreditLedgerEntry.deleted == 0,
             CreditLedgerEntry.creator_bid == normalized_creator_bid,
-        ).order_by(CreditLedgerEntry.created_at.desc(), CreditLedgerEntry.id.desc())
+        )
+        query = _filter_out_reserved_credit_grant_ledgers(query).order_by(
+            CreditLedgerEntry.created_at.desc(), CreditLedgerEntry.id.desc()
+        )
         total = query.order_by(None).count()
         if total == 0:
             return BillingLedgerPageDTO(
@@ -682,6 +839,12 @@ def build_billing_ledger_page(
         offset = (resolved_page - 1) * safe_page_size
         rows = query.offset(offset).limit(safe_page_size).all()
         usage_metadata_map = _build_usage_metadata_map(rows)
+        bucket_map = _load_ledger_bucket_map(rows, creator_bid=normalized_creator_bid)
+        load_order_type = _build_ledger_page_order_type_loader(
+            rows,
+            creator_bid=normalized_creator_bid,
+            bucket_map=bucket_map,
+        )
 
         items = []
         for row in rows:
@@ -701,11 +864,17 @@ def build_billing_ledger_page(
                         },
                     }
 
+            credit_view = build_credit_grant_view(
+                row,
+                bucket=bucket_map.get(_normalize_bid(row.wallet_bucket_bid)),
+                load_order_type=load_order_type,
+            )
             items.append(
                 _serialize_ledger_entry(
                     app,
                     row,
                     metadata=metadata,
+                    credit_asset_kind=credit_view.asset_kind,
                 )
             )
 
@@ -724,6 +893,7 @@ def build_admin_bill_subscriptions_page(
     page_index: int = DEFAULT_PAGE_INDEX,
     page_size: int = DEFAULT_PAGE_SIZE,
     creator_bid: str = "",
+    creator_keyword: str = "",
     status: str = "",
     attention_only: bool = False,
 ) -> BillingSubscriptionsPageDTO:
@@ -731,6 +901,7 @@ def build_admin_bill_subscriptions_page(
 
     safe_page_index, safe_page_size = normalize_pagination(page_index, page_size)
     normalized_creator_bid = _normalize_bid(creator_bid)
+    normalized_creator_keyword = str(creator_keyword or "").strip()
     status_code = _resolve_subscription_status_filter(status)
 
     with app.app_context():
@@ -739,6 +910,16 @@ def build_admin_bill_subscriptions_page(
             query = query.filter(
                 BillingSubscription.creator_bid == normalized_creator_bid
             )
+        elif normalized_creator_keyword:
+            matched_creator_bids = _load_matching_creator_bids_for_keyword(
+                normalized_creator_keyword
+            )
+            if matched_creator_bids:
+                query = query.filter(
+                    BillingSubscription.creator_bid.in_(matched_creator_bids)
+                )
+            else:
+                query = query.filter(BillingSubscription.id == 0)
         if status_code is not None:
             query = query.filter(BillingSubscription.status == status_code)
 
@@ -1400,7 +1581,10 @@ def build_admin_billing_focus_teachers_page(
 
             credits = Decimal(str(credit_decimal_to_number(row.consumed_credits) or 0))
             record_count = int(row.record_count or 0)
-            latest_usage_at = row.window_ended_at or row.window_started_at
+            # Use the start of the UTC stat window as the visible "latest
+            # active" day. `window_ended_at` points at the next UTC day
+            # boundary and can render as a future local date in the admin UI.
+            latest_usage_at = row.window_started_at or row.window_ended_at
 
             item["credits_30d"] += credits
             item["total_credits_30d"] += credits

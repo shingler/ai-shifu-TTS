@@ -85,24 +85,29 @@ export const normalizeTtsModelOptions = (list: any): TtsModelOption[] => {
         model,
         creditMultiplier,
         creditMultiplierLabel,
+        isDefault: Boolean(item.is_default ?? item.isDefault),
       };
     })
     .filter((item): item is TtsModelOption => Boolean(item));
 };
 
+export const getDefaultTtsModelOption = (
+  options: TtsModelOption[],
+): TtsModelOption | undefined =>
+  options.find(option => option.isDefault) || options[0];
+
 export const filterTtsVoicesForModel = (
-  provider: string,
   voices: TtsVoiceOption[],
   model: string,
 ): TtsVoiceOption[] => {
-  if (
-    String(provider || '')
-      .trim()
-      .toLowerCase() !== 'volcengine'
-  ) {
-    return voices;
-  }
   const modelKey = String(model || '').trim();
   if (!modelKey) return voices;
+  // Providers whose voices declare a resource_id (volcengine resources,
+  // tencent TextToVoice tiers) get model-scoped voice lists; providers
+  // without the annotation keep their full list.
+  const hasResourceAnnotations = voices.some(voice =>
+    (voice.resource_id || '').trim(),
+  );
+  if (!hasResourceAnnotations) return voices;
   return voices.filter(voice => (voice.resource_id || '').trim() === modelKey);
 };

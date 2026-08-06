@@ -4,6 +4,7 @@ import { getDynamicApiBaseUrl } from '@/config/environment';
 import { debugError, debugInfo, debugWarn } from '@/c-utils/debugConsole';
 import { toast } from '@/hooks/useToast';
 import i18n from 'i18next';
+import { getPendingRequestLanguage } from './request-language';
 import {
   buildTraceHeaders,
   headersToRecord,
@@ -47,17 +48,14 @@ type RequestDebugMeta = {
   skipErrorToast?: boolean;
 };
 
-const getBusinessFallbackMessage = () => i18n.t('common.core.actionFailed');
+export const getBusinessFallbackMessage = () =>
+  i18n.t('common.core.actionFailed');
 
 const isServerSideStatus = (status?: number) =>
   typeof status === 'number' && status >= 500;
 
-const getRequestFallbackMessage = (error?: Partial<ErrorWithCode>) => {
-  if (
-    typeof navigator !== 'undefined' &&
-    Object.prototype.hasOwnProperty.call(navigator, 'onLine') &&
-    navigator.onLine === false
-  ) {
+export const getRequestFallbackMessage = (error?: Partial<ErrorWithCode>) => {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
     return i18n.t('common.core.networkError');
   }
 
@@ -68,8 +66,19 @@ const getRequestFallbackMessage = (error?: Partial<ErrorWithCode>) => {
   return i18n.t('common.core.requestFailed');
 };
 
-export const getCurrentLanguageHeaders = (): Record<string, string> => {
-  const currentLanguage = i18n.resolvedLanguage || i18n.language;
+export const getCurrentRequestLanguage = (): string => {
+  return (
+    getPendingRequestLanguage() ||
+    i18n.resolvedLanguage ||
+    i18n.language ||
+    ''
+  ).trim();
+};
+
+export const getCurrentLanguageHeaders = (
+  language?: string,
+): Record<string, string> => {
+  const currentLanguage = language?.trim() || getCurrentRequestLanguage();
   return currentLanguage ? { 'Accept-Language': currentLanguage } : {};
 };
 

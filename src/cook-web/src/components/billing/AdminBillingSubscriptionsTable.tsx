@@ -1,8 +1,18 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import api from '@/api';
+import { useEnvStore } from '@/c-store';
 import AdminTableShell from '@/components/admin/AdminTableShell';
+import AdminClearableInput from '@/components/admin/AdminClearableInput';
 import { Badge } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/Select';
 import {
   Table,
   TableBody,
@@ -12,6 +22,7 @@ import {
   TableRow,
 } from '@/components/ui/Table';
 import { useBillingAdminPagedQuery } from '@/hooks/useBillingAdminPagedQuery';
+import { useAdminListQueryState } from '@/hooks/useAdminListQueryState';
 import type {
   AdminBillingSubscriptionItem,
   BillingPagedResponse,
@@ -24,6 +35,7 @@ import {
   resolveBillingProviderLabel,
   resolveBillingSubscriptionStatusLabel,
 } from '@/lib/billing';
+import { resolveContactMode } from '@/lib/resolve-contact-mode';
 import {
   AdminBillingIdentityCell,
   resolveAdminBillingPaginationFootnote,
@@ -35,6 +47,12 @@ import {
 
 const ADMIN_BILLING_SUBSCRIPTIONS_PAGE_SIZE = 10;
 const BILLING_PASSIVE_REQUEST_CONFIG = { skipErrorToast: true } as const;
+const ALL_SUBSCRIPTION_STATUS = '__all__';
+
+type SubscriptionAttentionFilters = {
+  creatorKeyword: string;
+  status: string;
+};
 
 function resolveAdminBillingSubscriptionOutcome(
   t: (key: string, options?: Record<string, unknown>) => string,
@@ -123,19 +141,109 @@ function resolveAdminBillingSubscriptionOutcome(
 export function AdminBillingSubscriptionsTable() {
   const { t, i18n } = useTranslation();
   registerBillingTranslationUsage(t);
-  const { error, isLoading, items, page, pageCount, total, setPage } =
+  const loginMethodsEnabled = useEnvStore(state => state.loginMethodsEnabled);
+  const defaultLoginMethod = useEnvStore(state => state.defaultLoginMethod);
+  const defaultFilters = React.useMemo<SubscriptionAttentionFilters>(
+    () => ({
+      creatorKeyword: '',
+      status: ALL_SUBSCRIPTION_STATUS,
+    }),
+    [],
+  );
+  const clearLabel = t('module.chat.lessonFeedbackClearInput');
+  const searchInputId = React.useId();
+  const statusInputId = React.useId();
+  const {
+    draftFilters,
+    appliedFilters,
+    pageIndex,
+    setPageCount,
+    setDraftFilters,
+    applyDraftFilters,
+    resetFilters,
+    goToPage,
+  } = useAdminListQueryState({
+    defaultFilters,
+  });
+  const contactMode = React.useMemo(
+    () => resolveContactMode(loginMethodsEnabled, defaultLoginMethod),
+    [defaultLoginMethod, loginMethodsEnabled],
+  );
+  const searchPlaceholder = React.useMemo(
+    () =>
+      contactMode === 'email'
+        ? t('module.billing.admin.subscriptions.filters.searchPlaceholderEmail')
+        : t(
+            'module.billing.admin.subscriptions.filters.searchPlaceholderPhone',
+          ),
+    [contactMode, t],
+  );
+  const statusOptions = React.useMemo(
+    () => [
+      {
+        value: ALL_SUBSCRIPTION_STATUS,
+        label: t('module.billing.admin.subscriptions.filters.statusAll'),
+      },
+      {
+        value: 'active',
+        label: resolveBillingSubscriptionStatusLabel(t, 'active'),
+      },
+      {
+        value: 'past_due',
+        label: resolveBillingSubscriptionStatusLabel(t, 'past_due'),
+      },
+      {
+        value: 'paused',
+        label: resolveBillingSubscriptionStatusLabel(t, 'paused'),
+      },
+      {
+        value: 'cancel_scheduled',
+        label: resolveBillingSubscriptionStatusLabel(t, 'cancel_scheduled'),
+      },
+    ],
+    [t],
+  );
+  const { data, error, isLoading, items, page, pageCount, total } =
     useBillingAdminPagedQuery<AdminBillingSubscriptionItem>({
       queryKey: 'admin-billing-subscriptions',
+      pageIndex,
       pageSize: ADMIN_BILLING_SUBSCRIPTIONS_PAGE_SIZE,
+      queryDeps: [appliedFilters.creatorKeyword, appliedFilters.status],
       fetchPage: async params =>
         (await api.getAdminBillingSubscriptions(
           {
             ...params,
             attention_only: true,
+            creator_keyword: appliedFilters.creatorKeyword.trim(),
+            status:
+              appliedFilters.status === ALL_SUBSCRIPTION_STATUS
+                ? ''
+                : appliedFilters.status,
           },
           BILLING_PASSIVE_REQUEST_CONFIG,
         )) as BillingPagedResponse<AdminBillingSubscriptionItem>,
     });
+
+  React.useEffect(() => {
+    if (data) {
+      setPageCount(pageCount);
+    }
+  }, [data, pageCount, setPageCount]);
+  const isTableLoading = isLoading && !data;
+
+  const applySearch = React.useCallback(() => {
+    applyDraftFilters();
+  }, [applyDraftFilters]);
+
+  const handleSearchChange = React.useCallback(
+    (value: string) => {
+      setDraftFilters(current => ({
+        ...current,
+        creatorKeyword: value,
+      }));
+    },
+    [setDraftFilters],
+  );
 
   return (
     <AdminBillingSectionCard
@@ -145,14 +253,93 @@ export function AdminBillingSubscriptionsTable() {
       disableContentShell
     >
       <AdminTableShell
-        loading={isLoading}
+        loading={isTableLoading}
         isEmpty={!items.length}
         emptyContent={t('module.billing.admin.subscriptions.empty')}
         emptyColSpan={7}
+        header={
+          <div className='flex flex-wrap items-end gap-3 xl:flex-nowrap xl:gap-4'>
+            <div className='flex min-w-0 flex-1 flex-wrap items-end gap-3 xl:flex-nowrap xl:gap-4'>
+              <div className='flex min-w-0 flex-none items-center gap-3 xl:w-[300px]'>
+                <label
+                  htmlFor={searchInputId}
+                  className='shrink-0 whitespace-nowrap text-sm font-medium text-[var(--base-foreground,#0A0A0A)]'
+                >
+                  {t('module.billing.admin.subscriptions.filters.teacherField')}
+                </label>
+                <div className='min-w-0 flex-1'>
+                  <AdminClearableInput
+                    id={searchInputId}
+                    value={draftFilters.creatorKeyword}
+                    placeholder={searchPlaceholder}
+                    clearLabel={clearLabel}
+                    onChange={handleSearchChange}
+                    onSubmit={applySearch}
+                  />
+                </div>
+              </div>
+              <div className='flex w-full items-center gap-3 sm:w-auto xl:w-[260px]'>
+                <label
+                  htmlFor={statusInputId}
+                  className='shrink-0 whitespace-nowrap text-sm font-medium text-[var(--base-foreground,#0A0A0A)]'
+                >
+                  {t('module.billing.admin.subscriptions.filters.status')}
+                </label>
+                <div className='min-w-0 flex-1'>
+                  <Select
+                    value={draftFilters.status}
+                    onValueChange={value => {
+                      setDraftFilters(current => ({
+                        ...current,
+                        status: value,
+                      }));
+                    }}
+                  >
+                    <SelectTrigger
+                      id={statusInputId}
+                      className='h-9 w-full min-w-[180px]'
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {statusOptions.map(option => (
+                        <SelectItem
+                          key={option.value}
+                          value={option.value}
+                        >
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </div>
+            <div className='flex w-full shrink-0 items-center justify-end gap-2 xl:w-auto'>
+              <Button
+                type='button'
+                variant='outline'
+                size='sm'
+                className='h-9 px-4'
+                onClick={resetFilters}
+              >
+                {t('module.billing.admin.subscriptions.filters.reset')}
+              </Button>
+              <Button
+                type='button'
+                size='sm'
+                className='h-9 px-4'
+                onClick={applySearch}
+              >
+                {t('module.billing.admin.subscriptions.filters.search')}
+              </Button>
+            </div>
+          </div>
+        }
         pagination={{
           pageIndex: page,
           pageCount,
-          onPageChange: setPage,
+          onPageChange: goToPage,
           prevLabel: t('module.dashboard.pagination.prev'),
           nextLabel: t('module.dashboard.pagination.next'),
           prevAriaLabel: t('module.dashboard.pagination.prev'),
