@@ -460,7 +460,6 @@ export const NewChatComponents = ({
     lessonHasContentUpdate,
     isListenMode: isListenModeActive,
     trackEvent,
-    chatBoxBottomRef,
     trackTrailProgress,
     lessonUpdate,
     chapterUpdate,
@@ -1376,7 +1375,7 @@ export const NewChatComponents = ({
           aria-hidden={isSlideMode ? 'true' : undefined}
           style={{ width: '100%', height: '100%', overflowY: 'auto' }}
         >
-          <div>
+          <div data-lesson-print-content-page='true'>
             <header
               data-lesson-print-only='true'
               className='lesson-pdf-print-header mx-auto max-w-[1000px] border-b border-border px-5 pb-5'

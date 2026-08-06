@@ -16,6 +16,7 @@ import {
   inWechat,
   inMiniProgram,
 } from '@/c-constants/uiConstants';
+import { LESSON_STATUS_VALUE } from '@/c-constants/courseConstants';
 import { EVENT_NAMES, events } from './events';
 
 import {
@@ -27,7 +28,7 @@ import {
 import { useUserStore } from '@/store';
 import { useDisclosure } from '@/c-common/hooks/useDisclosure';
 import { useTracking } from '@/c-common/hooks/useTracking';
-import { useLessonTree } from './hooks/useLessonTree';
+import { useLessonTree, type LessonTreeLesson } from './hooks/useLessonTree';
 import {
   applyLessonSelection,
   resolveRequestedLessonId,
@@ -64,7 +65,13 @@ import MiniProgramPayGuide from './Components/Pay/MiniProgramPayGuide';
 import { trackCourseVisitIfNeeded } from './courseVisitTracking';
 import DebugConsoleOverlay from '@/components/debug/DebugConsoleOverlay';
 import ProfileOnboardingModal from '@/components/profile-onboarding/ProfileOnboardingModal';
+import { debugWarn } from '@/c-utils/debugConsole';
 import { ErrorWithCode } from '@/lib/request';
+import {
+  resolveLearnerErrorMessage,
+  resolveLearnerErrorToast,
+} from '@/lib/learnerError';
+import { toast } from '@/hooks/useToast';
 
 const PayModalM = dynamic(() => import('./Components/Pay/PayModalM'), {
   ssr: false,
@@ -72,6 +79,8 @@ const PayModalM = dynamic(() => import('./Components/Pay/PayModalM'), {
 const PayModal = dynamic(() => import('./Components/Pay/PayModal'), {
   ssr: false,
 });
+
+type LessonUpdate = Pick<LessonTreeLesson, 'id'> & Partial<LessonTreeLesson>;
 
 // import LoginModal from './Components/Login/LoginModal';
 
@@ -166,8 +175,7 @@ export default function ChatPage() {
     }
 
     void updateWxcode({ wxcode: wechatCode }).catch(err => {
-      // eslint-disable-next-line no-console
-      console.warn('Failed to update WeChat OpenID:', err);
+      debugWarn('[lesson-page] failed to update WeChat OpenID', err);
     });
   }, [initialized, isLoggedIn, wechatCode]);
 
@@ -376,7 +384,7 @@ export default function ChatPage() {
       }
     };
     updateCourse();
-  }, [courseId]);
+  }, [courseId, updateCourseId]);
 
   const onCourseSelect = useCallback(
     (bid: string) => {
@@ -439,6 +447,42 @@ export default function ChatPage() {
     useState(false);
   const [profileOnboardingError, setProfileOnboardingError] = useState('');
 
+  const closeProfileOnboarding = useCallback(() => {
+    setProfileOnboardingOpen(false);
+    setProfileOnboardingStatus(null);
+    setProfileOnboardingError('');
+  }, []);
+
+  const resolveProfileOnboardingError = useCallback(
+    (error: unknown) => {
+      return resolveLearnerErrorMessage({
+        error: error as Partial<ErrorWithCode>,
+        fallbackMessage: t('module.profileOnboarding.submitFailed'),
+      });
+    },
+    [t],
+  );
+
+  const notifyProfileOnboardingLoadFailure = useCallback(
+    (error: unknown) => {
+      const resolvedToast = resolveLearnerErrorToast({
+        error: error as Partial<ErrorWithCode>,
+        fallbackMessage: t('module.profileOnboarding.loadFailed'),
+      });
+      toast({
+        title: resolvedToast.message,
+        variant: resolvedToast.variant,
+      });
+    },
+    [t],
+  );
+
+  const notifyProfileOnboardingRefreshDelay = useCallback(() => {
+    toast({
+      title: t('module.profileOnboarding.refreshPending'),
+    });
+  }, [t]);
+
   useEffect(() => {
     if (!initialized) {
       setProfileOnboardingRuntimeReady(false);
@@ -471,25 +515,17 @@ export default function ChatPage() {
         setProfileOnboardingRuntimeReady(true);
       })
       .catch(error => {
-        // eslint-disable-next-line no-console
-        console.warn('Failed to load profile onboarding:', error);
+        debugWarn('[profile-onboarding] failed to load status', error);
+        notifyProfileOnboardingLoadFailure(error);
         setProfileOnboardingRuntimeReady(true);
       });
-  }, [courseName, initialized, isLoggedIn, previewMode]);
-
-  const closeProfileOnboarding = useCallback(() => {
-    setProfileOnboardingOpen(false);
-    setProfileOnboardingStatus(null);
-    setProfileOnboardingError('');
-  }, []);
-
-  const resolveProfileOnboardingError = useCallback(
-    (error: unknown) => {
-      const typedError = error as Partial<ErrorWithCode>;
-      return typedError.message || t('module.profileOnboarding.submitFailed');
-    },
-    [t],
-  );
+  }, [
+    courseName,
+    initialized,
+    isLoggedIn,
+    notifyProfileOnboardingLoadFailure,
+    previewMode,
+  ]);
 
   const handleProfileOnboardingComplete = useCallback(
     async (variables: Record<string, string>) => {
@@ -501,8 +537,8 @@ export default function ChatPage() {
           variables,
         });
         await refreshUserInfo().catch(error => {
-          // eslint-disable-next-line no-console
-          console.warn('Failed to refresh user info after onboarding:', error);
+          debugWarn('[profile-onboarding] failed to refresh user info', error);
+          notifyProfileOnboardingRefreshDelay();
         });
         closeProfileOnboarding();
         setProfileOnboardingRuntimeReady(true);
@@ -512,7 +548,12 @@ export default function ChatPage() {
         setProfileOnboardingSubmitting(false);
       }
     },
-    [closeProfileOnboarding, refreshUserInfo, resolveProfileOnboardingError],
+    [
+      closeProfileOnboarding,
+      notifyProfileOnboardingRefreshDelay,
+      refreshUserInfo,
+      resolveProfileOnboardingError,
+    ],
   );
 
   const handleProfileOnboardingSkip = useCallback(async () => {
@@ -712,8 +753,14 @@ export default function ChatPage() {
     }
   };
 
+  const lessonUpdateSequenceRef = useRef(0);
+  const latestLessonUpdatesRef = useRef(
+    new Map<string, { sequence: number; value: LessonUpdate }>(),
+  );
   const onLessonUpdate = useCallback(
-    val => {
+    (val: LessonUpdate) => {
+      const sequence = ++lessonUpdateSequenceRef.current;
+      latestLessonUpdatesRef.current.set(val.id, { sequence, value: val });
       updateLesson(val.id, val);
     },
     [updateLesson],
@@ -779,42 +826,30 @@ export default function ChatPage() {
    * Pay part
    */
 
-  const {
-    payModalOpen,
-    payModalState,
-    openPayModal,
-    closePayModal,
-    setPayModalResult,
-  } = useCourseStore(
-    useShallow(state => ({
-      payModalOpen: state.payModalOpen,
-      payModalState: state.payModalState,
-      openPayModal: state.openPayModal,
-      closePayModal: state.closePayModal,
-      setPayModalResult: state.setPayModalResult,
-    })),
-  );
+  const { payModalOpen, payModalState, closePayModal, setPayModalResult } =
+    useCourseStore(
+      useShallow(state => ({
+        payModalOpen: state.payModalOpen,
+        payModalState: state.payModalState,
+        closePayModal: state.closePayModal,
+        setPayModalResult: state.setPayModalResult,
+      })),
+    );
 
   const onPurchased = useCallback(() => {
     reloadTree();
   }, [reloadTree]);
 
-  const _onPayModalCancel = useCallback(
-    (_?: unknown) => {
-      closePayModal();
-      setPayModalResult('cancel');
-    },
-    [closePayModal, setPayModalResult],
-  );
+  const _onPayModalCancel = useCallback(() => {
+    closePayModal();
+    setPayModalResult('cancel');
+  }, [closePayModal, setPayModalResult]);
 
-  const _onPayModalOk = useCallback(
-    (_?: unknown) => {
-      closePayModal();
-      setPayModalResult('ok');
-      onPurchased();
-    },
-    [closePayModal, onPurchased, setPayModalResult],
-  );
+  const _onPayModalOk = useCallback(() => {
+    closePayModal();
+    setPayModalResult('ok');
+    onPurchased();
+  }, [closePayModal, onPurchased, setPayModalResult]);
 
   /**
    * Misc part
@@ -869,7 +904,20 @@ export default function ChatPage() {
   useEffect(() => {
     const resetChapterEventHandler = async e => {
       const targetLessonId = e.detail.lesson_id;
+      const lessonUpdateSequenceBeforeReload = lessonUpdateSequenceRef.current;
       await reloadTree(e.detail.chapter_id, targetLessonId);
+      const latestLessonUpdate =
+        latestLessonUpdatesRef.current.get(targetLessonId);
+      onLessonUpdate(
+        latestLessonUpdate &&
+          latestLessonUpdate.sequence > lessonUpdateSequenceBeforeReload
+          ? latestLessonUpdate.value
+          : {
+              id: targetLessonId,
+              status: LESSON_STATUS_VALUE.LEARNING,
+              status_value: LESSON_STATUS_VALUE.LEARNING,
+            },
+      );
       updateSelectedLesson(targetLessonId, true);
       onGoChapter(targetLessonId);
       if (mobileStyle) {
@@ -906,6 +954,7 @@ export default function ChatPage() {
     gotoLogin,
     mobileStyle,
     onGoChapter,
+    onLessonUpdate,
     onNavClose,
     reloadTree,
     updateSelectedLesson,
