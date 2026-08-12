@@ -175,10 +175,11 @@
       overflow-y: auto;
     }
     .footer {
-      position: fixed;
-      left: 0;
-      right: 0;
-      bottom: 0;
+      // Absolute (not fixed) so iOS Safari does not drift the footer during
+      // scroll and input-focus. .ChatUi is non-scrolling and fills the
+      // viewport, so absolute bottom:0 still pins to the visible bottom while
+      // avoiding the fixed-position layout/visual-viewport mismatch.
+      position: absolute;
       padding-bottom: 0;
     }
   }
