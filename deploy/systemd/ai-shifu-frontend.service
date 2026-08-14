@@ -1,0 +1,26 @@
+# AI-Shifu Frontend (Node.js / npm, Next.js standalone server)
+# Install: sudo cp deploy/systemd/ai-shifu-frontend.service /etc/systemd/system/
+# Then edit User / ExecStart node path / paths to match your server before
+# `systemctl daemon-reload`. If Node was installed via nvm, replace
+# /usr/bin/node with the real path from `which node` (see DEPLOY.md).
+[Unit]
+Description=AI-Shifu Frontend (Next.js standalone)
+After=network.target ai-shifu-api.service
+Wants=ai-shifu-api.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/home/ai-shifu-TTS/src/cook-web
+# server.js chdir's into .next/standalone/ at startup, so .env is NOT loaded;
+# these must be passed explicitly.
+Environment=I18N_ROOT=/home/ai-shifu-TTS/src/i18n
+Environment=PORT=5000
+Environment=HOSTNAME=127.0.0.1
+ExecStart=/usr/bin/node /home/ai-shifu-TTS/src/cook-web/.next/standalone/server.js
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

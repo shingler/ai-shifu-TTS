@@ -10,6 +10,15 @@
 
 需要 **3 个进程**：Nginx + gunicorn + Next.js standalone。Nginx 只代理静态资源从磁盘直接读取。
 
+**变体**：如果服务器上 Apache 已经占用了 80 端口（例如同机还跑着其他站点），可以让
+Apache 监听 80 并整体转发给监听 88 的 Nginx，Nginx 内部再照常代理到后端和前端：
+
+```
+浏览器 :80 → Apache (:80) → Nginx (:88) → Flask :5800 / Next.js :5000
+```
+
+详见下文「[变体：Apache 占用 80 端口](#变体apache-占用-80-端口apache-80--nginx-88)」。
+
 ## 依赖
 
 | 依赖 | 版本 |
@@ -192,11 +201,102 @@ Mac 局域网用 `benben.local` 访问，需在 `/etc/hosts` 确认：
 nginx -t && sudo nginx -s reload
 ```
 
+## 变体：Apache 占用 80 端口（Apache :80 → Nginx :88）
+
+适用场景：Linux 服务器（如 CentOS 7）上 Apache/httpd 已经监听 80 端口、还在服务其他
+站点，不能直接把 80 让给 Nginx。此时链路为：
+
+```
+浏览器 :80 → Apache (:80，整体转发) → Nginx (:88) → /api/* → Flask :5800
+                                                       → 其余   → Next.js :5000
+```
+
+Apache 只做一层透明转发，所有路由规则仍然在 Nginx 里维护，与前文主方案完全一致。
+
+配置模板：
+
+| 文件 | 作用 | 安装位置（CentOS 7） |
+|------|------|----------------------|
+| `deploy/apache/ai-shifu-apache.conf` | Apache vhost，:80 → 127.0.0.1:88 | `/etc/httpd/conf.d/ai-shifu.conf` |
+| `deploy/nginx/ai-shifu-88.conf` | Nginx，监听 88，内部照常代理 | `/etc/nginx/conf.d/ai-shifu-88.conf` |
+
+### 1. 安装 Nginx 侧（监听 88）
+
+```bash
+sudo cp deploy/nginx/ai-shifu-88.conf /etc/nginx/conf.d/
+# 改 alias 路径等项目实际路径（同上文步骤 9）
+sudo vi /etc/nginx/conf.d/ai-shifu-88.conf
+
+# 如果主方案的 ai-shifu.conf 也在，先删掉，避免两个 server 块重复
+sudo rm -f /etc/nginx/conf.d/ai-shifu.conf
+
+nginx -t && sudo nginx -s reload
+```
+
+验证 Nginx 单独工作：`curl -H 'Host: your-domain.com' http://127.0.0.1:88/`
+
+### 2. 安装 Apache 侧（监听 80，转发到 88）
+
+确认 `mod_proxy` / `mod_proxy_http` 已启用（CentOS 7 默认已加载）：
+
+```bash
+httpd -M | grep -E 'proxy|proxy_http'
+```
+
+Debian/Ubuntu 需要手动启用：
+
+```bash
+sudo a2enmod proxy proxy_http
+```
+
+安装 vhost：
+
+```bash
+# CentOS 7
+sudo cp deploy/apache/ai-shifu-apache.conf /etc/httpd/conf.d/ai-shifu.conf
+sudo vi /etc/httpd/conf.d/ai-shifu.conf   # 改 ServerName
+
+# Debian/Ubuntu
+sudo cp deploy/apache/ai-shifu-apache.conf /etc/apache2/sites-available/ai-shifu.conf
+sudo vi /etc/apache2/sites-available/ai-shifu.conf
+sudo a2ensite ai-shifu
+
+apachectl configtest && sudo systemctl reload httpd   # Debian/Ubuntu: apache2
+```
+
+### 3. SELinux（CentOS 7 / RHEL）
+
+SELinux 默认禁止 Web 服务进程主动连接本地端口，Apache 连 88、Nginx 连 5800/5000
+都会被拦截，表现为 502/503 且 audit.log 里有 `httpd_can_network_connect` 拒绝记录：
+
+```bash
+sudo setsebool -P httpd_can_network_connect 1
+```
+
+### 4. 验证
+
+```bash
+curl http://127.0.0.1:88/                       # Nginx 直连，应返回前端页面
+curl http://127.0.0.1/ -H 'Host: your-domain.com'   # 走完整链路 Apache→Nginx
+curl http://127.0.0.1/api/health -H 'Host: your-domain.com'
+```
+
+浏览器访问 `http://your-domain.com`，确认页面、登录、SSE 流式输出正常。
+
+### 注意事项
+
+- Apache vhost 必须 `ProxyPreserveHost On`：前端用 `window.location.hostname` 拼后端
+  地址，Host 丢了会导致 API 地址错误。
+- `flushpackets=on` 保证 SSE / 流式响应不被 Apache 缓冲，否则对话输出会成块卡顿。
+- 真实客户端 IP 通过 `X-Forwarded-For` 链路传递：`ai-shifu-88.conf` 里已经改为透传
+  Apache 传来的头（`$http_x_forwarded_for` 等），不会把 127.0.0.1 记成客户端 IP。
+
 ## 端口说明
 
 | 端口 | 服务 | 访问方式 |
 |------|------|----------|
-| 80 | Nginx | 浏览器直接访问 `http://IP` 或域名 |
+| 80 | Nginx（主方案）/ Apache（变体） | 浏览器直接访问 `http://IP` 或域名 |
+| 88 | Nginx（仅变体） | 仅本机，Apache 转发 |
 | 5800 | Flask | 仅本机，Nginx 代理 |
 | 5000 | Next.js | 仅本机，Nginx 代理 |
 | 3306 | MySQL | 仅本机 |
@@ -229,43 +329,97 @@ cd src/cook-web && npm install && npm run build && cp -r .next/static .next/stan
 
 ## 生产部署（systemd 托管）
 
-Linux 服务器上建议用 systemd 托管应用进程。参考示例：
+Linux 服务器上建议用 systemd 托管应用进程：开机自启、崩溃自动重启、日志走 journald。
+两个服务分别对应两种运行时：
 
-```ini
-# /etc/systemd/system/ai-shifu-api.service
-[Unit]
-Description=AI-Shifu Flask API
-After=network.target mysql.service redis.service
+| 服务 | 运行时 | 进程 |
+|------|--------|------|
+| `ai-shifu-api` | Python（uv venv 里的 gunicorn） | Flask API :5800 |
+| `ai-shifu-frontend` | Node.js（npm 构建产物 standalone server.js） | Next.js :5000 |
 
-[Service]
-Type=notify
-User=www-data
-WorkingDirectory=/home/ai-shifu-TTS/src/api
-EnvironmentFile=/home/ai-shifu-TTS/src/api/.env
-ExecStart=/home/ai-shifu-TTS/src/api/.venv/bin/gunicorn \
-    -w 4 -b 127.0.0.1:5800 --timeout 300 'app:app'
-Restart=on-failure
+模板文件已放在 `deploy/systemd/` 下，安装前先确认路径和可执行文件位置。
 
-[Install]
-WantedBy=multi-user.target
+### 1. 确认两个运行时的可执行路径
+
+systemd 需要 `ExecStart` 使用**绝对路径**，且 nvm 安装的 Node 不在 systemd 默认 `PATH` 里：
+
+```bash
+# Python：gunicorn 在 uv 创建的 venv 中，路径固定
+ls src/api/.venv/bin/gunicorn    # /home/ai-shifu-TTS/src/api/.venv/bin/gunicorn
+
+# Node：取决于安装方式
+which node
+# /usr/bin/node 或 /usr/local/bin/node  → 包管理器安装，直接用
+# /home/<user>/.nvm/versions/node/v22.x.x/bin/node  → nvm 安装，见下方处理
+node -v    # 确认是 22.x
 ```
 
-```ini
-# /etc/systemd/system/ai-shifu-frontend.service
-[Unit]
-Description=AI-Shifu Frontend
-After=network.target ai-shifu-api.service
+**nvm 安装的 Node 有两种处理方式**（任选其一）：
 
-[Service]
-Type=simple
-User=www-data
-WorkingDirectory=/home/ai-shifu-TTS/src/cook-web
-Environment=I18N_ROOT=/home/ai-shifu-TTS/src/i18n
-ExecStart=/usr/bin/node /home/ai-shifu-TTS/src/cook-web/.next/standalone/server.js
-Restart=on-failure
+```bash
+# 方式 A（推荐）：软链到系统路径，service 文件不用改
+sudo ln -s "$(which node)" /usr/local/bin/node
 
-[Install]
-WantedBy=multi-user.target
+# 方式 B：把 service 文件里的 /usr/bin/node 改成 `which node` 的完整路径
 ```
 
-Celery worker/beat 如有需要同理添加。
+### 2. 准备运行用户和目录权限
+
+```bash
+# 让 www-data（或你选的运行用户）能读写存储和日志目录
+sudo chown -R www-data:www-data /home/ai-shifu-TTS/storage
+sudo chown -R www-data:www-data /home/ai-shifu-TTS/logs
+
+# 项目代码只需可读；如果上层目录权限过严，放开执行权限
+sudo chmod 755 /home /home/ai-shifu-TTS
+```
+
+### 3. 安装并启动服务
+
+```bash
+sudo cp deploy/systemd/ai-shifu-api.service /etc/systemd/system/
+sudo cp deploy/systemd/ai-shifu-frontend.service /etc/systemd/system/
+
+# 按上面第 1、2 步确认的结果修改两个文件中的 User、路径、node 可执行文件
+sudo vi /etc/systemd/system/ai-shifu-api.service
+sudo vi /etc/systemd/system/ai-shifu-frontend.service
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now ai-shifu-api ai-shifu-frontend
+```
+
+验证：
+
+```bash
+systemctl status ai-shifu-api ai-shifu-frontend
+curl http://127.0.0.1:5800/api/health
+curl http://127.0.0.1:5000
+```
+
+### 4. 日常运维
+
+```bash
+# 查看日志（-f 跟随输出）
+journalctl -u ai-shifu-api -f
+journalctl -u ai-shifu-frontend -f
+
+# 重启 / 停止
+sudo systemctl restart ai-shifu-api ai-shifu-frontend
+sudo systemctl stop ai-shifu-api ai-shifu-frontend
+```
+
+### 5. 更新代码后的操作
+
+对应上文「更新代码」一节，`git pull` + 重新安装依赖 + 重新构建之后：
+
+```bash
+sudo systemctl restart ai-shifu-api ai-shifu-frontend
+```
+
+后端只改了 Python 代码时只需重启 `ai-shifu-api`；前端重新 `npm run build` 后只需重启 `ai-shifu-frontend`。
+
+### 注意事项
+
+- 前端服务的 `I18N_ROOT` / `PORT` / `HOSTNAME` 必须写在 `Environment=` 里：`server.js` 启动时会 `process.chdir()` 到 `.next/standalone/`，`.env` 加载不到（见上文步骤 4 的说明）。
+- `ai-shifu-api` 使用 `Type=notify`，gunicorn 原生支持 systemd 通知协议；如果你的发行版上启动卡在 `activating`，改成 `Type=simple` 即可。
+- Celery worker/beat 如有需要，按 `ai-shifu-api` 的模板同理添加。
