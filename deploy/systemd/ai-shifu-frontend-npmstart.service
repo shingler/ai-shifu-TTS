@@ -1,0 +1,26 @@
+# AI-Shifu Frontend — Node 20 / npm start variant (CentOS 7)
+# Use when the server can only run Node 20 (CentOS 7, glibc 2.17) and the
+# build was done with `npx next build --turbopack` after temporarily
+# commenting out `output: 'standalone'` in next.config.ts.
+# See DEPLOY.md "变体：CentOS 7（Node 20）" before using this file.
+[Unit]
+Description=AI-Shifu Frontend (next start)
+After=network.target ai-shifu-api.service
+Wants=ai-shifu-api.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/home/ai-shifu-TTS/src/cook-web
+Environment=PORT=5000
+Environment=HOSTNAME=127.0.0.1
+# Under `next start` there is no chdir, so .env loads normally and the
+# /api/i18n route finds ../i18n via its cwd fallback — I18N_ROOT is not
+# required here.
+ExecStart=/usr/bin/npm start
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -19,11 +19,15 @@ Apache 监听 80 并整体转发给监听 88 的 Nginx，Nginx 内部再照常�
 
 详见下文「[变体：Apache 占用 80 端口](#变体apache-占用-80-端口apache-80--nginx-88)」。
 
+**前端变体**：从 CentOS 7 升级而来的服务器（glibc 2.17）装不上 Node 22，只能用
+Node 20 + `npx next build --turbopack` 构建、`npm start` 运行。详见下文
+「[变体：CentOS 7（Node 20）](#变体centos-7node-20turbopack-构建--npm-start-运行)」。
+
 ## 依赖
 
 | 依赖 | 版本 |
 |------|------|
-| Node.js | 22.x |
+| Node.js | 22.x（CentOS 7 老机器只能装 20.x，见前端变体章节） |
 | Python | 3.11+ |
 | MySQL | 8.x |
 | Redis | 7.x |
@@ -133,6 +137,9 @@ cp -r .next/static .next/standalone/.next/static
 ```
 
 > 这是 Next.js standalone 构建的已知限制——`npm run build` 不会把 `.next/static/` 自动复制到 standalone 输出目录。每次重新构建后都需要执行一次。
+
+> ⚠️ CentOS 7 / Node 20 的机器**不要执行本节命令**，webpack 构建会 segfault。改用
+> 「变体：CentOS 7（Node 20）」章节的 `npx next build --turbopack` 流程。
 
 ### 7. 创建存储目录
 
@@ -291,6 +298,84 @@ curl http://127.0.0.1/api/health -H 'Host: your-domain.com'
 - 真实客户端 IP 通过 `X-Forwarded-For` 链路传递：`ai-shifu-88.conf` 里已经改为透传
   Apache 传来的头（`$http_x_forwarded_for` 等），不会把 127.0.0.1 记成客户端 IP。
 
+## 变体：CentOS 7（Node 20，turbopack 构建 + npm start 运行）
+
+适用场景：从 CentOS 7 升级而来的服务器（glibc 2.17）。Node 22 官方二进制要求更高
+glibc 版本，装不上，只能装 **Node 20**。这会连带改变前端的构建和运行方式：
+
+| 环节 | 主方案（Node 22） | CentOS 7 变体（Node 20） |
+|------|-------------------|--------------------------|
+| 构建 | `npm run build`（webpack） | `npx next build --turbopack`（webpack 在 glibc 2.17 上 segfault） |
+| `next.config.ts` | 保持原样 | **build 前临时注释 `output: 'standalone'`** |
+| 运行 | `node .next/standalone/server.js` | `npm start`（即 `next start`，与 standalone 产物不兼容） |
+| `/_next/static/` | Nginx 从磁盘 alias 直读 | 由 Next.js 自己 serve，**删掉 Nginx 的 alias 段** |
+| 复制 `.next/static` | 每次 build 后需要 | 不需要 |
+| `I18N_ROOT` | 必须显式传入（server.js 会 chdir） | 不需要（cwd 正常，`/api/i18n` 自动回退到 `../i18n`） |
+
+> 本变体可与上文「Apache 占用 80 端口」变体组合使用（实际 CentOS 7 老机器往往两者
+> 都要）。后端 Python 侧不受此变体影响。
+
+### 1. 构建前临时注释 standalone
+
+`next start` 与 `output: 'standalone'` 不兼容，构建产物必须是普通模式。编辑
+`src/cook-web/next.config.ts`：
+
+```ts
+  // 临时注释，build 完可还原（还原不影响已构建的 .next 产物）
+  // output: 'standalone',
+```
+
+### 2. 用 turbopack 构建
+
+```bash
+cd src/cook-web
+npm install
+npx next build --turbopack    # 不要用 npm run build，webpack 在 glibc 2.17 上 segfault
+```
+
+不需要执行 `cp -r .next/static .next/standalone/.next/static`，那是 standalone 模式
+专属的修复。
+
+### 3. 启动
+
+```bash
+cd src/cook-web
+PORT=5000 npm start
+```
+
+验证：`curl http://127.0.0.1:5000` 和 `curl http://127.0.0.1:5000/api/i18n`。
+
+### 4. 调整 Nginx
+
+`next start` 会自己 serve `/_next/static/`，Nginx 里对应的 alias 段必须删掉（否则
+路径对不上返回 404）：删掉 `location /_next/static/ { ... }` 整段即可，其余路由规则
+（`/api/*` → 5800，其余 → 5000）不变。
+
+```bash
+sudo vi /etc/nginx/conf.d/ai-shifu.conf   # 或 ai-shifu-88.conf
+nginx -t && sudo nginx -s reload
+```
+
+### 5. systemd
+
+用 `deploy/systemd/ai-shifu-frontend-npmstart.service` 替代主方案的前端 service：
+
+```bash
+sudo cp deploy/systemd/ai-shifu-frontend-npmstart.service /etc/systemd/system/
+# 同样按实际情况改 User / 路径 / npm 绝对路径
+sudo systemctl daemon-reload
+sudo systemctl enable --now ai-shifu-frontend
+```
+
+### 注意事项
+
+- **重启没事，build 才有事**：已构建的 `.next` 产物不受源码还原影响，日常只需
+  `systemctl restart ai-shifu-frontend`；一旦重新 build，必须重做上面第 1、2 步。
+- `npm start` 默认监听 3000，端口由 `PORT` 环境变量控制；如果 3000 被同机其他项目
+  占用，换一个（如 3001），并同步修改 Nginx upstream。
+- 升级系统（glibc ≥ 2.28，如 Rocky 9 / Ubuntu 22.04）后即可回到主方案：装 Node 22、
+  还原 `next.config.ts`、用 `npm run build` + standalone server。
+
 ## 端口说明
 
 | 端口 | 服务 | 访问方式 |
@@ -323,6 +408,8 @@ cd src/api && uv pip sync requirements.txt && cd ../..
 
 # 前端
 cd src/cook-web && npm install && npm run build && cp -r .next/static .next/standalone/.next/static && cd ../..
+# CentOS 7 / Node 20 变体改为：先注释 next.config.ts 的 output: 'standalone'，再
+# npx next build --turbopack（不需要 cp 静态资源那步）
 
 # 重启应用进程（kill 旧的再启动，或 systemd restart）
 ```
