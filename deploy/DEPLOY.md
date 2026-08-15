@@ -1,5 +1,8 @@
 # AI-Shifu-TTS 部署指南
 
+> 部署/运维中遇到报错，先查 [trouble-shoot.md](trouble-shoot.md)（按症状索引的
+> 排障手册，收录了 CentOS 7 实际部署踩过的全部坑）。
+
 ## 架构
 
 ```

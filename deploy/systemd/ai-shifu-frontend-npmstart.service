@@ -3,6 +3,16 @@
 # build was done with `npx next build --turbopack` after temporarily
 # commenting out `output: 'standalone'` in next.config.ts.
 # See DEPLOY.md "变体：CentOS 7（Node 20）" before using this file.
+#
+# ExecStart must point at the SAME Node major version used for the build
+# (Next.js refuses to start under an older Node). /usr/bin/npm is usually a
+# distro Node (CentOS 7: Node 16) — too old. If Node 20 lives in nvm, either
+# symlink node/npm/npx into /usr/local/bin, or keep nvm paths and add:
+#   Environment=PATH=/home/<user>/.nvm/versions/node/v20.x.x/bin:/usr/local/bin:/usr/bin:/bin
+# (npm's shebang is `env node`, so PATH must contain the node dir).
+# If Node was installed under root's nvm (/root/.nvm/...), a service running
+# as a non-root user CANNOT execute it (/root is mode 700 → 203/EXEC). Move
+# the version dir to /opt and symlink into /usr/local/bin instead.
 [Unit]
 Description=AI-Shifu Frontend (next start)
 After=network.target ai-shifu-api.service
