@@ -3,6 +3,8 @@
 # Then edit User / ExecStart node path / paths to match your server before
 # `systemctl daemon-reload`. If Node was installed via nvm, replace
 # /usr/bin/node with the real path from `which node` (see DEPLOY.md).
+# User=www-data only exists on Debian/Ubuntu; on CentOS 7 / RHEL use the
+# login user that owns the checkout or the `apache` user.
 [Unit]
 Description=AI-Shifu Frontend (Next.js standalone)
 After=network.target ai-shifu-api.service

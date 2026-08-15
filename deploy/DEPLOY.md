@@ -452,8 +452,40 @@ sudo ln -s "$(which node)" /usr/local/bin/node
 
 ### 2. 准备运行用户和目录权限
 
+**CentOS 7 / RHEL 上没有 `www-data`**（那是 Debian/Ubuntu 的用户），模板里的
+`User=www-data` 会直接报 `status=217/USER` 起不来。三种选法：
+
+- **最省事**：直接用检出代码的那个登录用户（如 `xingle`）——文件属主本来就是它，
+  什么都不用改；
+- **推荐**：新建一个专用运行用户，权限最小化（不能登录、没有密码）：
+
+  ```bash
+  # -r 系统账号（不建密码、UID 从系统区间分配）
+  # -m 创建 home 目录（gunicorn 等工具需要 home 存在）
+  # -s /sbin/nologin 禁止交互登录
+  sudo useradd -r -m -d /home/ai-shifu -s /sbin/nologin ai-shifu
+
+  # 只把需要写的目录交给它；代码目录保持原属主（否则你自己 git pull 会失败），
+  # 默认 755/644 权限下 ai-shifu 已可读
+  sudo chown -R ai-shifu:ai-shifu /home/xingle/ai-shifu-TTS/storage \
+      /home/xingle/ai-shifu-TTS/logs
+  # 确保它所在路径可穿透（CentOS 的 home 默认 700，其他用户进不去）
+  sudo chmod 755 /home/xingle
+  # 之后 service 文件里写 User=ai-shifu / Group=ai-shifu
+  ```
+
+- 或者**让 `www-data` 在 CentOS 上存在**，模板文件就不用改用户名：
+
+  ```bash
+  sudo useradd -r -m -d /home/www-data -s /sbin/nologin www-data
+  sudo chown -R www-data:www-data /home/xingle/ai-shifu-TTS/storage \
+      /home/xingle/ai-shifu-TTS/logs
+  # 代码目录仍属原用户，但要保证 www-data 能读（home 可穿透 + 文件可读）
+  sudo chmod 755 /home/xingle
+  ```
+
 ```bash
-# 让 www-data（或你选的运行用户）能读写存储和日志目录
+# 用 www-data（或你选的运行用户）时，让其能读写存储和日志目录
 sudo chown -R www-data:www-data /home/ai-shifu-TTS/storage
 sudo chown -R www-data:www-data /home/ai-shifu-TTS/logs
 

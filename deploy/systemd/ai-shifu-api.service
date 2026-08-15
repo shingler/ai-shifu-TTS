@@ -1,6 +1,11 @@
 # AI-Shifu Flask API (Python / gunicorn)
 # Install: sudo cp deploy/systemd/ai-shifu-api.service /etc/systemd/system/
 # Then edit User / paths to match your server before `systemctl daemon-reload`.
+#
+# User=www-data only exists on Debian/Ubuntu. On CentOS 7 / RHEL there is no
+# www-data (exit code 217/USER); use the login user that owns the checkout
+# (simplest, no permission changes) or the `apache` user (then chown the
+# project / storage / logs directories to it).
 [Unit]
 Description=AI-Shifu Flask API (gunicorn)
 After=network.target mysql.service redis.service
