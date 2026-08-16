@@ -16,6 +16,10 @@ systemd 219、Apache :80 → Nginx :88、systemd 托管）为主，多数坑在�
 | `Error: listen EADDRINUSE` | 端口被其他项目 / pm2 旧进程占用 | [5](#5-eaddrinuse--端口被占) |
 | `npx next build` 段错误（segfault） | glibc 2.17 上 webpack 跑不了 | [6](#6-webpack-构建-segfault) |
 | `next start` 报与 `output: standalone` 不兼容 | 构建时没注释 standalone | [7](#7-next-start-与-standalone-冲突) |
+| `/api/i18n` 500 | standalone 下 `I18N_ROOT` 没有显式传入 | [13](#13-apii18n-500--standalone-下-i18n_root-没传) |
+| service 长期 `activating` | `Type=notify` 在该发行版上通知不通 | [14](#14-service-卡在-activating-起不来--typenotify) |
+| 页面空白，`/_next/static` 404 | build 后静态文件没被服务（standalone 拷贝缺失 / nginx alias 路径错） | [12](#12-页面空白_nextstatic-大面积-404) |
+| build 报 `EACCES .next/trace` | 旧构建产物属主是 root | [11](#11-build-报-eacces--nexttrace--旧产物属主是-root) |
 | 反复 `ModuleNotFoundError` | `uv pip sync` 卸载了 requirements 之外的依赖 | [10](#10-反复-modulenotfounderror--pip-sync-的删除语义) |
 | 改了 service / nginx 配置不生效 | 忘了 `daemon-reload` / `reload` | [8](#8-改了配置不生效) |
 
@@ -286,12 +290,83 @@ sudo -u <运行用户> /usr/local/bin/uv pip install -r requirements.txt
 
 **预防**：requirements.txt 与代码同步落后时，一律 `install -r`，不用 `sync`。
 
+## 11. build 报 `EACCES ... .next/trace` — 旧产物属主是 root
+
+**症状**：以运行用户 build 时 `EACCES: permission denied, open '.../.next/trace'`。
+
+**原因**：之前用 root build 过，`.next`（可能还有 `node_modules`）属主是
+root，运行用户写不进去。
+
+**修复**：整体交还运行用户，再 build：
+
+```bash
+chown -R <运行用户>:<运行用户> <项目目录>
+```
+
+**为什么"root build + 普通用户运行"在另一台机器没报错**：root 建的文件默认
+644/755，运行用户**只读**产物恰好不出错。但这是踩不出来的运气，不是安全状态：
+umask 一变（600）或运行方式从只读变读写（`next start` 要写 `.next/trace`），
+同款 EACCES 立刻出现。所有构建/安装/迁移统一以运行用户执行。
+
+## 12. 页面空白，`/_next/static/*` 大面积 404
+
+**症状**：重新 build 并重启后页面全白，浏览器 Network 里 CSS/JS 全是 404。
+
+**原因**：standalone 模式下 `server.js` 只从 `.next/standalone/.next/static/`
+找静态文件，而 `npm run build` 不会自动生成这份拷贝。以前"不用复制也能跑"，
+是上次某次手工复制留下的旧目录一直在生效——重新 build 清空 `.next` 后就露馅。
+
+**修复（推荐，一劳永逸）**：让 Nginx 直接服务构建产物，复制这步从此消失：
+
+```nginx
+location /_next/static/ {
+    alias /home/<用户>/ai-shifu-TTS/src/cook-web/.next/static/;   # 注意：不是 standalone 子路径
+    expires 30d;
+    add_header Cache-Control "public, immutable";
+}
+```
+
+改完 `nginx -t && sudo nginx -s reload` 立即生效，无需重启前端。
+仓库模板（`deploy/nginx/*.conf`）已默认此写法。
+
+**注意**：改 conf 时确认解开注释后的 alias 路径改成了 `.next/static/`——
+照模板旧注释直接解开注释会保留 `standalone/.next/static/` 子路径，一样 404。
+同时确认改的是实际接收流量的那份 conf（conf.d 下可能有多份）。
+
+仅当绕过 Nginx、由 server.js 直接对外时，才需要每次 build 后手工
+`cp -r .next/static .next/standalone/.next/static`。
+
+## 13. `/api/i18n` 500 — standalone 下 `I18N_ROOT` 没传
+
+**症状**：页面能开但 `/api/i18n` 返回 500，报
+`Unable to locate shared i18n directory`。
+
+**原因**：standalone 的 `server.js` 启动时 `process.chdir()` 到
+`.next/standalone/`，`.env` 加载不到，`I18N_ROOT` 必须通过命令行环境变量
+（手动启动）或 service 的 `Environment=`（systemd）显式传入。
+
+**修复**：手动启动 `I18N_ROOT="<项目>/src/i18n" node .next/standalone/server.js`；
+systemd 在 `[Service]` 加 `Environment=I18N_ROOT=<项目>/src/i18n`（模板已含）。
+
+## 14. service 卡在 `activating` 起不来 — `Type=notify`
+
+**症状**：`systemctl status` 长期 `activating (start)`，进程没有报错。
+
+**原因**：模板 `ai-shifu-api.service` 用 `Type=notify`，gunicorn 原生支持
+systemd 通知协议，但个别发行版/版本组合下通知不通，systemd 一直等。
+
+**修复**：service 改 `Type=simple` 后 `daemon-reload` + restart。
+
 ## 通用教训
 
 - **root 与运行用户的隔离是这批坑的共同根源**：root 跑过的进程会在 `/tmp`、
   项目目录、nvm 目录留下 root 属主的文件和工具链，普通用户的服务全部碰壁。
   部署、构建、迁移尽量全程用同一个普通用户（需要提权时 `sudo -u <用户>`
-  执行具体命令，而不是全程 root shell）。
+  执行具体命令，而不是全程 root shell）。**纪律**：git/npm/uv/flask 全走
+  `sudo -u <运行用户>`，root 只做 `systemctl`/`chown`。
+- **`sudo -u` 不继承 PATH**：CentOS 7 / Rocky 的 secure_path 不含
+  `/usr/local/bin`，跨用户调用 node/npm/npx/uv 要么写绝对路径，要么
+  `env PATH=...` 显式带上（npm 的 shebang 是 `env node`）。
 - **systemd 看到的世界 ≠ 登录 shell 看到的世界**：PATH、nvm、环境变量都
   不共享，一切以 service 文件里的绝对路径和 `Environment=` 为准。
 - **迁移进程管理器（pm2 → systemd）要一次切干净**：删掉 pm2 里的旧进程并
