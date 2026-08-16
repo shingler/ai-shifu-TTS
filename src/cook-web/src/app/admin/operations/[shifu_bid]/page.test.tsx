@@ -271,6 +271,59 @@ const createDeferred = <T,>() => {
   });
   return { promise, resolve, reject };
 };
+const createEstimatedCreditCostFixture = () => ({
+  read: {
+    min: 0.18,
+    max: 0.28,
+    enabled: null,
+    llm: {
+      min: 0.18,
+      max: 0.28,
+      model: 'gpt-test',
+      model_label: 'GPT Test',
+      multiplier: '1x-2x',
+    },
+    tts: null,
+  },
+  listen: {
+    min: 120,
+    max: 180,
+    enabled: false,
+    llm: {
+      min: 80,
+      max: 120,
+      model: 'gpt-test',
+      model_label: 'GPT Test',
+      multiplier: '1x-2x',
+    },
+    tts: {
+      min: 40,
+      max: 60,
+      model: 'speech-test',
+      model_label: 'MiniMax Speech Test',
+      multiplier: '1x',
+    },
+  },
+  classroom: {
+    min: 0.18,
+    max: 0.28,
+    enabled: null,
+    llm: {
+      min: 0.18,
+      max: 0.28,
+      model: 'gpt-test',
+      model_label: 'GPT Test',
+      multiplier: '1x-2x',
+    },
+    tts: null,
+  },
+  assumptions: {
+    visible_lesson_count: 2,
+    prompt_char_count: 10,
+    content_char_count: 30,
+    calculated_at: '2026-05-01T12:00:00Z',
+  },
+});
 
 describe('AdminOperationCourseDetailPage', () => {
   beforeAll(() => {
@@ -384,6 +437,7 @@ describe('AdminOperationCourseDetailPage', () => {
           usage_mode: 'learn',
           provider: 'qwen',
           model: 'qwen/deepseek-v4-a',
+          model_label: 'DeepSeek V4 A',
           usage_count: 2,
           model_variant_count: 2,
           consumed_credits: 17,
@@ -402,6 +456,9 @@ describe('AdminOperationCourseDetailPage', () => {
           consumed_credits: 7,
           input_tokens: 1200,
           output_tokens: 80,
+          provider: 'qwen',
+          model: 'qwen/deepseek-v4-a',
+          model_label: 'DeepSeek V4 A',
           word_count: 0,
           duration_ms: 0,
           segment_count: 0,
@@ -439,6 +496,7 @@ describe('AdminOperationCourseDetailPage', () => {
         completed_credit_user_count: 3,
         completed_user_avg_credits: 20,
       },
+      estimated_credit_cost: createEstimatedCreditCostFixture(),
       chapters: [
         {
           outline_item_bid: 'chapter-1',
@@ -498,6 +556,61 @@ describe('AdminOperationCourseDetailPage', () => {
     expect(mockGetAdminOperationCourseUsers).not.toHaveBeenCalled();
 
     expect(screen.getByText('Course One')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'module.operationsCourse.detail.estimatedCreditCost.title',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'module.operationsCourse.detail.estimatedCreditCost.read',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'module.operationsCourse.detail.estimatedCreditCost.listen',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'module.operationsCourse.detail.estimatedCreditCost.classroom',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'module.operationsCourse.detail.estimatedCreditCost.disabled',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'module.operationsCourse.detail.estimatedCreditCost.llm: 80 - 120',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'module.operationsCourse.detail.estimatedCreditCost.tts: 40 - 60',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText(
+        'module.operationsCourse.detail.estimatedCreditCost.llm · GPT Test · 1x-2x',
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getByText(
+        'module.operationsCourse.detail.estimatedCreditCost.tts · MiniMax Speech Test · 1x',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText(
+        '0.18 - 0.28 module.operationsCourse.detail.estimatedCreditCost.creditUnit',
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getByText(
+        '120 - 180 module.operationsCourse.detail.estimatedCreditCost.creditUnit',
+      ),
+    ).toBeInTheDocument();
     expect(screen.getAllByText('13800001234').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Alice').length).toBeGreaterThan(0);
     expect(
@@ -583,6 +696,7 @@ describe('AdminOperationCourseDetailPage', () => {
         completed_credit_user_count: 3,
         completed_user_avg_credits: 20,
       },
+      estimated_credit_cost: createEstimatedCreditCostFixture(),
       chapters: [
         {
           outline_item_bid: 'chapter-timezone',
@@ -678,6 +792,7 @@ describe('AdminOperationCourseDetailPage', () => {
           usage_mode: 'listen',
           provider: 'volcengine',
           model: 'cancan-2.0',
+          model_label: 'Can Can 2.0',
           usage_count: 1,
           model_variant_count: 1,
           consumed_credits: 2,
@@ -702,6 +817,9 @@ describe('AdminOperationCourseDetailPage', () => {
           consumed_credits: 2,
           input_tokens: 0,
           output_tokens: 0,
+          provider: 'volcengine',
+          model: 'cancan-2.0',
+          model_label: 'Can Can 2.0',
           word_count: 180,
           duration_ms: 30000,
           segment_count: 1,
@@ -768,7 +886,7 @@ describe('AdminOperationCourseDetailPage', () => {
     ).toBeGreaterThan(0);
     expect(
       screen.getByText(
-        'module.operationsCourse.detail.creditUsage.modelSummary.multiple',
+        'module.operationsCourse.detail.creditUsage.modelSummary.variants',
       ),
     ).toBeInTheDocument();
     expect(
@@ -848,6 +966,7 @@ describe('AdminOperationCourseDetailPage', () => {
         within(dialog).getByText('First generated output summary'),
       ).toBeInTheDocument();
     });
+    expect(within(dialog).getByText('DeepSeek V4 A')).toBeInTheDocument();
   });
 
   test('keeps zero values visible in listen usage details', async () => {
@@ -871,6 +990,7 @@ describe('AdminOperationCourseDetailPage', () => {
           usage_mode: 'listen',
           provider: 'volcengine',
           model: 'cancan-2.0',
+          model_label: 'Can Can 2.0',
           usage_count: 1,
           model_variant_count: 1,
           consumed_credits: 2,
@@ -951,6 +1071,7 @@ describe('AdminOperationCourseDetailPage', () => {
         completed_credit_user_count: 2000,
         completed_user_avg_credits: 5.5,
       },
+      estimated_credit_cost: createEstimatedCreditCostFixture(),
       chapters: [],
     });
 
@@ -1150,6 +1271,7 @@ describe('AdminOperationCourseDetailPage', () => {
         completed_credit_user_count: 3,
         completed_user_avg_credits: 20,
       },
+      estimated_credit_cost: createEstimatedCreditCostFixture(),
       chapters: [
         {
           outline_item_bid: 'chapter-1',

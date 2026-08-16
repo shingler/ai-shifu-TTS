@@ -42,7 +42,7 @@
     },
     "creditLedgerFilters": {
       "course": "Course",
-      "coursePlaceholder": "Enter ID/name",
+      "coursePlaceholder": "Course ID / Course name",
       "grantSource": "Grant Source",
       "grantSourceOptions": {
         "all": "All",
@@ -52,7 +52,7 @@
         "trial_subscription": "Trial Credits"
       },
       "time": "Time Range",
-      "timePlaceholder": "Select time range",
+      "timePlaceholder": "Start time ~ End time",
       "type": "Type",
       "typeOptions": {
         "all": "All",
@@ -192,7 +192,11 @@
     "mobile": "Mobile",
     "nickname": "Nickname",
     "role": "Role",
-    "status": "Status"
+    "status": "Status",
+    "user": "User",
+    "userPlaceholderEmail": "Email / Nickname",
+    "userPlaceholderPhone": "Mobile / Nickname",
+    "userPlaceholderPhoneEmail": "Mobile / Email / Nickname"
   },
   "grantDialog": {
     "bootstrapError": "Failed to load packages. Please try again later.",

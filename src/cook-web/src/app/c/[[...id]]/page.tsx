@@ -983,6 +983,7 @@ export default function ChatPage() {
             iconPopoverPayload={tree?.bannerInfo}
             onSettingClick={onNavToggle}
             lessonUpdateNoticeVisible={lessonUpdateNoticeVisible}
+            courseId={courseId}
             chapterId={chapterId}
             lessonId={resolvedLessonId}
             lessonTitle={currentLessonTitle}
@@ -1027,6 +1028,7 @@ export default function ChatPage() {
 
         {initialized && profileOnboardingRuntimeReady ? (
           <ChatUi
+            courseId={courseId}
             lessonId={resolvedLessonId}
             chapterId={chapterId}
             lessonTitle={currentLessonTitle}

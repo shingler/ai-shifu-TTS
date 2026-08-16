@@ -142,9 +142,21 @@ function dispatch(action: Action) {
 
 type Toast = Omit<ToasterToast, 'id'>;
 type ToastDisplayOptions = Omit<Toast, 'description' | 'variant'>;
+type ToastOnceOptions = Toast & {
+  dedupeKey: string;
+  dedupeWindowMs?: number;
+};
+
+const toastDedupeState = new Map<string, { id: string; shownAt: number }>();
+
+const isToastVisible = (toastId: string) =>
+  memoryState.toasts.some(
+    toast => toast.id === toastId && toast.open !== false,
+  );
 
 function toast({ duration = 2000, ...props }: Toast) {
   const id = genId();
+  const radixDuration = duration === 0 ? Number.POSITIVE_INFINITY : duration;
 
   const update = (props: ToasterToast) =>
     dispatch({
@@ -158,13 +170,14 @@ function toast({ duration = 2000, ...props }: Toast) {
     toast: {
       ...props,
       id,
+      duration: radixDuration,
       open: true,
       onOpenChange: (open: boolean) => {
         if (!open) dismiss();
       },
     },
   });
-  if (duration) {
+  if (Number.isFinite(duration) && duration > 0) {
     setTimeout(() => {
       dismiss();
     }, duration);
@@ -174,6 +187,34 @@ function toast({ duration = 2000, ...props }: Toast) {
     dismiss,
     update,
   };
+}
+
+function toastOnce({
+  dedupeKey,
+  dedupeWindowMs = 5000,
+  ...props
+}: ToastOnceOptions) {
+  const now = Date.now();
+  const previous = toastDedupeState.get(dedupeKey);
+  if (
+    previous &&
+    now - previous.shownAt < dedupeWindowMs &&
+    isToastVisible(previous.id)
+  ) {
+    return {
+      id: previous.id,
+      dismiss: () => dispatch({ type: 'DISMISS_TOAST', toastId: previous.id }),
+      update: (toast: ToasterToast) =>
+        dispatch({
+          type: 'UPDATE_TOAST',
+          toast: { ...toast, id: previous.id },
+        }),
+    };
+  }
+
+  const result = toast(props);
+  toastDedupeState.set(dedupeKey, { id: result.id, shownAt: now });
+  return result;
 }
 
 function useToast() {
@@ -247,12 +288,21 @@ function show(description: string, duration = 20000) {
 const toastApi = {
   useToast,
   toast,
+  toastOnce,
   showDefaultToast,
   showErrorToast,
   fail,
   show,
 };
 
-export { useToast, toast, showDefaultToast, showErrorToast, fail, show };
+export {
+  useToast,
+  toast,
+  toastOnce,
+  showDefaultToast,
+  showErrorToast,
+  fail,
+  show,
+};
 
 export default toastApi;

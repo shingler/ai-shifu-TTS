@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import api from '@/api';
-import AdminTitle from '@/app/admin/components/AdminTitle';
 import { useAdminResizableColumns } from '@/app/admin/hooks/useAdminResizableColumns';
 import { formatAdminUtcDateTime } from '@/app/admin/lib/dateTime';
 import { formatAdminCount } from '@/app/admin/lib/numberFormat';
@@ -16,7 +15,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs';
 import { fail, show } from '@/hooks/useToast';
 import { resolveContactMode } from '@/lib/resolve-contact-mode';
 import { ErrorWithCode } from '@/lib/request';
-import AdminOperationsBreadcrumb from '../AdminOperationsBreadcrumb';
 import {
   buildAdminOperationsCourseFollowUpsUrl,
   buildAdminOperationsOrdersUrl,
@@ -39,7 +37,9 @@ import CourseChaptersTab, {
   type FlattenedChapterRow,
 } from './CourseChaptersTab';
 import CourseBasicInfoCard from './CourseBasicInfoCard';
+import CourseDetailHeader from './CourseDetailHeader';
 import CourseCreditUsageTab from './CourseCreditUsageTab';
+import CourseEstimatedCreditCostCard from './CourseEstimatedCreditCostCard';
 import CourseMetricsCardGrid from './CourseMetricsCardGrid';
 import CourseUsersTab from './CourseUsersTab';
 import {
@@ -136,6 +136,35 @@ const EMPTY_DETAIL: AdminOperationCourseDetailResponse = {
     credit_user_count: 0,
     completed_credit_user_count: 0,
     completed_user_avg_credits: null,
+  },
+  estimated_credit_cost: {
+    read: {
+      min: 0,
+      max: 0,
+      llm: { min: 0, max: 0, model: '', model_label: '', multiplier: null },
+      tts: null,
+      enabled: null,
+    },
+    listen: {
+      min: 0,
+      max: 0,
+      llm: { min: 0, max: 0, model: '', model_label: '', multiplier: null },
+      tts: null,
+      enabled: null,
+    },
+    classroom: {
+      min: 0,
+      max: 0,
+      llm: { min: 0, max: 0, model: '', model_label: '', multiplier: null },
+      tts: null,
+      enabled: null,
+    },
+    assumptions: {
+      visible_lesson_count: 0,
+      prompt_char_count: 0,
+      content_char_count: 0,
+      calculated_at: '',
+    },
   },
   chapters: [],
 };
@@ -282,7 +311,6 @@ const createCourseCreditUsageFilters =
  * t('module.operationsCourse.detail.creditUsage.modes.ask')
  * t('module.operationsCourse.detail.creditUsage.modes.mixed')
  * t('module.operationsCourse.detail.creditUsage.modes.unknown')
- * t('module.operationsCourse.detail.creditUsage.modelSummary.multiple')
  * t('module.operationsCourse.detail.creditUsage.table.createdAt')
  * t('module.operationsCourse.detail.creditUsage.table.nickname')
  * t('module.operationsCourse.detail.creditUsage.table.scene')
@@ -1505,16 +1533,10 @@ export default function AdminOperationCourseDetailPage() {
   return (
     <div className='h-full min-h-0 overflow-hidden bg-stone-50 p-0 overscroll-none'>
       <div className='mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col overflow-hidden'>
-        <AdminOperationsBreadcrumb
-          items={[
-            {
-              label: tOperations('title'),
-              href: '/admin/operations',
-            },
-            { label: tOperations('detail.title') },
-          ]}
+        <CourseDetailHeader
+          operationsLabel={tOperations('title')}
+          detailLabel={tOperations('detail.title')}
         />
-        <AdminTitle title={tOperations('detail.title')} />
 
         <div className='min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain pr-1'>
           <div className='space-y-5 pb-6'>
@@ -1523,9 +1545,15 @@ export default function AdminOperationCourseDetailPage() {
               items={basicInfoItems}
             />
 
+            <CourseEstimatedCreditCostCard
+              estimate={detail.estimated_credit_cost}
+              locale={i18n.language}
+            />
+
             <CourseMetricsCardGrid
               title={tOperations('detail.metrics')}
               cards={metricCards}
+              size='compact'
             />
 
             <Tabs

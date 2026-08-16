@@ -53,6 +53,7 @@ export type BillingCustomization = {
   branding: {
     logo_wide_url: string;
     logo_square_url: string;
+    favicon_url: string;
     home_url: string;
   };
   domains: {
@@ -287,6 +288,7 @@ export type BillingSubscription = {
 export type BillingWalletBucket = {
   wallet_bucket_bid: string;
   category: BillingBucketCategory;
+  credit_asset_kind: BillingCreditAssetKind;
   source_type: BillingBucketSourceType;
   source_bid: string;
   available_credits: number;
@@ -340,12 +342,19 @@ export type BillingLedgerMetadata = {
   bucket_breakdown?: BillingBucketBreakdownItem[];
 };
 
+export type BillingCreditAssetKind =
+  | 'plan_credits'
+  | 'pack_credits'
+  | 'internal_legacy'
+  | 'unknown';
+
 export type BillingLedgerItem = {
   ledger_bid: string;
   wallet_bucket_bid: string;
   entry_type: BillingLedgerEntryType;
   source_type: BillingBucketSourceType;
   source_bid: string;
+  credit_asset_kind: BillingCreditAssetKind;
   idempotency_key: string;
   amount: number;
   balance_after: number;
@@ -579,6 +588,7 @@ export type AdminBillingCustomizationDraft = {
   branding: {
     logo_wide_url: string;
     logo_square_url: string;
+    favicon_url: string;
     home_url: string;
   };
   domain: {

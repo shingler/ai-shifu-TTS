@@ -9,8 +9,8 @@ This module provides real-time TTS synthesis during content streaming.
 
 import base64
 import logging
+import os
 import traceback
-import unicodedata
 import uuid
 import threading
 import time
@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor, Future
 
 from flask import Flask
 
+from flaskr.dao import cleanup_session_after
 from flaskr.api.tts import (
     synthesize_text,
     is_tts_configured,
@@ -29,7 +30,11 @@ from flaskr.api.tts import (
     get_default_audio_settings,
 )
 from flaskr.api.tts.minimax_provider import MinimaxTTSProvider
-from flaskr.service.tts import preprocess_for_tts, resolve_tts_billable_chars
+from flaskr.service.tts import (
+    has_speakable_text,
+    preprocess_for_tts,
+    resolve_tts_billable_chars,
+)
 from flaskr.service.tts.audio_utils import (
     concat_audio_best_effort,
     export_audio_range_best_effort,
@@ -71,15 +76,62 @@ from flaskr.service.tts.rpm_gate import TTSRpmQueueTimeout
 
 logger = AppLoggerProxy(logging.getLogger(__name__))
 
-# Global thread pool for TTS synthesis
-_tts_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="tts_")
+# Global thread pool for TTS synthesis, created lazily per process. A
+# module-level instance would be created during the gunicorn master's
+# preload import and inherited by every forked worker; its gevent-patched
+# internals then carry wakeup links bound to the parent's hub, which can
+# crash in AbstractLinkable._notify_links and silently interrupt unrelated
+# greenlets (observed as DB protocol desync). The pid guard hands each
+# process its own executor.
+_tts_executor: ThreadPoolExecutor | None = None
+_tts_executor_pid: int | None = None
+
+
+def _get_tts_executor() -> ThreadPoolExecutor:
+    global _tts_executor, _tts_executor_pid
+    current_pid = os.getpid()
+    # Rebuild only when there is no executor or the recorded pid is STALE.
+    # An executor with no recorded pid was injected directly (tests patch
+    # `_tts_executor` with a mock) and must be honored as-is; production
+    # code always records the pid alongside the instance it creates.
+    if _tts_executor is None or (
+        _tts_executor_pid is not None and _tts_executor_pid != current_pid
+    ):
+        _tts_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="tts_")
+        _tts_executor_pid = current_pid
+    return _tts_executor
+
 
 _EMPTY_AUDIO_ERROR_MESSAGE = "No audio data received"
-_EMPTY_AUDIO_RETRY_PROVIDERS = {"", "tencent", "volcengine"}
+_EMPTY_AUDIO_RETRY_PROVIDERS = {"", "tencent", "tencent_texttovoice", "volcengine"}
 _EMPTY_AUDIO_RETRY_DELAY_SECONDS = 0.2
+# Provider throttling (e.g. Tencent LimitExceeded.AccessLimit) hits whole
+# bursts of concurrent segments at once; retries back off longer than the
+# empty-audio case and are staggered by segment index so the retrying
+# threads do not re-collide on the provider's quota window.
+_RATE_LIMIT_RETRY_MAX_ATTEMPTS = 3
+_RATE_LIMIT_RETRY_BASE_DELAY_SECONDS = 1.0
+_RATE_LIMIT_RETRY_STAGGER_SECONDS = 0.4
+# Stagger slot count matches the TTS executor width (4 workers): at most 4
+# segments synthesize concurrently and their indexes are close to
+# consecutive, so 4 slots give every in-flight segment a distinct delay
+# while keeping the delay bounded (a plain index multiplier would make
+# late segments wait tens of seconds).
+_RATE_LIMIT_RETRY_STAGGER_SLOTS = 4
+_RATE_LIMIT_ERROR_MARKERS = (
+    "LimitExceeded",
+    "Too many requests",
+    "too frequently",
+    "rate limit",
+)
 _TTS_ERROR_TEXT_PREVIEW_CHARS = 300
 _VOLCENGINE_TIMESTAMP_PROVIDERS = {"volcengine"}
-_NON_SPEAKABLE_TTS_SKIP_PROVIDERS = {"minimax", "tencent", "volcengine"}
+_NON_SPEAKABLE_TTS_SKIP_PROVIDERS = {
+    "minimax",
+    "tencent",
+    "tencent_texttovoice",
+    "volcengine",
+}
 
 _VISUAL_SLIDE_KINDS = frozenset(
     {
@@ -104,6 +156,15 @@ def _is_retryable_empty_audio_error(error: Exception, provider_name: str) -> boo
     )
 
 
+def _is_retryable_rate_limit_error(error: Exception) -> bool:
+    message = str(error)
+    lowered = message.lower()
+    return any(
+        marker in message or marker.lower() in lowered
+        for marker in _RATE_LIMIT_ERROR_MARKERS
+    )
+
+
 def _tts_error_text_preview(
     text: str,
     max_chars: int = _TTS_ERROR_TEXT_PREVIEW_CHARS,
@@ -118,16 +179,10 @@ def _normalize_tts_provider(tts_provider: str) -> str:
     return (tts_provider or "").strip().lower()
 
 
-def _has_speakable_text(text: str) -> bool:
-    return any(
-        unicodedata.category(char).startswith(("L", "N")) for char in str(text or "")
-    )
-
-
 def _should_skip_non_speakable_tts_text(text: str, tts_provider: str) -> bool:
     return _normalize_tts_provider(
         tts_provider
-    ) in _NON_SPEAKABLE_TTS_SKIP_PROVIDERS and not _has_speakable_text(text)
+    ) in _NON_SPEAKABLE_TTS_SKIP_PROVIDERS and not has_speakable_text(text)
 
 
 def _log_skipped_non_speakable_tts_text(
@@ -417,7 +472,7 @@ class StreamingTTSProcessor:
             f"Submitting TTS task {segment_index}: {len(text)} chars, provider={self.tts_provider or '(unset)'}"
         )
 
-        future = _tts_executor.submit(
+        future = _get_tts_executor().submit(
             self._synthesize_in_thread,
             segment,
             self.voice_settings,
@@ -483,7 +538,9 @@ class StreamingTTSProcessor:
     ):
         result = None
         max_attempts = 2
-        for attempt in range(1, max_attempts + 1):
+        attempt = 0
+        while True:
+            attempt += 1
             try:
                 result = synthesize_text(
                     text=text,
@@ -507,6 +564,28 @@ class StreamingTTSProcessor:
                         _tts_error_text_preview(text or ""),
                     )
                     time.sleep(_EMPTY_AUDIO_RETRY_DELAY_SECONDS)
+                    continue
+                if (
+                    attempt < _RATE_LIMIT_RETRY_MAX_ATTEMPTS
+                    and _is_retryable_rate_limit_error(e)
+                ):
+                    delay = (
+                        _RATE_LIMIT_RETRY_BASE_DELAY_SECONDS * attempt
+                        + (segment_index or 0)
+                        % _RATE_LIMIT_RETRY_STAGGER_SLOTS
+                        * _RATE_LIMIT_RETRY_STAGGER_SECONDS
+                    )
+                    logger.warning(
+                        "TTS segment %s throttled by provider; retrying in "
+                        "%.1fs (attempt %s/%s): provider=%s model=%s",
+                        segment_index if segment_index is not None else "request",
+                        delay,
+                        attempt,
+                        _RATE_LIMIT_RETRY_MAX_ATTEMPTS,
+                        tts_provider or "(auto)",
+                        tts_model or "(unset)",
+                    )
+                    time.sleep(delay)
                     continue
                 raise
         if result is None:
@@ -1376,6 +1455,10 @@ class StreamingTTSProcessor:
             )
         except Exception as e:
             logger.error(f"Failed to finalize TTS: {e}\n{traceback.format_exc()}")
+            # The swallowed error may be a desync surfaced by the audio
+            # record write; classify so an interrupted exchange discards the
+            # connection instead of leaving it for the next statement.
+            cleanup_session_after(e, source="streaming tts finalize")
 
     def _synthesize_minimax_complete_fallback(
         self,

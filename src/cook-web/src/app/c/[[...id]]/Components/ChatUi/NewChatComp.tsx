@@ -92,6 +92,13 @@ import {
 import { useLessonPdfPrint } from './useLessonPdfPrint';
 import LessonPdfPreparingOverlay from './LessonPdfPreparingOverlay';
 import { buildCoursePageUrl } from '@/c-utils/urlUtils';
+import type {
+  ChapterNavigationHandler,
+  ChapterUpdateHandler,
+  LessonSelectionUpdater,
+  LessonUpdateHandler,
+  NextLessonIdGetter,
+} from './useChatLogicHook.types';
 
 const CREDIT_INSUFFICIENT_ERROR_CODE = 7101;
 
@@ -103,17 +110,17 @@ const LISTEN_AUDIO_BACKFILL_CONCURRENCY = 3;
 
 interface NewChatComponentsProps {
   className?: string;
-  lessonUpdate: (val: any) => void;
-  onGoChapter: (id: any) => void;
+  lessonUpdate: LessonUpdateHandler;
+  onGoChapter: ChapterNavigationHandler;
   chapterId: string;
   lessonId?: string;
   lessonTitle?: string;
   lessonStatus?: string;
   lessonHasContentUpdate?: boolean;
   onPurchased: () => void;
-  chapterUpdate: any;
-  updateSelectedLesson: any;
-  getNextLessonId: any;
+  chapterUpdate: ChapterUpdateHandler;
+  updateSelectedLesson: LessonSelectionUpdater;
+  getNextLessonId: NextLessonIdGetter;
   previewMode?: boolean;
   isNavOpen?: boolean;
   onListenPlayerVisibilityChange?: (visible: boolean) => void;
@@ -332,6 +339,10 @@ export const NewChatComponents = ({
   const isSlideMode = isListenMode || isClassroomMode;
   const [readModeTypewriterCache, setReadModeTypewriterCache] =
     useState<ReadModeTypewriterCache>({});
+  const [isDocumentVisible, setIsDocumentVisible] = useState(true);
+  const [isVisibilityRestorePending, setIsVisibilityRestorePending] =
+    useState(false);
+  const isDocumentVisibleRef = useRef(true);
   const courseTtsEnabled = useCourseStore(state => state.courseTtsEnabled);
   const isListenModeAvailable = courseTtsEnabled !== false;
   const isListenModeActive = getIsListenModeActive({
@@ -554,9 +565,63 @@ export const NewChatComponents = ({
       }),
     [askButtonMarkup, items, mobileStyle, scopedAskListByAnchorElementBid],
   );
+  const readModeItemsRef = useRef(readModeItems);
+  readModeItemsRef.current = readModeItems;
+  const suppressCurrentReadModeTypewriters = useCallback(() => {
+    setReadModeTypewriterCache(prevCache =>
+      syncReadModeTypewriterCache(readModeItemsRef.current, prevCache, {
+        suppressTypewriter: true,
+      }),
+    );
+  }, []);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      const nextIsDocumentVisible = document.visibilityState === 'visible';
+
+      if (!nextIsDocumentVisible) {
+        suppressCurrentReadModeTypewriters();
+        isDocumentVisibleRef.current = false;
+        setIsVisibilityRestorePending(false);
+        setIsDocumentVisible(false);
+        return;
+      }
+
+      if (!isDocumentVisibleRef.current) {
+        // Keep rendering the complete static list for one foreground commit.
+        // This lets any background SSE update commit before it is suppressed.
+        setIsVisibilityRestorePending(true);
+        return;
+      }
+
+      setIsDocumentVisible(true);
+    };
+
+    handleVisibilityChange();
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [suppressCurrentReadModeTypewriters]);
+
+  useEffect(() => {
+    if (!isVisibilityRestorePending) {
+      return;
+    }
+
+    suppressCurrentReadModeTypewriters();
+    isDocumentVisibleRef.current = true;
+    setIsDocumentVisible(true);
+    setIsVisibilityRestorePending(false);
+  }, [isVisibilityRestorePending, suppressCurrentReadModeTypewriters]);
+
   const visibleReadModeItems = useMemo(
-    () => buildVisibleReadModeItems(readModeItems, readModeTypewriterCache),
-    [readModeItems, readModeTypewriterCache],
+    () =>
+      isDocumentVisible
+        ? buildVisibleReadModeItems(readModeItems, readModeTypewriterCache)
+        : readModeItems,
+    [isDocumentVisible, readModeItems, readModeTypewriterCache],
   );
   const isFollowUpStreaming = useMemo(
     () =>
@@ -621,6 +686,7 @@ export const NewChatComponents = ({
         return {
           ...prevCache,
           [blockBid]: {
+            ...(existingEntry ?? {}),
             content: normalizedContent,
             isFinished: true,
           },
@@ -751,9 +817,10 @@ export const NewChatComponents = ({
     setReadModeTypewriterCache(prevCache =>
       syncReadModeTypewriterCache(readModeItems, prevCache, {
         markFinalTextItemsFinished: isClassroomMode,
+        suppressTypewriter: !isDocumentVisible,
       }),
     );
-  }, [isClassroomMode, readModeItems]);
+  }, [isClassroomMode, isDocumentVisible, readModeItems]);
 
   useEffect(() => {
     if (!isListenModeActive) {
@@ -1616,6 +1683,12 @@ export const NewChatComponents = ({
                   const isCourseInteraction =
                     item.type === ChatContentItemType.INTERACTION &&
                     !shouldExcludeLessonPdfInteraction(item.content);
+                  const typewriterCacheEntry =
+                    readModeTypewriterCache[item.element_bid || ''];
+                  const isReadModeTypewriterSuppressed =
+                    isReadModeTextContentItem(item) &&
+                    (!isDocumentVisible ||
+                      typewriterCacheEntry?.isSuppressed === true);
 
                   return (
                     <div
@@ -1651,18 +1724,28 @@ export const NewChatComponents = ({
                       ) : null}
                       {/*
                         Keep typewriter enabled when the current element content
-                        has already grown beyond the finished cache snapshot.
+                        has already grown beyond the finished cache snapshot. A
+                        backgrounded element stays static after foregrounding so
+                        markdown-flow-ui never restarts it from the beginning.
                       */}
                       <ContentBlock
                         item={item}
                         printMode={isPreparingLessonPdf && isCourseInteraction}
                         mobileStyle={mobileStyle}
                         blockBid={item.element_bid}
+                        contentRenderKey={
+                          isReadModeTypewriterSuppressed
+                            ? `${item.element_bid || baseKey}:${
+                                isDocumentVisible ? 'suppressed' : 'hidden'
+                              }`
+                            : undefined
+                        }
                         enableStreamingTypewriter={
+                          isDocumentVisible &&
                           !isPreparingLessonPdf &&
                           shouldEnableReadModeTypewriter(
                             item,
-                            readModeTypewriterCache[item.element_bid || ''],
+                            typewriterCacheEntry,
                             {
                               keepAliveWhileStreaming:
                                 isOutputInProgress &&

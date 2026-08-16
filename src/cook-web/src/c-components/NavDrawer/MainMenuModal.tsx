@@ -1,6 +1,12 @@
 import styles from './MainMenuModal.module.scss';
 
-import { memo, useRef, useState } from 'react';
+import {
+  memo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+} from 'react';
 import { useRouter } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { useShallow } from 'zustand/react/shallow';
@@ -33,6 +39,19 @@ import { Home, Monitor, BookPlus, KeyRound, Compass } from 'lucide-react';
 
 import LanguageSelect from '@/components/language-select';
 
+type MainMenuModalProps = {
+  open: boolean;
+  onClose?: (event: MouseEvent | ReactMouseEvent) => void;
+  style?: CSSProperties;
+  mobileStyle?: boolean;
+  className?: string;
+  onBasicInfoClick?: () => void;
+  onPersonalInfoClick?: () => void;
+  isAdmin?: boolean;
+  showPersonalInfo?: boolean;
+  modalStyle?: CSSProperties;
+};
+
 const MainMenuModal = ({
   open,
   onClose = () => {},
@@ -44,11 +63,11 @@ const MainMenuModal = ({
   isAdmin = false,
   showPersonalInfo = true,
   modalStyle = {},
-}) => {
+}: MainMenuModalProps) => {
   const { t } = useTranslation();
   const router = useRouter();
 
-  const htmlRef = useRef(null);
+  const htmlRef = useRef<HTMLDivElement | null>(null);
   const { isLoggedIn, logout, userInfo, refreshUserInfo } = useUserStore(
     useShallow(state => ({
       logout: state.logout,
@@ -108,7 +127,6 @@ const MainMenuModal = ({
     } else {
       window.open(target, '_blank', 'noreferrer');
     }
-    // @ts-expect-error EXPECT
     onClose?.(evt);
   };
 
@@ -124,7 +142,6 @@ const MainMenuModal = ({
     }
 
     setSetPasswordModalOpen(true);
-    // @ts-expect-error EXPECT
     onClose?.(evt);
   };
   const setPasswordRow = canSetPassword ? (
@@ -145,7 +162,6 @@ const MainMenuModal = ({
     evt.preventDefault();
     evt.stopPropagation();
     requestReplayAll();
-    // @ts-expect-error EXPECT
     onClose?.(evt);
   };
   const replayOnboardingRow = (
@@ -168,7 +184,6 @@ const MainMenuModal = ({
     evt.preventDefault();
     evt.stopPropagation();
     window.open('/admin', '_blank');
-    // @ts-expect-error EXPECT
     onClose?.(evt);
   };
 
@@ -176,11 +191,10 @@ const MainMenuModal = ({
     shifu.loginTools.openLogin();
   };
 
-  const onLogoutClick = evt => {
+  const onLogoutClick = (evt: ReactMouseEvent) => {
     evt.preventDefault();
     evt.stopPropagation();
     setLogoutConfirmOpen(true);
-    // @ts-expect-error EXPECT
     onClose?.(evt);
   };
 
@@ -190,6 +204,7 @@ const MainMenuModal = ({
       await logout();
       setLogoutConfirmOpen(false);
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.error('❌ Logout failed:', error);
       setLogoutConfirmOpen(false);
     }
@@ -200,6 +215,7 @@ const MainMenuModal = ({
     try {
       await api.updateUserInfo({ language: normalized });
     } catch (e) {
+      // eslint-disable-next-line no-console
       console.warn('Failed to persist language preference', e);
     }
     useUserStore.getState().updateUserInfo({ language: normalized });

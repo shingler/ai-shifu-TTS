@@ -816,6 +816,50 @@ def test_list_operator_users_filters_by_email_identifier(app):
     assert result.data[0].created_courses == []
 
 
+def test_list_operator_users_filters_by_combined_user_query(app):
+    with app.app_context():
+        _seed_user(
+            app,
+            user_bid="user-query-email",
+            identify="query@example.com",
+            nickname="Email Query",
+            state=USER_STATE_REGISTERED,
+            created_at=datetime(2026, 4, 6, 9, 0, 0),
+            updated_at=datetime(2026, 4, 6, 10, 0, 0),
+            providers=[("email", "query@example.com")],
+        )
+        _seed_user(
+            app,
+            user_bid="user-query-nickname",
+            identify="13900005555",
+            nickname="Nickname Query",
+            state=USER_STATE_REGISTERED,
+            created_at=datetime(2026, 4, 7, 9, 0, 0),
+            updated_at=datetime(2026, 4, 7, 10, 0, 0),
+            providers=[("phone", "13900005555")],
+        )
+
+        email_result = list_operator_users(
+            app,
+            1,
+            20,
+            {
+                "user_query": "query@example.com",
+            },
+        )
+        nickname_result = list_operator_users(
+            app,
+            1,
+            20,
+            {
+                "user_query": "Nickname",
+            },
+        )
+
+    assert [item.user_bid for item in email_result.data] == ["user-query-email"]
+    assert [item.user_bid for item in nickname_result.data] == ["user-query-nickname"]
+
+
 def test_list_operator_users_returns_overview_summary_and_applies_quick_filters(
     app, monkeypatch
 ):
@@ -1548,6 +1592,105 @@ def test_get_operator_user_credits_returns_summary_and_paginated_ledger(app):
     assert result.items[0].balance_after == "20.50"
     assert result.items[0].note == "manual top up"
     assert result.items[0].note_code == ""
+
+
+def test_get_operator_user_credits_hides_reserved_grants_until_available(app):
+    with app.app_context():
+        _seed_user(
+            app,
+            user_bid="credits-reserved-grant-user",
+            identify="credits-reserved-grant@example.com",
+            nickname="Reserved Grant",
+            state=USER_STATE_PAID,
+            is_creator=True,
+            created_at=datetime(2026, 4, 9, 9, 0, 0),
+            updated_at=datetime(2026, 4, 9, 10, 0, 0),
+            providers=[("email", "credits-reserved-grant@example.com")],
+        )
+        _seed_credit_wallet(
+            creator_bid="credits-reserved-grant-user",
+            wallet_bid="wallet-credits-reserved-grant-user",
+            available_credits="5.0000000000",
+        )
+        _seed_credit_ledger_entry(
+            creator_bid="credits-reserved-grant-user",
+            wallet_bid="wallet-credits-reserved-grant-user",
+            wallet_bucket_bid="bucket-reserved-grant-user",
+            ledger_bid="ledger-available-grant",
+            entry_type=CREDIT_LEDGER_ENTRY_TYPE_GRANT,
+            source_type=CREDIT_SOURCE_TYPE_SUBSCRIPTION,
+            source_bid="order-available-grant",
+            amount="5.0000000000",
+            balance_after="5.0000000000",
+            created_at=datetime(2026, 4, 18, 8, 0, 0),
+            metadata_json={"bucket_credit_state": "available"},
+        )
+        _seed_credit_ledger_entry(
+            creator_bid="credits-reserved-grant-user",
+            wallet_bid="wallet-credits-reserved-grant-user",
+            wallet_bucket_bid="bucket-reserved-grant-user",
+            ledger_bid="ledger-reserved-grant",
+            entry_type=CREDIT_LEDGER_ENTRY_TYPE_GRANT,
+            source_type=CREDIT_SOURCE_TYPE_SUBSCRIPTION,
+            source_bid="order-reserved-grant",
+            amount="1000.0000000000",
+            balance_after="5.0000000000",
+            created_at=datetime(2026, 4, 18, 9, 0, 0),
+            metadata_json={"bucket_credit_state": " ReSeRvEd "},
+        )
+        _seed_credit_ledger_entry(
+            creator_bid="credits-reserved-grant-user",
+            wallet_bid="wallet-credits-reserved-grant-user",
+            wallet_bucket_bid="bucket-reserved-grant-user",
+            ledger_bid="ledger-absorbed-grant",
+            entry_type=CREDIT_LEDGER_ENTRY_TYPE_GRANT,
+            source_type=CREDIT_SOURCE_TYPE_SUBSCRIPTION,
+            source_bid="order-absorbed-grant",
+            amount="2000.0000000000",
+            balance_after="5.0000000000",
+            created_at=datetime(2026, 4, 18, 10, 0, 0),
+            metadata_json={"bucket_credit_state": " AbSoRbEd "},
+        )
+
+        all_result = get_operator_user_credits(
+            app,
+            user_bid="credits-reserved-grant-user",
+            page_index=1,
+            page_size=20,
+        )
+        grant_result = get_operator_user_credits(
+            app,
+            user_bid="credits-reserved-grant-user",
+            page_index=1,
+            page_size=20,
+            filters={"credit_type": "grant"},
+        )
+
+        reserved_entry = CreditLedgerEntry.query.filter_by(
+            ledger_bid="ledger-reserved-grant"
+        ).one()
+        reserved_entry.metadata_json = {"bucket_credit_state": "available"}
+        db.session.add(reserved_entry)
+        db.session.commit()
+        activated_result = get_operator_user_credits(
+            app,
+            user_bid="credits-reserved-grant-user",
+            page_index=1,
+            page_size=20,
+            filters={"credit_type": "grant"},
+        )
+
+    assert [item.ledger_bid for item in all_result.items] == ["ledger-available-grant"]
+    assert all_result.total == 1
+    assert [item.ledger_bid for item in grant_result.items] == [
+        "ledger-available-grant"
+    ]
+    assert grant_result.total == 1
+    assert [item.ledger_bid for item in activated_result.items] == [
+        "ledger-reserved-grant",
+        "ledger-available-grant",
+    ]
+    assert activated_result.total == 2
 
 
 def test_get_operator_user_credits_handles_invalid_source_type(app):
@@ -3889,7 +4032,7 @@ def test_admin_operation_users_route_returns_filtered_payload(
         query_string={
             "page_index": 1,
             "page_size": 20,
-            "nickname": "Route",
+            "user_query": "Route",
             "user_status": "unregistered",
         },
         headers={"Token": "test-token"},

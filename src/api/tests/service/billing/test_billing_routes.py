@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from flask import Flask, jsonify, request
 import pytest
+from sqlalchemy import event
 
 import flaskr.dao as dao
 from flaskr.service.billing.consts import (
@@ -31,7 +32,9 @@ from flaskr.service.billing.consts import (
     CREDIT_BUCKET_STATUS_ACTIVE,
     CREDIT_LEDGER_ENTRY_TYPE_CONSUME,
     CREDIT_LEDGER_ENTRY_TYPE_GRANT,
+    CREDIT_SOURCE_TYPE_CAMPAIGN_BONUS,
     CREDIT_SOURCE_TYPE_GIFT,
+    CREDIT_SOURCE_TYPE_MANUAL,
     CREDIT_SOURCE_TYPE_SUBSCRIPTION,
     CREDIT_SOURCE_TYPE_TOPUP,
     CREDIT_SOURCE_TYPE_USAGE,
@@ -811,8 +814,94 @@ class TestBillingRoutes:
             "bucket-topup",
         ]
         assert bucket_payload["data"]["items"][0]["category"] == "subscription"
+        assert bucket_payload["data"]["items"][0]["credit_asset_kind"] == "plan_credits"
         assert bucket_payload["data"]["items"][0]["priority"] == 20
+        assert bucket_payload["data"]["items"][1]["credit_asset_kind"] == "plan_credits"
+        assert bucket_payload["data"]["items"][2]["credit_asset_kind"] == "pack_credits"
         assert bucket_payload["data"]["items"][2]["source_bid"] == "topup-1"
+
+    def test_overview_recalculates_wallet_snapshot_for_current_balance(
+        self, billing_test_client
+    ) -> None:
+        app = billing_test_client.application
+        with app.app_context():
+            wallet = CreditWallet.query.filter(
+                CreditWallet.wallet_bid == "wallet-1",
+            ).one()
+            wallet.available_credits = Decimal("0")
+            wallet.reserved_credits = Decimal("0")
+            dao.db.session.add(wallet)
+            dao.db.session.commit()
+
+            overview = build_billing_overview(app, "creator-1")
+
+            assert overview.wallet.available_credits == 120.5
+            assert overview.wallet.reserved_credits == 0
+            assert overview.credit_status == "normal"
+            assert overview.debug_allowed is True
+            assert wallet.available_credits == Decimal("0")
+
+    def test_overview_limit_state_uses_current_consumable_bucket_balance(
+        self,
+        billing_test_client,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        app = billing_test_client.application
+        monkeypatch.setattr(
+            billing_read_models_module,
+            "is_billing_enabled",
+            lambda: True,
+        )
+        with app.app_context():
+            wallet = CreditWallet.query.filter(
+                CreditWallet.wallet_bid == "wallet-1",
+            ).one()
+            wallet.available_credits = Decimal("20.0000000000")
+            subscription = BillingSubscription.query.filter(
+                BillingSubscription.subscription_bid == "sub-1",
+            ).one()
+            subscription.current_period_end_at = datetime(2026, 4, 5, 0, 0, 0)
+            for bucket in CreditWalletBucket.query.filter(
+                CreditWalletBucket.wallet_bid == "wallet-1",
+            ).all():
+                if bucket.wallet_bucket_bid == "bucket-topup":
+                    bucket.available_credits = Decimal("20.0000000000")
+                else:
+                    bucket.available_credits = Decimal("0")
+            dao.db.session.commit()
+
+            overview = build_billing_overview(app, "creator-1")
+
+            assert overview.wallet.available_credits == 0
+            assert overview.credit_status == "hardlimit"
+
+    def test_overview_limit_state_remains_normal_when_billing_disabled(
+        self,
+        billing_test_client,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        app = billing_test_client.application
+        monkeypatch.setattr(
+            billing_read_models_module,
+            "is_billing_enabled",
+            lambda: False,
+        )
+        with app.app_context():
+            wallet = CreditWallet.query.filter(
+                CreditWallet.wallet_bid == "wallet-1",
+            ).one()
+            wallet.available_credits = Decimal("0")
+            for bucket in CreditWalletBucket.query.filter(
+                CreditWalletBucket.wallet_bid == "wallet-1",
+            ).all():
+                bucket.available_credits = Decimal("0")
+            dao.db.session.commit()
+
+            overview = build_billing_overview(app, "creator-1")
+
+            assert overview.wallet.available_credits == 0
+            assert overview.credit_status == "normal"
+            assert overview.debug_allowed is True
 
     def test_overview_marks_stale_active_subscription_expired_without_db_update(
         self, billing_test_client
@@ -1090,6 +1179,135 @@ class TestBillingRoutes:
         assert bucket_map["bucket-subscription"]["status"] == "expired"
         assert bucket_map["bucket-topup"]["status"] == "active"
 
+    def test_wallet_buckets_keep_owned_topup_visible_after_old_window_ends(
+        self,
+        billing_test_client,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "flaskr.service.billing.serializers.now_utc",
+            lambda: datetime(2026, 5, 1, 12, 0, 0),
+        )
+        app = billing_test_client.application
+        with app.app_context():
+            bucket = CreditWalletBucket.query.filter(
+                CreditWalletBucket.wallet_bucket_bid == "bucket-topup",
+            ).one()
+            bucket.effective_to = datetime(2026, 4, 5, 0, 0, 0)
+            bucket.available_credits = Decimal("15.3800000000")
+            dao.db.session.commit()
+
+        payload = billing_test_client.get("/api/billing/wallet-buckets").get_json(
+            force=True
+        )
+        bucket_map = {
+            item["wallet_bucket_bid"]: item for item in payload["data"]["items"]
+        }
+
+        assert payload["code"] == 0
+        assert bucket_map["bucket-topup"]["category"] == "topup"
+        assert bucket_map["bucket-topup"]["status"] == "active"
+        assert bucket_map["bucket-topup"]["available_credits"] == 15.38
+
+    def test_wallet_bucket_order_lookup_is_page_scoped(
+        self, billing_test_client
+    ) -> None:
+        app = billing_test_client.application
+
+        with app.app_context():
+            order_select_count = 0
+
+            def _count_order_selects(_conn, _cursor, statement, *_args):
+                nonlocal order_select_count
+                if "bill_orders" in statement.lower():
+                    order_select_count += 1
+
+            event.listen(dao.db.engine, "before_cursor_execute", _count_order_selects)
+            try:
+                bucket_list = build_billing_wallet_buckets(app, "creator-1")
+            finally:
+                event.remove(
+                    dao.db.engine,
+                    "before_cursor_execute",
+                    _count_order_selects,
+                )
+
+            assert order_select_count == 0
+            assert len(bucket_list.items) == 3
+
+            dao.db.session.add(
+                BillingOrder(
+                    bill_order_bid="order-shared-topup",
+                    creator_bid="creator-1",
+                    order_type=BILLING_ORDER_TYPE_TOPUP,
+                    product_bid="bill-product-topup-100",
+                    status=BILLING_ORDER_STATUS_PAID,
+                    paid_at=datetime(2026, 4, 7, 9, 0, 0),
+                )
+            )
+            dao.db.session.add_all(
+                [
+                    CreditWalletBucket(
+                        wallet_bucket_bid="bucket-shared-order-1",
+                        wallet_bid="wallet-1",
+                        creator_bid="creator-1",
+                        bucket_category=0,
+                        source_type=CREDIT_SOURCE_TYPE_GIFT,
+                        source_bid="gift-shared-order-1",
+                        priority=4,
+                        original_credits=Decimal("3.0000000000"),
+                        available_credits=Decimal("3.0000000000"),
+                        reserved_credits=Decimal("0"),
+                        consumed_credits=Decimal("0"),
+                        expired_credits=Decimal("0"),
+                        effective_from=datetime(2026, 4, 7, 9, 0, 0),
+                        effective_to=None,
+                        status=CREDIT_BUCKET_STATUS_ACTIVE,
+                        metadata_json={"bill_order_bid": "order-shared-topup"},
+                        created_at=datetime(2026, 4, 7, 9, 0, 0),
+                        updated_at=datetime(2026, 4, 7, 9, 0, 0),
+                    ),
+                    CreditWalletBucket(
+                        wallet_bucket_bid="bucket-shared-order-2",
+                        wallet_bid="wallet-1",
+                        creator_bid="creator-1",
+                        bucket_category=0,
+                        source_type=CREDIT_SOURCE_TYPE_GIFT,
+                        source_bid="gift-shared-order-2",
+                        priority=5,
+                        original_credits=Decimal("4.0000000000"),
+                        available_credits=Decimal("4.0000000000"),
+                        reserved_credits=Decimal("0"),
+                        consumed_credits=Decimal("0"),
+                        expired_credits=Decimal("0"),
+                        effective_from=datetime(2026, 4, 7, 10, 0, 0),
+                        effective_to=None,
+                        status=CREDIT_BUCKET_STATUS_ACTIVE,
+                        metadata_json={"bill_order_bid": "order-shared-topup"},
+                        created_at=datetime(2026, 4, 7, 10, 0, 0),
+                        updated_at=datetime(2026, 4, 7, 10, 0, 0),
+                    ),
+                ]
+            )
+            dao.db.session.commit()
+
+            order_select_count = 0
+            event.listen(dao.db.engine, "before_cursor_execute", _count_order_selects)
+            try:
+                bucket_list = build_billing_wallet_buckets(app, "creator-1")
+            finally:
+                event.remove(
+                    dao.db.engine,
+                    "before_cursor_execute",
+                    _count_order_selects,
+                )
+
+        bucket_map = {item.wallet_bucket_bid: item for item in bucket_list.items}
+
+        assert order_select_count == 1
+        assert bucket_map["bucket-shared-order-1"].credit_asset_kind == "pack_credits"
+        assert bucket_map["bucket-shared-order-2"].credit_asset_kind == "pack_credits"
+
     def test_billing_public_builders_return_dto_instances(
         self,
         billing_test_client,
@@ -1276,6 +1494,224 @@ class TestBillingRoutes:
             ]
             == 2.5
         )
+        assert ledger_payload["data"]["items"][0]["credit_asset_kind"] == "plan_credits"
+
+    def test_billing_ledger_page_exposes_canonical_credit_asset_kind(
+        self, billing_test_client
+    ) -> None:
+        app = billing_test_client.application
+
+        with app.app_context():
+            dao.db.session.add_all(
+                [
+                    BillingOrder(
+                        bill_order_bid="order-campaign-topup",
+                        creator_bid="creator-1",
+                        order_type=BILLING_ORDER_TYPE_TOPUP,
+                        product_bid="bill-product-topup-100",
+                        status=BILLING_ORDER_STATUS_PAID,
+                        paid_at=datetime(2026, 4, 7, 9, 0, 0),
+                    ),
+                    BillingOrder(
+                        bill_order_bid="order-bucket-plan",
+                        creator_bid="creator-1",
+                        order_type=BILLING_ORDER_TYPE_SUBSCRIPTION_START,
+                        product_bid="bill-product-plan-monthly",
+                        status=BILLING_ORDER_STATUS_PAID,
+                        paid_at=datetime(2026, 4, 7, 9, 30, 0),
+                    ),
+                    BillingOrder(
+                        bill_order_bid="order-other-creator-topup",
+                        creator_bid="creator-2",
+                        order_type=BILLING_ORDER_TYPE_TOPUP,
+                        product_bid="bill-product-topup-100",
+                        status=BILLING_ORDER_STATUS_PAID,
+                        paid_at=datetime(2026, 4, 7, 9, 45, 0),
+                    ),
+                ]
+            )
+            dao.db.session.add(
+                CreditWalletBucket(
+                    wallet_bucket_bid="bucket-gift-order-backed",
+                    wallet_bid="wallet-1",
+                    creator_bid="creator-1",
+                    bucket_category=0,
+                    source_type=CREDIT_SOURCE_TYPE_GIFT,
+                    source_bid="gift-order-backed",
+                    priority=4,
+                    original_credits=Decimal("6.0000000000"),
+                    available_credits=Decimal("6.0000000000"),
+                    reserved_credits=Decimal("0"),
+                    consumed_credits=Decimal("0"),
+                    expired_credits=Decimal("0"),
+                    effective_from=datetime(2026, 4, 7, 9, 30, 0),
+                    effective_to=datetime(2026, 5, 7, 9, 30, 0),
+                    status=CREDIT_BUCKET_STATUS_ACTIVE,
+                    metadata_json={"bill_order_bid": "order-bucket-plan"},
+                    created_at=datetime(2026, 4, 7, 9, 30, 0),
+                    updated_at=datetime(2026, 4, 7, 9, 30, 0),
+                )
+            )
+            dao.db.session.add_all(
+                [
+                    CreditLedgerEntry(
+                        ledger_bid="ledger-topup-grant",
+                        creator_bid="creator-1",
+                        wallet_bid="wallet-1",
+                        wallet_bucket_bid="bucket-topup",
+                        entry_type=CREDIT_LEDGER_ENTRY_TYPE_GRANT,
+                        source_type=CREDIT_SOURCE_TYPE_TOPUP,
+                        source_bid="topup-1",
+                        idempotency_key="grant-topup-1",
+                        amount=Decimal("20.0000000000"),
+                        balance_after=Decimal("120.5000000000"),
+                        expires_at=None,
+                        consumable_from=datetime(2026, 4, 3, 0, 0, 0),
+                        metadata_json={"bucket_credit_state": "available"},
+                        created_at=datetime(2026, 4, 7, 10, 0, 0),
+                        updated_at=datetime(2026, 4, 7, 10, 0, 0),
+                    ),
+                    CreditLedgerEntry(
+                        ledger_bid="ledger-bucket-order-backed",
+                        creator_bid="creator-1",
+                        wallet_bid="wallet-1",
+                        wallet_bucket_bid="bucket-gift-order-backed",
+                        entry_type=CREDIT_LEDGER_ENTRY_TYPE_GRANT,
+                        source_type=CREDIT_SOURCE_TYPE_GIFT,
+                        source_bid="gift-order-backed",
+                        idempotency_key="grant-gift-order-backed",
+                        amount=Decimal("6.0000000000"),
+                        balance_after=Decimal("126.5000000000"),
+                        expires_at=datetime(2026, 5, 7, 9, 30, 0),
+                        consumable_from=datetime(2026, 4, 7, 9, 30, 0),
+                        metadata_json={"bucket_credit_state": "available"},
+                        created_at=datetime(2026, 4, 7, 9, 30, 0),
+                        updated_at=datetime(2026, 4, 7, 9, 30, 0),
+                    ),
+                    CreditLedgerEntry(
+                        ledger_bid="ledger-referral-reward",
+                        creator_bid="creator-1",
+                        wallet_bid="wallet-1",
+                        wallet_bucket_bid="bucket-subscription",
+                        entry_type=CREDIT_LEDGER_ENTRY_TYPE_GRANT,
+                        source_type=CREDIT_SOURCE_TYPE_MANUAL,
+                        source_bid="referral_reward",
+                        idempotency_key="operator_referral_reward:1",
+                        amount=Decimal("5.0000000000"),
+                        balance_after=Decimal("125.5000000000"),
+                        expires_at=datetime(2026, 5, 1, 0, 0, 0),
+                        consumable_from=datetime(2026, 4, 7, 11, 0, 0),
+                        metadata_json={
+                            "grant_type": "referral_reward",
+                            "reward_scene": "referral",
+                            "reward_program": "referral_reward",
+                        },
+                        created_at=datetime(2026, 4, 7, 11, 0, 0),
+                        updated_at=datetime(2026, 4, 7, 11, 0, 0),
+                    ),
+                    CreditLedgerEntry(
+                        ledger_bid="ledger-campaign-bonus-1",
+                        creator_bid="creator-1",
+                        wallet_bid="wallet-1",
+                        wallet_bucket_bid="",
+                        entry_type=CREDIT_LEDGER_ENTRY_TYPE_GRANT,
+                        source_type=CREDIT_SOURCE_TYPE_CAMPAIGN_BONUS,
+                        source_bid="campaign-1",
+                        idempotency_key="campaign-bonus-1",
+                        amount=Decimal("3.0000000000"),
+                        balance_after=Decimal("128.5000000000"),
+                        expires_at=None,
+                        consumable_from=datetime(2026, 4, 7, 12, 0, 0),
+                        metadata_json={"bill_order_bid": "order-campaign-topup"},
+                        created_at=datetime(2026, 4, 7, 12, 0, 0),
+                        updated_at=datetime(2026, 4, 7, 12, 0, 0),
+                    ),
+                    CreditLedgerEntry(
+                        ledger_bid="ledger-campaign-bonus-2",
+                        creator_bid="creator-1",
+                        wallet_bid="wallet-1",
+                        wallet_bucket_bid="",
+                        entry_type=CREDIT_LEDGER_ENTRY_TYPE_GRANT,
+                        source_type=CREDIT_SOURCE_TYPE_CAMPAIGN_BONUS,
+                        source_bid="campaign-1",
+                        idempotency_key="campaign-bonus-2",
+                        amount=Decimal("4.0000000000"),
+                        balance_after=Decimal("132.5000000000"),
+                        expires_at=None,
+                        consumable_from=datetime(2026, 4, 7, 13, 0, 0),
+                        metadata_json={"bill_order_bid": "order-campaign-topup"},
+                        created_at=datetime(2026, 4, 7, 13, 0, 0),
+                        updated_at=datetime(2026, 4, 7, 13, 0, 0),
+                    ),
+                    CreditLedgerEntry(
+                        ledger_bid="ledger-internal-legacy",
+                        creator_bid="creator-1",
+                        wallet_bid="wallet-1",
+                        wallet_bucket_bid="",
+                        entry_type=CREDIT_LEDGER_ENTRY_TYPE_GRANT,
+                        source_type=CREDIT_SOURCE_TYPE_MANUAL,
+                        source_bid="manual-adjustment",
+                        idempotency_key="manual-adjustment-1",
+                        amount=Decimal("1.0000000000"),
+                        balance_after=Decimal("133.5000000000"),
+                        expires_at=None,
+                        consumable_from=datetime(2026, 4, 7, 14, 0, 0),
+                        metadata_json={},
+                        created_at=datetime(2026, 4, 7, 14, 0, 0),
+                        updated_at=datetime(2026, 4, 7, 14, 0, 0),
+                    ),
+                    CreditLedgerEntry(
+                        ledger_bid="ledger-cross-creator-order",
+                        creator_bid="creator-1",
+                        wallet_bid="wallet-1",
+                        wallet_bucket_bid="",
+                        entry_type=CREDIT_LEDGER_ENTRY_TYPE_GRANT,
+                        source_type=CREDIT_SOURCE_TYPE_CAMPAIGN_BONUS,
+                        source_bid="campaign-cross-creator",
+                        idempotency_key="campaign-cross-creator-1",
+                        amount=Decimal("2.0000000000"),
+                        balance_after=Decimal("135.5000000000"),
+                        expires_at=None,
+                        consumable_from=datetime(2026, 4, 7, 15, 0, 0),
+                        metadata_json={"bill_order_bid": "order-other-creator-topup"},
+                        created_at=datetime(2026, 4, 7, 15, 0, 0),
+                        updated_at=datetime(2026, 4, 7, 15, 0, 0),
+                    ),
+                ]
+            )
+            dao.db.session.commit()
+
+        order_select_count = 0
+
+        def _count_order_selects(_conn, _cursor, statement, *_args):
+            nonlocal order_select_count
+            if "bill_orders" in statement.lower():
+                order_select_count += 1
+
+        with app.app_context():
+            event.listen(dao.db.engine, "before_cursor_execute", _count_order_selects)
+            try:
+                ledger_page = build_billing_ledger_page(app, "creator-1", page_size=10)
+            finally:
+                event.remove(
+                    dao.db.engine,
+                    "before_cursor_execute",
+                    _count_order_selects,
+                )
+        asset_kind_by_bid = {
+            item.ledger_bid: item.credit_asset_kind for item in ledger_page.items
+        }
+
+        assert order_select_count == 1
+        assert asset_kind_by_bid["ledger-bucket-order-backed"] == "plan_credits"
+        assert asset_kind_by_bid["ledger-campaign-bonus-1"] == "pack_credits"
+        assert asset_kind_by_bid["ledger-campaign-bonus-2"] == "pack_credits"
+        assert asset_kind_by_bid["ledger-referral-reward"] == "plan_credits"
+        assert asset_kind_by_bid["ledger-topup-grant"] == "pack_credits"
+        assert asset_kind_by_bid["ledger-grant"] == "plan_credits"
+        assert asset_kind_by_bid["ledger-consume"] == "plan_credits"
+        assert asset_kind_by_bid["ledger-internal-legacy"] == "internal_legacy"
+        assert asset_kind_by_bid["ledger-cross-creator-order"] == "unknown"
 
     def test_ledger_emits_utc_ignoring_request_timezone(
         self, billing_test_client
@@ -1301,6 +1737,72 @@ class TestBillingRoutes:
         ledger_page = build_billing_ledger_page(app, "creator-1", page_size=1)
 
         assert ledger_page.items[0].created_at == datetime(2026, 4, 6, 10, 0)
+
+    def test_build_billing_ledger_page_hides_reserved_grants_until_available(
+        self, billing_test_client
+    ) -> None:
+        app = billing_test_client.application
+
+        with app.app_context():
+            dao.db.session.add_all(
+                [
+                    CreditLedgerEntry(
+                        ledger_bid="ledger-reserved-renewal",
+                        creator_bid="creator-1",
+                        wallet_bid="wallet-1",
+                        wallet_bucket_bid="bucket-subscription",
+                        entry_type=CREDIT_LEDGER_ENTRY_TYPE_GRANT,
+                        source_type=CREDIT_SOURCE_TYPE_SUBSCRIPTION,
+                        source_bid="order-reserved-renewal",
+                        idempotency_key="grant:order-reserved-renewal",
+                        amount=Decimal("1000.0000000000"),
+                        balance_after=Decimal("1098.0000000000"),
+                        expires_at=datetime(2026, 6, 1, 0, 0, 0),
+                        consumable_from=datetime(2026, 5, 1, 0, 0, 0),
+                        metadata_json={"bucket_credit_state": "reserved"},
+                        created_at=datetime(2026, 4, 7, 10, 0, 0),
+                        updated_at=datetime(2026, 4, 7, 10, 0, 0),
+                    ),
+                    CreditLedgerEntry(
+                        ledger_bid="ledger-absorbed-renewal",
+                        creator_bid="creator-1",
+                        wallet_bid="wallet-1",
+                        wallet_bucket_bid="bucket-subscription",
+                        entry_type=CREDIT_LEDGER_ENTRY_TYPE_GRANT,
+                        source_type=CREDIT_SOURCE_TYPE_SUBSCRIPTION,
+                        source_bid="order-absorbed-renewal",
+                        idempotency_key="grant:order-absorbed-renewal",
+                        amount=Decimal("2000.0000000000"),
+                        balance_after=Decimal("98.0000000000"),
+                        expires_at=datetime(2026, 6, 1, 0, 0, 0),
+                        consumable_from=datetime(2026, 5, 1, 0, 0, 0),
+                        metadata_json={"bucket_credit_state": " AbSoRbEd "},
+                        created_at=datetime(2026, 4, 7, 11, 0, 0),
+                        updated_at=datetime(2026, 4, 7, 11, 0, 0),
+                    ),
+                ]
+            )
+            dao.db.session.commit()
+
+        ledger_page = build_billing_ledger_page(app, "creator-1", page_size=10)
+
+        assert ledger_page.total == 2
+        assert {item.ledger_bid for item in ledger_page.items} == {
+            "ledger-consume",
+            "ledger-grant",
+        }
+
+        with app.app_context():
+            reserved_ledger = CreditLedgerEntry.query.filter_by(
+                ledger_bid="ledger-reserved-renewal"
+            ).one()
+            reserved_ledger.metadata_json = {"bucket_credit_state": "available"}
+            dao.db.session.commit()
+
+        activated_page = build_billing_ledger_page(app, "creator-1", page_size=10)
+
+        assert activated_page.total == 3
+        assert activated_page.items[0].ledger_bid == "ledger-reserved-renewal"
 
     def test_build_billing_ledger_page_uses_draft_course_name_for_non_prod_usage(
         self, billing_test_client

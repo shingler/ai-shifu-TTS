@@ -22,6 +22,7 @@ export const ChatMobileHeader = ({
   navOpen,
   iconPopoverPayload,
   lessonUpdateNoticeVisible = false,
+  courseId,
   chapterId,
   lessonId,
   lessonTitle,
@@ -67,7 +68,13 @@ export const ChatMobileHeader = ({
           />
         </div>
       ) : null}
-      {previewMode ? <PreviewHeaderBanner /> : null}
+      {previewMode ? (
+        <PreviewHeaderBanner
+          courseId={courseId}
+          lessonId={lessonId}
+          className={styles.previewHeaderBanner}
+        />
+      ) : null}
       <div className={styles.headerRow}>
         <button
           type='button'

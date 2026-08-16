@@ -40,6 +40,7 @@ from .consts import (
     BILLING_SUBSCRIPTION_STATUS_LABELS,
     BILLING_SUBSCRIPTION_STATUS_PAUSED,
     BILLING_SUBSCRIPTION_STATUS_PAST_DUE,
+    CREDIT_BUCKET_CATEGORY_TOPUP,
     CREDIT_BUCKET_CATEGORY_LABELS,
     CREDIT_BUCKET_STATUS_LABELS,
     CREDIT_LEDGER_ENTRY_TYPE_LABELS,
@@ -91,6 +92,7 @@ from .primitives import (
     credit_decimal_to_number,
     normalize_bid,
     normalize_json_object,
+    to_decimal,
 )
 from .queries import load_product_code_map
 
@@ -489,28 +491,44 @@ def build_billing_alerts(
 def serialize_wallet_bucket(
     app: Flask,
     row: CreditWalletBucket,
+    *,
+    category_code: int | None = None,
+    credit_asset_kind: str = "unknown",
 ) -> BillingWalletBucketDTO:
+    runtime_category_code = (
+        resolve_wallet_bucket_runtime_category(
+            row,
+            load_order_type=load_billing_order_type_by_bid,
+        )
+        if category_code is None
+        else int(category_code)
+    )
+    current_at = now_utc()
     runtime_status = CREDIT_BUCKET_STATUS_LABELS.get(row.status, "active")
     if (
         runtime_status == "active"
         and row.effective_to is not None
-        and row.effective_to <= now_utc()
+        and row.effective_to <= current_at
+        and not (
+            runtime_category_code == CREDIT_BUCKET_CATEGORY_TOPUP
+            and to_decimal(row.available_credits) > 0
+            and (row.effective_from is None or row.effective_from <= current_at)
+        )
     ):
         runtime_status = "expired"
 
-    category_code = resolve_wallet_bucket_runtime_category(
-        row,
-        load_order_type=load_billing_order_type_by_bid,
-    )
     return BillingWalletBucketDTO(
         wallet_bucket_bid=row.wallet_bucket_bid,
-        category=CREDIT_BUCKET_CATEGORY_LABELS.get(category_code, "subscription"),
+        category=CREDIT_BUCKET_CATEGORY_LABELS.get(
+            runtime_category_code, "subscription"
+        ),
+        credit_asset_kind=str(credit_asset_kind or "unknown"),
         source_type=CREDIT_SOURCE_TYPE_LABELS.get(row.source_type, "manual"),
         source_bid=row.source_bid,
         available_credits=credit_decimal_to_number(row.available_credits),
         effective_from=row.effective_from,
         effective_to=row.effective_to,
-        priority=resolve_credit_bucket_priority(category_code),
+        priority=resolve_credit_bucket_priority(runtime_category_code),
         status=runtime_status,
     )
 
@@ -520,6 +538,7 @@ def serialize_ledger_entry(
     row: CreditLedgerEntry,
     *,
     metadata: Any | None = None,
+    credit_asset_kind: str = "unknown",
 ) -> BillingLedgerItemDTO:
     return BillingLedgerItemDTO(
         ledger_bid=row.ledger_bid,
@@ -527,6 +546,7 @@ def serialize_ledger_entry(
         entry_type=CREDIT_LEDGER_ENTRY_TYPE_LABELS.get(row.entry_type, "grant"),
         source_type=CREDIT_SOURCE_TYPE_LABELS.get(row.source_type, "manual"),
         source_bid=row.source_bid,
+        credit_asset_kind=str(credit_asset_kind or "unknown"),
         idempotency_key=row.idempotency_key,
         amount=credit_decimal_to_number(row.amount),
         balance_after=credit_decimal_to_number(row.balance_after),

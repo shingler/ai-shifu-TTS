@@ -93,6 +93,7 @@
           "createdAt": "Consumed At",
           "credits": "Credits",
           "inputTokens": "Input Tokens",
+          "model": "Model",
           "outputSummary": "Output Summary",
           "outputTokens": "Output Tokens",
           "ttsContent": "Synthesized Content",
@@ -109,13 +110,13 @@
         "scene": "Usage type",
         "sceneAll": "All",
         "time": "Time",
-        "timePlaceholder": "Select time range",
+        "timePlaceholder": "Start time ~ End time",
         "userKeyword": "User",
-        "userKeywordPlaceholderEmail": "Enter email or nickname",
-        "userKeywordPlaceholderPhone": "Enter phone or nickname"
+        "userKeywordPlaceholderEmail": "Email / Nickname",
+        "userKeywordPlaceholderPhone": "Mobile / Nickname"
       },
       "modelSummary": {
-        "multiple": "{model} and {count} models"
+        "variants": "{count} variants"
       },
       "modes": {
         "ask": "Follow-up",
@@ -145,6 +146,18 @@
       "title": "Credit Usage"
     },
     "creditUsageTab": "Credit Usage",
+    "estimatedCreditCost": {
+      "classroom": "Classroom",
+      "creditUnit": "credits",
+      "description": "Estimated from current content, models, and multipliers. Reset, Ask, and regeneration are excluded; actual usage follows credit details.",
+      "disabled": "Disabled",
+      "listen": "Listen",
+      "llm": "LLM",
+      "read": "Read",
+      "title": "Estimated Full-course Cost",
+      "tts": "TTS",
+      "unknownModel": "Unknown model"
+    },
     "fields": {
       "courseId": "Course ID",
       "courseName": "Course Name",
@@ -184,10 +197,10 @@
       "emptyValue": "--",
       "filters": {
         "chapterKeyword": "Chapter / Lesson Search",
-        "chapterKeywordPlaceholder": "Enter chapter / lesson title",
+        "chapterKeywordPlaceholder": "Chapter / lesson title",
         "followUpTime": "Follow-up Time",
         "lessonKeyword": "Lesson Search",
-        "lessonKeywordPlaceholder": "Enter lesson title",
+        "lessonKeywordPlaceholder": "Lesson title",
         "reset": "Reset",
         "resultCount": "{count, plural, one {# result} other {# results}}",
         "search": "Search",
@@ -195,7 +208,7 @@
         "sourceStatusAll": "All Statuses",
         "sourceStatusMissing": "Original Output Missing",
         "sourceStatusResolved": "Original Output Located",
-        "timePlaceholder": "Follow-up Start / End Time",
+        "timePlaceholder": "Start time ~ End time",
         "userKeyword": "User Search",
         "userKeywordPlaceholder": "Phone / Email / Nickname",
         "userKeywordPlaceholderEmail": "Email / Nickname",
@@ -270,7 +283,7 @@
         "sortBy": "Sort",
         "sortByLatest": "Latest First",
         "sortByLowScore": "Lowest Rating First",
-        "timePlaceholder": "Rating Start / End Time",
+        "timePlaceholder": "Start time ~ End time",
         "userKeyword": "User Search",
         "userKeywordPlaceholderEmail": "Email / Nickname",
         "userKeywordPlaceholderPhone": "Phone / Nickname"
@@ -323,9 +336,9 @@
       "paymentStatus": "Payment",
       "paymentUnpaid": "Unpaid",
       "userKeyword": "User Search",
-      "userKeywordPlaceholder": "Search by phone, email, or nickname",
-      "userKeywordPlaceholderEmail": "Search by email or nickname",
-      "userKeywordPlaceholderPhone": "Search by phone or nickname",
+      "userKeywordPlaceholder": "Mobile / Email / Nickname",
+      "userKeywordPlaceholderEmail": "Email / Nickname",
+      "userKeywordPlaceholderPhone": "Mobile / Nickname",
       "userRole": "User Role"
     },
     "usersTable": {
@@ -355,10 +368,12 @@
   "filters": {
     "courseId": "Course ID",
     "courseName": "Course Name",
+    "courseQuery": "Course",
+    "courseQueryPlaceholder": "Course ID / Course name",
     "createdAt": "Created At",
     "creator": "Creator",
-    "creatorEmailOrUserBid": "Email or user ID",
-    "creatorMobileOrUserBid": "Mobile or user ID",
+    "creatorEmailOrUserBid": "Creator email",
+    "creatorMobileOrUserBid": "Creator mobile",
     "endTime": "End Date",
     "startTime": "Start Date",
     "status": "Status"

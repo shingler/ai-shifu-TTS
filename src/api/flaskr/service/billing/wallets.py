@@ -1217,12 +1217,13 @@ def repair_renewal_state_drift(
         manual_review_creator_bids: list[str] = []
         candidate_orders_by_creator: dict[str, list[BillingOrder]] = {}
 
-        # Local import avoids a circular dependency with subscriptions.py.
-        from .subscriptions import (
+        from .reserved_renewal_activation import (
             IncompleteReservedGrantActivationError,
-            grant_paid_order_credits,
             validate_reserved_renewal_cycle_activation,
         )
+
+        # Local import avoids a circular dependency with subscriptions.py.
+        from .subscriptions import grant_paid_order_credits
 
         for target_creator_bid in creator_bids:
             candidate_order_bids = sorted(
@@ -2196,6 +2197,8 @@ def restore_wrongly_expired_credit_pack_buckets(
             status=(
                 "dry_run"
                 if dry_run
+                else "partial_repaired"
+                if repaired_count and manual_review_count
                 else "repaired"
                 if repaired_count
                 else "manual_review"
