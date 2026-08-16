@@ -11,10 +11,12 @@ systemd 219、Apache :80 → Nginx :88、systemd 托管）为主，多数坑在�
 | service 起不来，`status=217/USER` | `User=` 用户不存在 | [1](#1-217user--用户不存在) |
 | gunicorn `status=1`，日志有 `PermissionError: /tmp/unified_migration.log` | `/tmp` 日志文件属主是 root | [2](#2-permissionerror--tmpunified_migrationlog) |
 | 前端 `status=1`，日志提示 Node 版本不满足 Next.js 要求 | `ExecStart` 指到了系统老版本 Node | [3](#3-node-版本不满足-nextjs-要求) |
-| `status=203/EXEC`，路径明明存在 | 可执行文件在 `/root` 下，运行用户进不去 | [4](#4-203exec--文件在-root-的-nvm-里) |
+| `status=203/EXEC`，路径明明存在 | 路径不存在 / shebang 解释器悬空（venv 拷贝来的）/ 运行用户进不去文件路径 | [4](#4-203exec--可执行文件起不来) |
+| `status=200/CHDIR`，Changing to the requested working directory failed | 运行用户无法穿透 `WorkingDirectory` 上层目录 | [9](#9-200chdir--进不了工作目录) |
 | `Error: listen EADDRINUSE` | 端口被其他项目 / pm2 旧进程占用 | [5](#5-eaddrinuse--端口被占) |
 | `npx next build` 段错误（segfault） | glibc 2.17 上 webpack 跑不了 | [6](#6-webpack-构建-segfault) |
 | `next start` 报与 `output: standalone` 不兼容 | 构建时没注释 standalone | [7](#7-next-start-与-standalone-冲突) |
+| 反复 `ModuleNotFoundError` | `uv pip sync` 卸载了 requirements 之外的依赖 | [10](#10-反复-modulenotfounderror--pip-sync-的删除语义) |
 | 改了 service / nginx 配置不生效 | 忘了 `daemon-reload` / `reload` | [8](#8-改了配置不生效) |
 
 ---
@@ -93,15 +95,33 @@ nvm 只在登录 shell 生效，systemd 只认 `ExecStart` 里的绝对路径。
 **修复**：`ExecStart` 指向与构建时**相同大版本**的 npm（结合下面第 4 条的
 `/usr/local/bin` 软链最省事）。
 
-## 4. `203/EXEC` — 文件在 root 的 nvm 里
+## 4. `203/EXEC` — 可执行文件起不来
 
-**症状**：`status=203/EXEC`，`ExecStart` 的路径明明存在。
+**症状**：`status=203/EXEC`。
 
-**原因**：Node 装在 `/root/.nvm/versions/node/v20.x.x/` 下，而 `/root`
-目录权限是 700——service 以普通用户运行时**进不去** `/root`，连二进制都
-无法执行。root 登录时一切正常，极具迷惑性。
+**含义**：内核无法执行 `ExecStart` 指向的文件。不只是"没权限"，常见原因
+按概率排：
 
-**修复**：把 Node 挪到公共位置（nvm 的版本目录自包含，整拷即可）：
+1. **路径不存在**——`ExecStart` 写的是模板默认值，机器上实际不是这个
+   （如 venv 叫 `venv311` 而不是 `.venv`）；
+2. **shebang 解释器悬空**——脚本文件本身在，但第一行指向的解释器不存在。
+   典型：venv 是从别的机器拷来的 / 创建时用的 Python 后来被删，`.venv/bin/python*`
+   成为断链。**venv 不可跨机器迁移**，唯一正解是在本机重建；
+3. **运行用户进不去文件所在路径**——如 Node 装在 `/root/.nvm/...` 下而
+   `/root` 是 700，普通用户的服务无法执行（root 登录时一切正常，极具迷惑性）；
+4. 文件缺可执行位（少见）。
+
+**诊断**：
+
+```bash
+ls -l <ExecStart 路径>            # 文件在不在、有没有 x 位
+head -1 <ExecStart 路径>          # shebang 指向谁
+ls -l <解释器路径>                # 是否悬空链接
+sudo -u <运行用户> <ExecStart 路径> --version   # 直接执行一次，错误会直说
+```
+
+**修复实例（root 的 nvm）**：把 Node 挪到公共位置（nvm 的版本目录自包含，
+整拷即可）：
 
 ```bash
 sudo cp -a /root/.nvm/versions/node/v20.18.3 /opt/node-v20.18.3
@@ -117,13 +137,35 @@ sudo -u xingle /usr/local/bin/node -v   # v20.18.3
 之后 service 用 `ExecStart=/usr/local/bin/npm start`；构建也统一用这套，
 保证构建与运行时是同一个 Node。
 
-若坚持在 service 里写 nvm 完整路径，必须同时给 PATH（npm 的 shebang 是
-`env node`）：
+**修复实例（venv 悬空/名字对不上）**：在本机重建 venv，service 指向真实路径：
 
-```ini
-Environment=PATH=/opt/node-v20.18.3/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/opt/node-v20.18.3/bin/npm start
+```bash
+cd <项目>/src/api
+uv venv .venv && uv pip install -r requirements.txt
 ```
+
+**同族变体（工具按用户安装）**：uv / nvm 这类工具默认装进**某个用户的家目录**
+（`~/.local/bin`、`~/.nvm`）。切用户执行时会遇到两层障碍：`sudo -u` 重置了
+PATH 找不到命令（command not found）；装在 `/root` 名下时其他用户根本无权执行
+（`/root` 是 700）。修法：工具二进制挪到系统路径，所有用户共用：
+
+```bash
+cp <uv 实际路径> /usr/local/bin/uv   # uv 是单个静态二进制，直接拷即可
+# 注意 sudo 的 secure_path 不含 /usr/local/bin，跨用户调用要写全路径：
+sudo -u <运行用户> /usr/local/bin/uv venv .venv --python /usr/bin/python3.11
+```
+
+**uv 安装的 Python 同理**：`uv python install` 落在执行用户的
+`~/.local/share/uv/python/`。root 装的在其他用户名下不可执行（`/root` 700），
+203 复发。要用 uv 装，必须以运行用户身份：
+
+```bash
+sudo -u <运行用户> /usr/local/bin/uv python install 3.11
+sudo -u <运行用户> /usr/local/bin/uv venv .venv --python 3.11
+```
+
+更稳的是系统包：`dnf install python3.11`，venv 指 `/usr/bin/python3.11`，
+不依赖任何用户目录，也不怕 `uv cache clean`。
 
 ## 5. `EADDRINUSE` — 端口被占
 
@@ -188,6 +230,61 @@ npx next build --turbopack
 
 `daemon-reload` 漏掉最常见：systemd 读的是它自己缓存的 unit 定义，直接
 `restart` 用的还是旧配置。
+
+## 9. `200/CHDIR` — 进不了工作目录
+
+**症状**：`status=200/CHDIR`，日志显示：
+
+```
+Changing to the requested working directory failed: Permission denied
+Failed at step CHDIR spawning <ExecStart 路径>
+```
+
+**原因**：systemd 启动进程前要先 `cd` 到 `WorkingDirectory`。运行用户在路径的
+**某一级上层目录**上没有执行（穿透）权限。典型情形：
+
+- service `User=` 不是检出代码的用户（如 `www-data`），而 `/home/<用户>`
+  是默认的 700/750，别人进不去；
+- 项目某层目录属主是 root（用 root 克隆 / 构建过），运行用户穿不过去。
+
+与第 4 条 `203/EXEC` 同源：**路径权限对运行用户不透明**，只是这次卡在
+chdir 阶段，还没轮到执行二进制。
+
+**诊断**：
+
+```bash
+grep -E '^(User|Group|WorkingDirectory)' /etc/systemd/system/ai-shifu-api.service
+namei -l /home/<用户>/ai-shifu-TTS/src/api   # 逐级列出每层权限/属主，哪层挡住一目了然
+```
+
+**修复**（按 namei 指出的那层对症）：
+
+```bash
+# 情况 A：home 挡住了其他运行用户 → 放开穿透权限（不需要放开读写）
+sudo chmod 755 /home/<用户>
+# 或更彻底：service 改 User=<检出代码的用户>，不动 home 权限
+
+# 情况 B：项目目录本身属主不对（曾被 root 接管）→ 交还给运行用户
+sudo chown -R <用户>:<用户> /home/<用户>/ai-shifu-TTS
+```
+
+## 10. 反复 `ModuleNotFoundError` — pip sync 的删除语义
+
+**症状**：装完依赖启动仍缺模块，补一个又冒一个
+（`importlib_metadata`、`opentelemetry.exporter.otlp.proto.common` 等）。
+
+**原因**：`uv pip sync` 让环境**严格等于** requirements.txt——不在文件里的包
+一律**卸载**。本仓库 requirements.txt 落后于代码（fork 历史冻结 + 上游新增依赖），
+sync 会把代码实际需要的传递依赖清掉。
+
+**修复**：改用只加不减的安装方式：
+
+```bash
+sudo -u <运行用户> /usr/local/bin/uv pip install -r requirements.txt
+# 手动补缺的包也用 install，下次 sync 前不会再被删
+```
+
+**预防**：requirements.txt 与代码同步落后时，一律 `install -r`，不用 `sync`。
 
 ## 通用教训
 

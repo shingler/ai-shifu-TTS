@@ -120,7 +120,7 @@ cd src/api
 
 # 安装 Python 依赖
 uv venv .venv
-uv pip sync requirements.txt
+uv pip install -r requirements.txt   # 不要用 pip sync：requirements 不全时 sync 会删掉实际需要的包
 
 # 数据库迁移
 export FLASK_APP=app.py
@@ -407,7 +407,7 @@ cd /home/ai-shifu-TTS   # Mac: /Users/benben/ai-shifu-TTS
 git pull
 
 # 后端
-cd src/api && uv pip sync requirements.txt && cd ../..
+cd src/api && uv pip install -r requirements.txt && cd ../..
 
 # 前端
 cd src/cook-web && npm install && npm run build && cp -r .next/static .next/standalone/.next/static && cd ../..
@@ -470,8 +470,8 @@ sudo ln -s "$(which node)" /usr/local/bin/node
 
   # 只把需要写的目录交给它；代码目录保持原属主（否则你自己 git pull 会失败），
   # 默认 755/644 权限下 ai-shifu 已可读
-  sudo chown -R ai-shifu:ai-shifu /home/xingle/ai-shifu-TTS/storage \
-      /home/xingle/ai-shifu-TTS/logs
+  sudo chown -R ai-shifu:ai-shifu /home/xingle/ai-shifu-TTS/src/api/storage \
+      /home/xingle/ai-shifu-TTS/src/api/logs
   # 确保它所在路径可穿透（CentOS 的 home 默认 700，其他用户进不去）
   sudo chmod 755 /home/xingle
   # 之后 service 文件里写 User=ai-shifu / Group=ai-shifu
