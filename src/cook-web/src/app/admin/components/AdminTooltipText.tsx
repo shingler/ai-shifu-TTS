@@ -1,7 +1,7 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Tooltip,
   TooltipContent,
@@ -13,15 +13,41 @@ type AdminTooltipTextProps = {
   text?: string | null;
   displayText?: ReactNode;
   className?: string;
+  tooltipContentClassName?: string;
   emptyValue: string;
   alwaysShowTooltip?: boolean;
   forceTooltip?: boolean;
+};
+
+const CLIPPING_OVERFLOW_VALUES = new Set(['auto', 'clip', 'hidden', 'scroll']);
+
+const clipsOverflow = (element: HTMLElement) => {
+  const style = window.getComputedStyle(element);
+  return [style.overflow, style.overflowX, style.overflowY].some(value =>
+    CLIPPING_OVERFLOW_VALUES.has(value),
+  );
+};
+
+const elementExtendsBeyondCell = (
+  element: HTMLElement,
+  tableCell: HTMLElement,
+) => {
+  const elementRect = element.getBoundingClientRect();
+  const cellRect = tableCell.getBoundingClientRect();
+
+  return (
+    elementRect.left < cellRect.left ||
+    elementRect.right > cellRect.right ||
+    elementRect.top < cellRect.top ||
+    elementRect.bottom > cellRect.bottom
+  );
 };
 
 export default function AdminTooltipText({
   text,
   displayText,
   className,
+  tooltipContentClassName,
   emptyValue,
   alwaysShowTooltip = false,
   forceTooltip = false,
@@ -31,19 +57,32 @@ export default function AdminTooltipText({
   const trimmedText = text?.trim() ?? '';
   const value = trimmedText.length > 0 ? trimmedText : emptyValue;
 
-  useEffect(() => {
+  const updateOverflowState = useCallback(() => {
     const element = triggerRef.current;
     if (!element) {
       setIsOverflowing(false);
       return;
     }
 
-    const updateOverflowState = () => {
-      setIsOverflowing(
-        element.scrollWidth > element.clientWidth ||
-          element.scrollHeight > element.clientHeight,
-      );
-    };
+    const tableCell = element.closest('td,th') as HTMLElement | null;
+    const isClippedByOwnBounds =
+      element.scrollWidth > element.clientWidth ||
+      element.scrollHeight > element.clientHeight;
+    const isClippedByTableCell =
+      tableCell && tableCell !== element
+        ? clipsOverflow(tableCell) &&
+          elementExtendsBeyondCell(element, tableCell)
+        : false;
+
+    setIsOverflowing(Boolean(isClippedByOwnBounds || isClippedByTableCell));
+  }, []);
+
+  useEffect(() => {
+    const element = triggerRef.current;
+    if (!element) {
+      setIsOverflowing(false);
+      return;
+    }
 
     updateOverflowState();
 
@@ -53,6 +92,10 @@ export default function AdminTooltipText({
         updateOverflowState();
       });
       resizeObserver.observe(element);
+      const tableCell = element.closest('td,th');
+      if (tableCell && tableCell !== element) {
+        resizeObserver.observe(tableCell);
+      }
     }
 
     let mutationObserver: MutationObserver | null = null;
@@ -73,7 +116,7 @@ export default function AdminTooltipText({
       mutationObserver?.disconnect();
       window.removeEventListener('resize', updateOverflowState);
     };
-  }, [value]);
+  }, [updateOverflowState, value]);
 
   const content = (
     <span
@@ -98,7 +141,12 @@ export default function AdminTooltipText({
   return (
     <Tooltip>
       <TooltipTrigger asChild>{content}</TooltipTrigger>
-      <TooltipContent side='top'>{value}</TooltipContent>
+      <TooltipContent
+        side='top'
+        className={tooltipContentClassName}
+      >
+        {value}
+      </TooltipContent>
     </Tooltip>
   );
 }

@@ -80,7 +80,13 @@ jest.mock('react-i18next', () => ({
     const cacheKey = ns || 'translation';
     if (!mockTranslationCache.has(cacheKey)) {
       mockTranslationCache.set(cacheKey, {
-        t: (key: string) => (ns && ns !== 'translation' ? `${ns}.${key}` : key),
+        t: (key: string) => {
+          const translatedKey =
+            ns && ns !== 'translation' ? `${ns}.${key}` : key;
+          return translatedKey === 'module.user.defaultUserName'
+            ? 'Anonymous User'
+            : translatedKey;
+        },
       });
     }
     return {
@@ -110,13 +116,16 @@ jest.mock('@/app/admin/components/AdminDateRangeFilter', () => ({
   __esModule: true,
   default: ({
     placeholder,
+    triggerAriaLabel,
     onChange,
   }: {
     placeholder: string;
+    triggerAriaLabel?: string;
     onChange: (range: { start: string; end: string }) => void;
   }) => (
     <button
       type='button'
+      aria-label={triggerAriaLabel || placeholder}
       onClick={() => onChange({ start: '2026-04-05', end: '2026-04-06' })}
     >
       {placeholder}
@@ -264,6 +273,16 @@ describe('AdminOperationCourseRatingsPage', () => {
     });
 
     expect(screen.getByText('Very helpful lesson')).toBeInTheDocument();
+    expect(
+      screen.getByRole('columnheader', {
+        name: 'module.operationsCourse.detail.ratings.table.lesson',
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('columnheader', {
+        name: 'module.operationsCourse.detail.ratings.table.chapter',
+      }),
+    ).not.toBeInTheDocument();
     expect(screen.getAllByText('13900001235').length).toBeGreaterThan(0);
     expect(
       screen.getAllByText('module.operationsCourse.detail.ratings.scoreValue')
@@ -280,6 +299,25 @@ describe('AdminOperationCourseRatingsPage', () => {
         name: 'module.operationsCourse.detail.title',
       }),
     ).toHaveAttribute('href', '/admin/operations/course-1');
+  });
+
+  test('uses the shared anonymous user label for an empty nickname', async () => {
+    const ratings = await mockGetAdminOperationCourseRatings();
+    mockGetAdminOperationCourseRatings.mockClear();
+    mockGetAdminOperationCourseRatings.mockResolvedValueOnce({
+      ...ratings,
+      items: ratings.items.map(
+        (item: { lesson_feedback_bid: string; nickname: string }) =>
+          item.lesson_feedback_bid === 'feedback-2'
+            ? { ...item, nickname: '   ' }
+            : item,
+      ),
+    });
+
+    render(<AdminOperationCourseRatingsPage />);
+
+    await screen.findByText('Very helpful lesson');
+    expect(screen.getByText('Anonymous User')).toBeInTheDocument();
   });
 
   test('converts rating timestamps to the browser timezone', async () => {
@@ -578,9 +616,15 @@ describe('AdminOperationCourseRatingsPage', () => {
         target: { value: 'Chapter 1' },
       },
     );
+    expect(
+      screen.queryByRole('button', {
+        name: 'module.operationsCourse.detail.ratings.filters.ratingTime',
+      }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'common.core.expand' }));
     fireEvent.click(
       screen.getByRole('button', {
-        name: 'module.operationsCourse.detail.ratings.filters.timePlaceholder',
+        name: 'module.operationsCourse.detail.ratings.filters.ratingTime',
       }),
     );
     fireEvent.click(
@@ -686,7 +730,35 @@ describe('AdminOperationCourseRatingsPage', () => {
         'module.operationsCourse.detail.ratings.table.guestUser',
       ),
     ).toBeInTheDocument();
+    expect(screen.queryByText('Anonymous User')).not.toBeInTheDocument();
     expect(screen.queryByText('--')).not.toBeInTheDocument();
+  });
+
+  test('preserves a real nickname when the rating user has no contact info', async () => {
+    const ratings = await mockGetAdminOperationCourseRatings();
+    mockGetAdminOperationCourseRatings.mockClear();
+    mockGetAdminOperationCourseRatings.mockResolvedValueOnce({
+      ...ratings,
+      items: [
+        {
+          ...ratings.items[0],
+          mobile: '',
+          email: '',
+          nickname: 'Nickname Only',
+        },
+      ],
+      total: 1,
+    });
+
+    render(<AdminOperationCourseRatingsPage />);
+
+    await screen.findByText('Very helpful lesson');
+    expect(
+      screen.getByText(
+        'module.operationsCourse.detail.ratings.table.guestUser',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Nickname Only')).toBeInTheDocument();
   });
 
   test('does not show guest label when alternate contact exists', async () => {

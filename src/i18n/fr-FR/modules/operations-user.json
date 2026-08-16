@@ -42,7 +42,7 @@
     },
     "creditLedgerFilters": {
       "course": "Cours",
-      "coursePlaceholder": "Saisir ID/nom",
+      "coursePlaceholder": "ID du cours / Nom du cours",
       "grantSource": "Source d’attribution",
       "grantSourceOptions": {
         "all": "Tout",
@@ -52,7 +52,7 @@
         "trial_subscription": "Crédits d’essai"
       },
       "time": "Période",
-      "timePlaceholder": "Sélectionner la période",
+      "timePlaceholder": "Heure de début ~ Heure de fin",
       "type": "Type",
       "typeOptions": {
         "all": "Tout",
@@ -192,7 +192,11 @@
     "mobile": "Mobile",
     "nickname": "Pseudonyme",
     "role": "Rôle",
-    "status": "Statut"
+    "status": "Statut",
+    "user": "Utilisateur",
+    "userPlaceholderEmail": "E-mail / Pseudonyme",
+    "userPlaceholderPhone": "Mobile / Pseudonyme",
+    "userPlaceholderPhoneEmail": "Mobile / E-mail / Pseudonyme"
   },
   "grantDialog": {
     "bootstrapError": "Impossible de charger la liste des forfaits. Veuillez réessayer plus tard.",

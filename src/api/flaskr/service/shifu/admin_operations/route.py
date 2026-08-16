@@ -96,6 +96,7 @@ from flaskr.service.shifu.admin_operations.users import (
 from flaskr.service.shifu.admin_operations.voice_clones import (
     OPERATOR_VOICE_CLONE_BILLING_STATUSES,
     OPERATOR_VOICE_CLONE_LIST_MAX_PAGE_SIZE,
+    OPERATOR_VOICE_CLONE_PROVIDERS,
     OPERATOR_VOICE_CLONE_STATUSES,
     list_operator_voice_clones,
     register_operator_voice_clone,
@@ -326,12 +327,18 @@ def register_admin_operations_routes(
               type: integer
               required: false
               description: Page size, defaults to 20 when omitted
+            - name: course_query
+              type: string
+              required: false
+              description: Matches course ID exactly or course name fuzzily
             - name: shifu_bid
               type: string
               required: false
+              description: Deprecated exact course ID filter
             - name: course_name
               type: string
               required: false
+              description: Deprecated fuzzy course name filter
             - name: creator_keyword
               type: string
               required: false
@@ -387,6 +394,7 @@ def register_admin_operations_routes(
         )
 
         filters = {
+            "course_query": _normalize_query_text(request.args.get("course_query")),
             "shifu_bid": _normalize_query_text(request.args.get("shifu_bid")),
             "course_name": _normalize_query_text(request.args.get("course_name")),
             "course_status": _normalize_query_text(request.args.get("course_status")),
@@ -470,10 +478,14 @@ def register_admin_operations_routes(
             - name: user_bid
               type: string
               required: false
+            - name: user_query
+              type: string
+              required: false
+              description: Matches user phone, email, identify, user_bid, or nickname
             - name: identifier
               type: string
               required: false
-              description: User phone, email, identify, or user_bid keyword
+              description: Deprecated user phone, email, identify, or user_bid keyword
             - name: mobile
               type: string
               required: false
@@ -529,6 +541,7 @@ def register_admin_operations_routes(
 
         filters = {
             "user_bid": _normalize_query_text(request.args.get("user_bid")),
+            "user_query": _normalize_query_text(request.args.get("user_query")),
             "identifier": _normalize_query_text(request.args.get("identifier")),
             "mobile": _normalize_query_text(request.args.get("mobile")),
             "nickname": _normalize_query_text(request.args.get("nickname")),
@@ -625,12 +638,16 @@ def register_admin_operations_routes(
             - name: voice_keyword
               type: string
               required: false
+            - name: provider
+              type: string
+              required: false
+              description: minimax or volcengine
             - name: minimax_status_code
               type: integer
               required: false
         responses:
             200:
-                description: List operator-visible MiniMax cloned voice jobs
+                description: List operator-visible cloned voice jobs
         """
         _require_operator()
         page_index = _parse_positive_query_int(
@@ -683,6 +700,11 @@ def register_admin_operations_routes(
             "user_keyword": _normalize_query_text(request.args.get("user_keyword")),
             "course_keyword": _normalize_query_text(request.args.get("course_keyword")),
             "voice_keyword": _normalize_query_text(request.args.get("voice_keyword")),
+            "provider": _parse_choice_query_param(
+                request.args.get("provider"),
+                field_name="provider",
+                allowed_values=OPERATOR_VOICE_CLONE_PROVIDERS,
+            ),
             "minimax_status_code": minimax_status_code,
         }
         _validate_datetime_range(
@@ -702,7 +724,7 @@ def register_admin_operations_routes(
     @app.route(path_prefix + "/admin/operations/voice-clones", methods=["POST"])
     def admin_operations_register_voice_clone():
         """
-        Register a MiniMax voice cloned on the console and assign it to a teacher
+        Register a voice cloned on a provider console and assign it to a teacher
         ---
         tags:
             - TTS
@@ -719,9 +741,12 @@ def register_admin_operations_routes(
                         type: string
                     voice_id:
                         type: string
+                    provider:
+                        type: string
+                        description: minimax (default) or volcengine
         responses:
             200:
-                description: The registered MiniMax cloned voice record
+                description: The registered cloned voice record
         """
         _require_operator()
         payload = request.get_json(silent=True) or {}
@@ -734,6 +759,7 @@ def register_admin_operations_routes(
                 owner_user_bid=str(payload.get("owner_user_bid") or ""),
                 display_name=str(payload.get("display_name") or ""),
                 voice_id=str(payload.get("voice_id") or ""),
+                provider=str(payload.get("provider") or ""),
             )
         )
 
@@ -758,12 +784,18 @@ def register_admin_operations_routes(
             - name: order_bid
               type: string
               required: false
+            - name: course_query
+              type: string
+              required: false
+              description: Matches exact course ID or fuzzy course name
             - name: shifu_bid
               type: string
               required: false
+              description: Deprecated exact course ID filter
             - name: course_name
               type: string
               required: false
+              description: Deprecated fuzzy course name filter
             - name: status
               type: string
               required: false
@@ -802,6 +834,7 @@ def register_admin_operations_routes(
         filters = {
             "user_keyword": _normalize_query_text(request.args.get("user_keyword")),
             "order_bid": _normalize_query_text(request.args.get("order_bid")),
+            "course_query": _normalize_query_text(request.args.get("course_query")),
             "shifu_bid": _normalize_query_text(request.args.get("shifu_bid")),
             "course_name": _normalize_query_text(request.args.get("course_name")),
             "status": _parse_digit_query_param(

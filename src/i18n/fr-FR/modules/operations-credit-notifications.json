@@ -79,8 +79,8 @@
       "windows": "Délais de rappel d’expiration"
     },
     "inputPlaceholders": {
-      "blockedCreatorsEmail": "Saisir des e-mails ou ID de créateur, séparés par des virgules",
-      "blockedCreatorsPhone": "Saisir des numéros mobiles ou ID de créateur, séparés par des virgules"
+      "blockedCreatorsEmail": "E-mails enseignants ou ID enseignants, séparés par des virgules",
+      "blockedCreatorsPhone": "Mobiles enseignants ou ID enseignants, séparés par des virgules"
     },
     "invalidConfig": "Impossible d’enregistrer la configuration. Vérifiez les valeurs du formulaire.",
     "listDialog": {
@@ -91,15 +91,14 @@
       "blockedSummary": "{count} enseignants bloqués",
       "delete": "Supprimer",
       "duplicateBlockedCreators": "La saisie existe déjà dans la liste de blocage.",
-      "emptyNickname": "Aucun pseudo",
       "emptyPreview": "Aucun détail",
       "emptyResult": "Aucun résultat.",
       "invalidBlockedCreators": "Contenu non reconnu : {values}",
       "manage": "Gérer",
       "optedOutDescription": "Les enseignants désinscrits sont en lecture seule. Recherchez par contact ou pseudo.",
       "optedOutSummary": "{count} enseignants désinscrits",
-      "searchPlaceholderEmail": "Rechercher e-mail ou pseudo",
-      "searchPlaceholderPhone": "Rechercher mobile ou pseudo",
+      "searchPlaceholderEmail": "E-mail / Pseudonyme",
+      "searchPlaceholderPhone": "Mobile / Pseudonyme",
       "view": "Voir"
     },
     "loadFailed": "Impossible de charger la stratégie de notification. Actualisez puis réessayez.",
@@ -305,7 +304,9 @@
     "createdTime": "Date de création",
     "creator": "Créateur",
     "creatorBid": "ID de créateur",
-    "creatorPlaceholder": "E-mail / pseudonyme",
+    "creatorPlaceholder": "Mobile / Pseudonyme",
+    "creatorPlaceholderEmail": "E-mail / Pseudonyme",
+    "creatorPlaceholderPhone": "Mobile / Pseudonyme",
     "mobile": "Mobile",
     "notificationType": "Type de notification",
     "skipReason": "Raison de non-envoi",

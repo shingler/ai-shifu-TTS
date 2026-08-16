@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from flaskr.util.datetime import now_utc
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -191,7 +192,7 @@ def _build_active_window(
     start_days_ago: int = 14,
     end_days_ahead: int = 30,
 ) -> tuple[datetime, datetime]:
-    now = datetime.now().replace(microsecond=0)
+    now = now_utc().replace(microsecond=0)
     return now - timedelta(days=start_days_ago), now + timedelta(days=end_days_ahead)
 
 
@@ -814,6 +815,50 @@ def test_list_operator_users_filters_by_email_identifier(app):
     assert result.data[0].registration_source == "email"
     assert result.data[0].learning_courses == []
     assert result.data[0].created_courses == []
+
+
+def test_list_operator_users_filters_by_combined_user_query(app):
+    with app.app_context():
+        _seed_user(
+            app,
+            user_bid="user-query-email",
+            identify="query@example.com",
+            nickname="Email Query",
+            state=USER_STATE_REGISTERED,
+            created_at=datetime(2026, 4, 6, 9, 0, 0),
+            updated_at=datetime(2026, 4, 6, 10, 0, 0),
+            providers=[("email", "query@example.com")],
+        )
+        _seed_user(
+            app,
+            user_bid="user-query-nickname",
+            identify="13900005555",
+            nickname="Nickname Query",
+            state=USER_STATE_REGISTERED,
+            created_at=datetime(2026, 4, 7, 9, 0, 0),
+            updated_at=datetime(2026, 4, 7, 10, 0, 0),
+            providers=[("phone", "13900005555")],
+        )
+
+        email_result = list_operator_users(
+            app,
+            1,
+            20,
+            {
+                "user_query": "query@example.com",
+            },
+        )
+        nickname_result = list_operator_users(
+            app,
+            1,
+            20,
+            {
+                "user_query": "Nickname",
+            },
+        )
+
+    assert [item.user_bid for item in email_result.data] == ["user-query-email"]
+    assert [item.user_bid for item in nickname_result.data] == ["user-query-nickname"]
 
 
 def test_list_operator_users_returns_overview_summary_and_applies_quick_filters(
@@ -2571,9 +2616,7 @@ def test_get_operator_user_credits_excludes_topup_from_available_without_subscri
     app,
 ):
     with app.app_context():
-        manual_grant_expires_at = datetime.now().replace(microsecond=0) + timedelta(
-            days=3
-        )
+        manual_grant_expires_at = now_utc().replace(microsecond=0) + timedelta(days=3)
         active_start_at = manual_grant_expires_at - timedelta(days=10)
         _seed_user(
             app,
@@ -3494,8 +3537,8 @@ def test_grant_operator_user_package_upgrades_active_pingxx_subscription(app):
             subscription_bid="sub-package-grant-pingxx-upgrade",
             product_bid="bill-product-plan-monthly",
             billing_provider="pingxx",
-            current_period_start_at=datetime.now() - timedelta(days=1),
-            current_period_end_at=datetime.now() + timedelta(days=29),
+            current_period_start_at=now_utc() - timedelta(days=1),
+            current_period_end_at=now_utc() + timedelta(days=29),
         )
 
         result = grant_operator_user_package(
@@ -3563,8 +3606,8 @@ def test_grant_operator_user_package_rejects_active_stripe_subscription(app):
             billing_provider="stripe",
             provider_subscription_id="sub_provider_package_grant_stripe_conflict",
             provider_customer_id="cus_package_grant_stripe_conflict",
-            current_period_start_at=datetime.now() - timedelta(days=1),
-            current_period_end_at=datetime.now() + timedelta(days=29),
+            current_period_start_at=now_utc() - timedelta(days=1),
+            current_period_end_at=now_utc() + timedelta(days=29),
         )
 
         with pytest.raises(AppException) as exc_info:
@@ -3988,7 +4031,7 @@ def test_admin_operation_users_route_returns_filtered_payload(
         query_string={
             "page_index": 1,
             "page_size": 20,
-            "nickname": "Route",
+            "user_query": "Route",
             "user_status": "unregistered",
         },
         headers={"Token": "test-token"},

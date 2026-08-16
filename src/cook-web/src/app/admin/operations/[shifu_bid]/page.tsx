@@ -39,6 +39,7 @@ import CourseChaptersTab, {
 import CourseBasicInfoCard from './CourseBasicInfoCard';
 import CourseDetailHeader from './CourseDetailHeader';
 import CourseCreditUsageTab from './CourseCreditUsageTab';
+import CourseEstimatedCreditCostCard from './CourseEstimatedCreditCostCard';
 import CourseMetricsCardGrid from './CourseMetricsCardGrid';
 import CourseUsersTab from './CourseUsersTab';
 import {
@@ -135,6 +136,35 @@ const EMPTY_DETAIL: AdminOperationCourseDetailResponse = {
     credit_user_count: 0,
     completed_credit_user_count: 0,
     completed_user_avg_credits: null,
+  },
+  estimated_credit_cost: {
+    read: {
+      min: 0,
+      max: 0,
+      llm: { min: 0, max: 0, model: '', model_label: '', multiplier: null },
+      tts: null,
+      enabled: null,
+    },
+    listen: {
+      min: 0,
+      max: 0,
+      llm: { min: 0, max: 0, model: '', model_label: '', multiplier: null },
+      tts: null,
+      enabled: null,
+    },
+    classroom: {
+      min: 0,
+      max: 0,
+      llm: { min: 0, max: 0, model: '', model_label: '', multiplier: null },
+      tts: null,
+      enabled: null,
+    },
+    assumptions: {
+      visible_lesson_count: 0,
+      prompt_char_count: 0,
+      content_char_count: 0,
+      calculated_at: '',
+    },
   },
   chapters: [],
 };
@@ -281,7 +311,6 @@ const createCourseCreditUsageFilters =
  * t('module.operationsCourse.detail.creditUsage.modes.ask')
  * t('module.operationsCourse.detail.creditUsage.modes.mixed')
  * t('module.operationsCourse.detail.creditUsage.modes.unknown')
- * t('module.operationsCourse.detail.creditUsage.modelSummary.multiple')
  * t('module.operationsCourse.detail.creditUsage.table.createdAt')
  * t('module.operationsCourse.detail.creditUsage.table.nickname')
  * t('module.operationsCourse.detail.creditUsage.table.scene')
@@ -722,17 +751,13 @@ export default function AdminOperationCourseDetailPage() {
         chapter.modifier_email ||
         chapter.modifier_user_bid ||
         emptyValue;
-      const secondary =
-        chapter.modifier_nickname &&
-        chapter.modifier_nickname !== t('module.user.defaultUserName')
-          ? chapter.modifier_nickname
-          : '';
+      const secondary = chapter.modifier_nickname?.trim() || '';
       return {
         primary,
         secondary,
       };
     },
-    [emptyValue, t],
+    [emptyValue],
   );
 
   const creatorDisplay = useMemo(() => {
@@ -741,13 +766,10 @@ export default function AdminOperationCourseDetailPage() {
       detail.basic_info.creator_email ||
       detail.basic_info.creator_user_bid ||
       emptyValue;
-    const secondary = detail.basic_info.creator_nickname || '';
+    const secondary = detail.basic_info.creator_nickname?.trim() || '';
     return {
       primary,
-      secondary:
-        secondary && secondary !== t('module.user.defaultUserName')
-          ? secondary
-          : '',
+      secondary,
     };
   }, [
     detail.basic_info.creator_email,
@@ -755,7 +777,6 @@ export default function AdminOperationCourseDetailPage() {
     detail.basic_info.creator_nickname,
     detail.basic_info.creator_user_bid,
     emptyValue,
-    t,
   ]);
 
   const metricCards = useMemo(
@@ -1516,9 +1537,15 @@ export default function AdminOperationCourseDetailPage() {
               items={basicInfoItems}
             />
 
+            <CourseEstimatedCreditCostCard
+              estimate={detail.estimated_credit_cost}
+              locale={i18n.language}
+            />
+
             <CourseMetricsCardGrid
               title={tOperations('detail.metrics')}
               cards={metricCards}
+              size='compact'
             />
 
             <Tabs
