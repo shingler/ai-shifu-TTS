@@ -1,12 +1,11 @@
+"""Define administration DTOs for legacy orders."""
+
 from __future__ import annotations
 
 from datetime import datetime
 
-from typing import List
-
-from pydantic import BaseModel, Field
-
 from flaskr.common.swagger import register_schema_to_swagger
+from pydantic import BaseModel, Field
 
 
 @register_schema_to_swagger
@@ -44,7 +43,8 @@ class OrderAdminOverviewDTO(BaseModel):
         required=False,
     )
 
-    def __json__(self):
+    def __json__(self) -> dict:
+        """Return the operator order overview as JSON-compatible data."""
         return {
             "total_order_count": self.total_order_count,
             "paid_order_count": self.paid_order_count,
@@ -79,7 +79,7 @@ class OrderAdminSummaryDTO(BaseModel):
     order_source_key: str = Field(
         ..., description="Order source i18n key", required=False
     )
-    coupon_codes: List[str] = Field(
+    coupon_codes: list[str] = Field(
         default_factory=list,
         description="Coupon codes applied to this order",
         required=False,
@@ -107,8 +107,9 @@ class OrderAdminSummaryDTO(BaseModel):
         updated_at: datetime | None,
         order_source: str = "",
         order_source_key: str = "",
-        coupon_codes: List[str] | None = None,
-    ):
+        coupon_codes: list[str] | None = None,
+    ) -> None:
+        """Build the order admin summary payload."""
         super().__init__(
             order_bid=order_bid,
             shifu_bid=shifu_bid,
@@ -131,7 +132,8 @@ class OrderAdminSummaryDTO(BaseModel):
             updated_at=updated_at,
         )
 
-    def __json__(self):
+    def __json__(self) -> dict:
+        """Return the operator order summary as JSON-compatible data."""
         return {
             "order_bid": self.order_bid,
             "shifu_bid": self.shifu_bid,
@@ -176,7 +178,8 @@ class OrderAdminActivityDTO(BaseModel):
         status_key: str,
         created_at: datetime | None,
         updated_at: datetime | None,
-    ):
+    ) -> None:
+        """Build the order admin activity payload."""
         super().__init__(
             active_id=active_id,
             active_name=active_name,
@@ -187,7 +190,8 @@ class OrderAdminActivityDTO(BaseModel):
             updated_at=updated_at,
         )
 
-    def __json__(self):
+    def __json__(self) -> dict:
+        """Return the operator order activity as JSON-compatible data."""
         return {
             "active_id": self.active_id,
             "active_name": self.active_name,
@@ -228,7 +232,8 @@ class OrderAdminCouponDTO(BaseModel):
         status_key: str,
         created_at: datetime | None,
         updated_at: datetime | None,
-    ):
+    ) -> None:
+        """Build the order admin coupon payload."""
         super().__init__(
             coupon_bid=coupon_bid,
             code=code,
@@ -242,7 +247,8 @@ class OrderAdminCouponDTO(BaseModel):
             updated_at=updated_at,
         )
 
-    def __json__(self):
+    def __json__(self) -> dict:
+        """Return the operator order coupon as JSON-compatible data."""
         return {
             "coupon_bid": self.coupon_bid,
             "code": self.code,
@@ -308,7 +314,8 @@ class OrderAdminPaymentDTO(BaseModel):
         channel: str = "",
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
-    ):
+    ) -> None:
+        """Build the order admin payment payload."""
         super().__init__(
             payment_channel=payment_channel,
             payment_channel_key=payment_channel_key,
@@ -328,7 +335,8 @@ class OrderAdminPaymentDTO(BaseModel):
             updated_at=updated_at,
         )
 
-    def __json__(self):
+    def __json__(self) -> dict:
+        """Return the operator order payment as JSON-compatible data."""
         return {
             "payment_channel": self.payment_channel,
             "payment_channel_key": self.payment_channel_key,
@@ -356,10 +364,10 @@ class OrderAdminDetailDTO(BaseModel):
     order: OrderAdminSummaryDTO = Field(
         ..., description="Order summary", required=False
     )
-    activities: List[OrderAdminActivityDTO] = Field(
+    activities: list[OrderAdminActivityDTO] = Field(
         ..., description="Order activities", required=False
     )
-    coupons: List[OrderAdminCouponDTO] = Field(
+    coupons: list[OrderAdminCouponDTO] = Field(
         ..., description="Order coupons", required=False
     )
     payment: OrderAdminPaymentDTO = Field(
@@ -369,10 +377,11 @@ class OrderAdminDetailDTO(BaseModel):
     def __init__(
         self,
         order: OrderAdminSummaryDTO,
-        activities: List[OrderAdminActivityDTO],
-        coupons: List[OrderAdminCouponDTO],
+        activities: list[OrderAdminActivityDTO],
+        coupons: list[OrderAdminCouponDTO],
         payment: OrderAdminPaymentDTO,
-    ):
+    ) -> None:
+        """Build the order admin detail payload."""
         super().__init__(
             order=order,
             activities=activities,
@@ -380,7 +389,8 @@ class OrderAdminDetailDTO(BaseModel):
             payment=payment,
         )
 
-    def __json__(self):
+    def __json__(self) -> dict:
+        """Return the operator order detail as JSON-compatible data."""
         return {
             "order": self.order,
             "activities": self.activities,

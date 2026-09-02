@@ -1,13 +1,12 @@
+"""Verify billing wallet lifecycle grants behavior."""
+
 from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
-from flask import Flask
-import pytest
-from sqlalchemy.exc import IntegrityError
-
-import flaskr.dao as dao
+from flaskr import dao
 from flaskr.service.billing.consts import (
     BILLING_ORDER_TYPE_TOPUP,
     BILLING_SUBSCRIPTION_STATUS_ACTIVE,
@@ -30,7 +29,11 @@ from flaskr.service.billing.wallets import (
     grant_manual_credit_wallet_balance,
     grant_refund_return_credits,
 )
+from sqlalchemy.exc import IntegrityError
 
+if TYPE_CHECKING:
+    import pytest
+    from flask import Flask
 
 pytest_plugins = ["tests.service.billing.wallet_lifecycle_app_fixture"]
 
@@ -162,13 +165,14 @@ def test_grant_manual_credit_wallet_balance_returns_noop_existing_after_integrit
     original_commit = dao.db.session.commit
     state = {"raised": False}
 
-    def _commit_once_with_duplicate():
+    def _commit_once_with_duplicate() -> object:
         if not state["raised"]:
             state["raised"] = True
             dao.db.session.rollback()
             dao.db.session.add(existing)
             original_commit()
-            raise IntegrityError("duplicate", {}, Exception("duplicate"))
+            message = "duplicate"
+            raise IntegrityError(message, {}, Exception("duplicate"))
         return original_commit()
 
     monkeypatch.setattr(dao.db.session, "commit", _commit_once_with_duplicate)

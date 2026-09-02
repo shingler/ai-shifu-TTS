@@ -1,5 +1,7 @@
-from decimal import Decimal
+"""Verify learning APIs expose draft and published course state."""
+
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 from flaskr.dao import db
 from flaskr.service.learn.learn_funcs import get_outline_item_tree, get_shifu_info
@@ -15,7 +17,7 @@ from flaskr.service.shifu.models import (
 from flaskr.service.shifu.shifu_history_manager import HistoryItem
 
 
-def test_get_shifu_info_returns_dto(app):
+def test_get_shifu_info_returns_dto(app: object) -> None:
     with app.app_context():
         shifu = PublishedShifu(
             shifu_bid="shifu-learn-1",
@@ -23,6 +25,8 @@ def test_get_shifu_info_returns_dto(app):
             description="Desc",
             price=Decimal("9.99"),
             keywords="a,b",
+            tts_enabled=1,
+            default_listen_mode_enabled=1,
         )
         db.session.add(shifu)
         db.session.commit()
@@ -32,9 +36,42 @@ def test_get_shifu_info_returns_dto(app):
     assert dto.title == "Test Shifu"
     assert dto.price == "9.99"
     assert dto.keywords == ["a", "b"]
+    assert dto.tts_enabled is True
+    assert dto.default_listen_mode_enabled is True
+    assert dto.__json__()["default_listen_mode_enabled"] is True
+    assert dto.is_owner is False
 
 
-def test_get_shifu_info_preview_mode_uses_draft_tts_flag(app):
+def test_get_shifu_info_marks_matching_preview_viewer_as_owner(app: object) -> None:
+    with app.app_context():
+        shifu = DraftShifu(
+            shifu_bid="shifu-preview-owner",
+            title="Owner Preview",
+            description="Desc",
+            price=Decimal(0),
+            created_user_bid="owner-1",
+        )
+        db.session.add(shifu)
+        db.session.commit()
+
+    owner_dto = get_shifu_info(
+        app,
+        "shifu-preview-owner",
+        preview_mode=True,
+        viewer_user_bid="owner-1",
+    )
+    collaborator_dto = get_shifu_info(
+        app,
+        "shifu-preview-owner",
+        preview_mode=True,
+        viewer_user_bid="collaborator-1",
+    )
+
+    assert owner_dto.is_owner is True
+    assert collaborator_dto.is_owner is False
+
+
+def test_get_shifu_info_preview_mode_uses_draft_tts_flag(app: object) -> None:
     with app.app_context():
         draft = DraftShifu(
             shifu_bid="shifu-learn-tts",
@@ -43,6 +80,7 @@ def test_get_shifu_info_preview_mode_uses_draft_tts_flag(app):
             price=Decimal("1.00"),
             keywords="listen",
             tts_enabled=1,
+            default_listen_mode_enabled=1,
         )
         published = PublishedShifu(
             shifu_bid="shifu-learn-tts",
@@ -51,6 +89,7 @@ def test_get_shifu_info_preview_mode_uses_draft_tts_flag(app):
             price=Decimal("2.00"),
             keywords="listen",
             tts_enabled=0,
+            default_listen_mode_enabled=0,
         )
         db.session.add_all([draft, published])
         db.session.commit()
@@ -60,11 +99,13 @@ def test_get_shifu_info_preview_mode_uses_draft_tts_flag(app):
 
     assert preview_dto.title == "Draft Shifu"
     assert preview_dto.tts_enabled is True
+    assert preview_dto.default_listen_mode_enabled is True
     assert live_dto.title == "Published Shifu"
     assert live_dto.tts_enabled is False
+    assert live_dto.default_listen_mode_enabled is False
 
 
-def test_get_outline_item_tree_preview_mode(app):
+def test_get_outline_item_tree_preview_mode(app: object) -> None:
     with app.app_context():
         outline = DraftOutlineItem(
             outline_item_bid="outline-learn-1",
@@ -105,7 +146,9 @@ def test_get_outline_item_tree_preview_mode(app):
     assert result.outline_items[0].has_content_update_for_current_user is False
 
 
-def test_get_outline_item_tree_marks_published_lesson_updates_for_current_user(app):
+def test_get_outline_item_tree_marks_published_lesson_updates_for_current_user(
+    app: object,
+) -> None:
     with app.app_context():
         chapter = PublishedOutlineItem(
             outline_item_bid="chapter-learn-1",
@@ -188,7 +231,9 @@ def test_get_outline_item_tree_marks_published_lesson_updates_for_current_user(a
     )
 
 
-def test_get_outline_item_tree_keeps_update_notice_hidden_for_not_started_lessons(app):
+def test_get_outline_item_tree_keeps_update_notice_hidden_for_not_started_lessons(
+    app: object,
+) -> None:
     with app.app_context():
         lesson = PublishedOutlineItem(
             outline_item_bid="lesson-learn-not-started-1",
@@ -254,7 +299,9 @@ def test_get_outline_item_tree_keeps_update_notice_hidden_for_not_started_lesson
     assert result.outline_items[0].has_content_update_for_current_user is False
 
 
-def test_get_outline_item_tree_uses_normalized_published_effective_time(app):
+def test_get_outline_item_tree_uses_normalized_published_effective_time(
+    app: object,
+) -> None:
     with app.app_context():
         lesson = PublishedOutlineItem(
             outline_item_bid="lesson-learn-published-timezone-1",
@@ -316,7 +363,9 @@ def test_get_outline_item_tree_uses_normalized_published_effective_time(app):
     assert result.outline_items[0].has_content_update_for_current_user is True
 
 
-def test_get_outline_item_tree_ignores_published_copy_created_at_for_updates(app):
+def test_get_outline_item_tree_ignores_published_copy_created_at_for_updates(
+    app: object,
+) -> None:
     with app.app_context():
         lesson = PublishedOutlineItem(
             outline_item_bid="lesson-learn-published-copy-created-1",

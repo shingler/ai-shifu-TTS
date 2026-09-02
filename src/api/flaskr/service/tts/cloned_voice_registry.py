@@ -14,22 +14,27 @@ write path (``admin_operations/voice_clones.py``).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import TYPE_CHECKING
 
 from flaskr.service.tts.minimax_voice_clone import is_valid_minimax_custom_voice_id
 from flaskr.service.tts.models import (
-    TTSMiniMaxClonedVoice,
     TTS_CLONE_PROVIDER_MINIMAX,
     TTS_CLONE_PROVIDER_VOLCENGINE,
     TTS_MINIMAX_CLONE_STATUS_READY,
+    TTSMiniMaxClonedVoice,
 )
 from flaskr.service.tts.volcengine_voice_clone import (
     is_valid_volcengine_custom_voice_id,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 
 @dataclass(frozen=True)
 class ClonedVoiceProviderSpec:
+    """Define the specification for cloned voice provider."""
+
     provider: str
     is_valid_custom_voice_id: Callable[[str], bool]
     # Whether strict validation demands a ready DB row. MiniMax keeps its
@@ -54,17 +59,19 @@ _CLONE_PROVIDER_SPECS: dict[str, ClonedVoiceProviderSpec] = {
 }
 
 
-def get_clone_provider_spec(provider: str) -> Optional[ClonedVoiceProviderSpec]:
+def get_clone_provider_spec(provider: str) -> ClonedVoiceProviderSpec | None:
+    """Return clone provider spec."""
     return _CLONE_PROVIDER_SPECS.get((provider or "").strip().lower())
 
 
 def supports_cloned_voices(provider: str) -> bool:
+    """Return whether this provider supports cloned voices."""
     return get_clone_provider_spec(provider) is not None
 
 
 def find_ready_cloned_voice(
-    *, provider: str, voice_id: str, owner_user_bid: Optional[str] = None
-) -> Optional[TTSMiniMaxClonedVoice]:
+    *, provider: str, voice_id: str, owner_user_bid: str | None = None
+) -> TTSMiniMaxClonedVoice | None:
     """Latest ready, non-deleted clone row for (provider, voice_id).
 
     ``owner_user_bid=None`` skips owner scoping (strict validation, runtime);
@@ -89,7 +96,7 @@ def find_ready_cloned_voice(
 
 def find_tracked_cloned_voice(
     *, provider: str, voice_id: str, shifu_bid: str
-) -> Optional[TTSMiniMaxClonedVoice]:
+) -> TTSMiniMaxClonedVoice | None:
     """Latest non-deleted row this shifu tracks, regardless of status."""
     normalized_voice_id = (voice_id or "").strip()
     if not normalized_voice_id:

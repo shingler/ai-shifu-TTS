@@ -1,14 +1,16 @@
+"""Verify shifu publish funcs behavior."""
+
 import sys
 import types
 from datetime import datetime
 
 from flask import Flask
-
 from flaskr.dao import db
 from flaskr.service.shifu.models import (
     DraftOutlineItem,
     DraftShifu,
     PublishedOutlineItem,
+    PublishedShifu,
 )
 
 
@@ -17,8 +19,15 @@ def _install_litellm_stub() -> None:
         return
 
     litellm_stub = types.ModuleType("litellm")
+
+    def get_model_info(*args: object, **kwargs: object) -> None:
+        _ = args, kwargs
+        message = "unknown model"
+        raise ValueError(message)
+
     litellm_stub.get_max_tokens = lambda _model: 4096
-    litellm_stub.completion = lambda *args, **kwargs: iter([])
+    litellm_stub.get_model_info = get_model_info
+    litellm_stub.completion = lambda *_args, **_kwargs: iter([])
     sys.modules["litellm"] = litellm_stub
 
 
@@ -60,21 +69,9 @@ def _install_openai_responses_stub() -> None:
 
     response_function_tool_call = type("ResponseFunctionToolCall", (), {})
     response_text_config = type("ResponseTextConfigParam", (), {})
-    setattr(
-        response_function_mod,
-        "ResponseFunctionToolCall",
-        response_function_tool_call,
-    )
-    setattr(
-        response_text_mod,
-        "ResponseTextConfigParam",
-        response_text_config,
-    )
-    setattr(
-        responses_pkg,
-        "ResponseFunctionToolCall",
-        response_function_tool_call,
-    )
+    response_function_mod.ResponseFunctionToolCall = response_function_tool_call
+    response_text_mod.ResponseTextConfigParam = response_text_config
+    responses_pkg.ResponseFunctionToolCall = response_function_tool_call
 
     sys.modules["openai.types.responses"] = responses_pkg
     sys.modules["openai.types.responses.response"] = response_mod
@@ -90,63 +87,58 @@ _install_openai_responses_stub()
 
 
 class _FakeObservation:
-    """Mimics a Langfuse SDK v3 span/generation object."""
+    """Mimics a Langfuse SDK v4 observation object."""
 
-    def __init__(self, kind: str = "span", **kwargs):
+    def __init__(self, kind: str = "span", **kwargs: object) -> None:
         self.kind = kind
         self.kwargs = kwargs
         self.updates = []
-        self.trace_updates = []
         self.ended = False
+        self.public = False
         self.trace_id = "f" * 32
         self.id = f"fake-{kind}-id"
         self.generations = []
 
-    def start_span(self, **kwargs):
-        return _FakeObservation("span", **kwargs)
-
-    def start_observation(self, as_type="span", **kwargs):
+    def start_observation(self, as_type: object = "span", **kwargs: object) -> object:
         child = _FakeObservation(as_type, **kwargs)
         if as_type == "generation":
             self.generations.append(child)
         return child
 
-    def update(self, **kwargs):
+    def update(self, **kwargs: object) -> None:
         self.updates.append(kwargs)
 
-    def update_trace(self, **kwargs):
-        self.trace_updates.append(kwargs)
+    def set_trace_as_public(self) -> None:
+        self.public = True
 
-    def end(self):
+    def end(self) -> None:
         self.ended = True
 
     @property
-    def end_kwargs(self):
+    def end_kwargs(self) -> object:
         merged = {}
         for item in self.updates:
             merged.update(item)
         return merged
 
-    @property
-    def updated(self):
-        merged = {}
-        for item in self.trace_updates:
-            merged.update(item)
-        return merged
-
 
 class _FakeLangfuseClient:
-    def __init__(self):
+    def __init__(self) -> None:
         self.traces = []
 
-    def start_span(self, trace_context=None, **kwargs):
-        root = _FakeObservation("span", **kwargs)
+    def start_observation(
+        self,
+        as_type: object = "span",
+        trace_context: object = None,
+        **kwargs: object,
+    ) -> object:
+        root = _FakeObservation(as_type, **kwargs)
         root.trace_context = trace_context or {}
         self.traces.append(root)
         return root
 
 
-def test_make_ask_prompt_fills_content_and_keeps_runtime_placeholders():
+def test_make_ask_prompt_fills_content_and_keeps_runtime_placeholders() -> None:
     from flaskr.service.shifu import shifu_publish_funcs as module
     from flaskr.util.prompt_loader import load_prompt_template
 
@@ -170,15 +162,20 @@ def test_make_ask_prompt_fills_content_and_keeps_runtime_placeholders():
     assert "<knowledge>" not in result
 
 
-def test_get_summary_updates_trace_and_span_output(monkeypatch):
-    from flaskr.service.shifu import shifu_publish_funcs as module
+def test_get_summary_updates_trace_and_span_output(monkeypatch: object) -> None:
     from flaskr.api import langfuse as langfuse_module
+    from flaskr.service.shifu import shifu_publish_funcs as module
 
     fake_langfuse = _FakeLangfuseClient()
+
+    def create_trace_id(seed: object = None) -> object:
+        del seed
+        return "a" * 32
+
     monkeypatch.setattr(
         langfuse_module.Langfuse,
         "create_trace_id",
-        lambda seed=None: "a" * 32,
+        create_trace_id,
         raising=False,
     )
     monkeypatch.setattr(
@@ -212,23 +209,24 @@ def test_get_summary_updates_trace_and_span_output(monkeypatch):
     trace = fake_langfuse.traces[0]
     assert trace.kwargs["name"] == "shifu_summary"
     assert trace.kwargs["input"] == "Summarize this lesson"
-    # With SDK v3 the root span carries both span and trace attributes.
+    # In SDK v4 the root observation carries the overall input/output.
     assert trace.end_kwargs["output"] == "summary result"
     assert trace.ended
-    assert trace.updated["output"] == "summary result"
 
 
-def test_run_summary_downgrades_shutdown_race_to_warning(monkeypatch):
+def test_run_summary_downgrades_shutdown_race_to_warning(monkeypatch: object) -> None:
     from unittest.mock import MagicMock
+
     from flaskr.service.shifu import shifu_publish_funcs as module
 
     monkeypatch.setattr(module, "apply_shifu_context_snapshot", lambda *_a, **_k: None)
 
-    def _raise_shutdown(*_a, **_k):
-        raise RuntimeError(
+    def _raise_shutdown(*_a: object, **_k: object) -> None:
+        message = (
             "litellm.MidStreamFallbackError: APIConnectionError: OpenAIException - "
             "cannot schedule new futures after shutdown"
         )
+        raise RuntimeError(message)
 
     monkeypatch.setattr(module, "get_shifu_summary", _raise_shutdown)
 
@@ -244,14 +242,16 @@ def test_run_summary_downgrades_shutdown_race_to_warning(monkeypatch):
     error_mock.assert_not_called()
 
 
-def test_run_summary_logs_error_for_other_failures(monkeypatch):
+def test_run_summary_logs_error_for_other_failures(monkeypatch: object) -> None:
     from unittest.mock import MagicMock
+
     from flaskr.service.shifu import shifu_publish_funcs as module
 
     monkeypatch.setattr(module, "apply_shifu_context_snapshot", lambda *_a, **_k: None)
 
-    def _raise_other(*_a, **_k):
-        raise ValueError("boom")
+    def _raise_other(*_a: object, **_k: object) -> None:
+        message = "boom"
+        raise ValueError(message)
 
     monkeypatch.setattr(module, "get_shifu_summary", _raise_other)
 
@@ -267,14 +267,16 @@ def test_run_summary_logs_error_for_other_failures(monkeypatch):
     warning_mock.assert_not_called()
 
 
-def test_publish_shifu_draft_preserves_outline_updated_at(app, monkeypatch):
+def test_publish_shifu_draft_preserves_outline_updated_at(
+    app: object, monkeypatch: object
+) -> None:
     from flaskr.service.shifu import shifu_publish_funcs as module
 
-    monkeypatch.setattr(module, "_run_summary_with_error_handling", lambda *args: None)
+    monkeypatch.setattr(module, "_run_summary_with_error_handling", lambda *_args: None)
     original_load_existing_outline_items = module.load_existing_outline_items
     outline_load_calls = []
 
-    def _record_outline_load(*args, **kwargs):
+    def _record_outline_load(*args: object, **kwargs: object) -> object:
         outline_load_calls.append((args, kwargs))
         return original_load_existing_outline_items(*args, **kwargs)
 
@@ -291,6 +293,8 @@ def test_publish_shifu_draft_preserves_outline_updated_at(app, monkeypatch):
             title="Draft",
             description="Desc",
             keywords="a,b",
+            tts_enabled=1,
+            default_listen_mode_enabled=1,
         )
         outline = DraftOutlineItem(
             outline_item_bid="publish-preserve-outline-lesson",
@@ -323,9 +327,19 @@ def test_publish_shifu_draft_preserves_outline_updated_at(app, monkeypatch):
             .order_by(PublishedOutlineItem.id.desc())
             .first()
         )
+        published_shifu = (
+            PublishedShifu.query.filter_by(
+                shifu_bid="publish-preserve-outline-updated-at",
+                deleted=0,
+            )
+            .order_by(PublishedShifu.id.desc())
+            .first()
+        )
 
     assert published_outline is not None
     assert published_outline.updated_at == draft_updated_at
+    assert published_shifu is not None
+    assert published_shifu.default_listen_mode_enabled == 1
     assert outline_load_calls == [
         (("publish-preserve-outline-updated-at",), {"include_content": True})
     ]

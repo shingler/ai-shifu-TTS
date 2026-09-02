@@ -9,14 +9,15 @@ off-by-one protocol desync. The worker_process_init hook must discard the
 inherited pool without touching the parent's file descriptors.
 """
 
-from celery.signals import worker_process_init
-from sqlalchemy import text
+from typing import ClassVar
 
+from celery.signals import worker_process_init
 from flaskr.common.celery_app import dispose_inherited_db_pools, get_celery_app
 from flaskr.dao import db
+from sqlalchemy import text
 
 
-def test_dispose_replaces_the_inherited_pool(app):
+def test_dispose_replaces_the_inherited_pool(app: object) -> None:
     with app.app_context():
         db.session.execute(text("SELECT 1"))
         db.session.remove()
@@ -31,7 +32,7 @@ def test_dispose_replaces_the_inherited_pool(app):
         db.session.remove()
 
 
-def test_worker_process_init_signal_disposes_pools(app):
+def test_worker_process_init_signal_disposes_pools(app: object) -> None:
     get_celery_app(app)
     with app.app_context():
         db.session.execute(text("SELECT 1"))
@@ -44,21 +45,28 @@ def test_worker_process_init_signal_disposes_pools(app):
         assert db.engine.pool is not inherited_pool
 
 
-def test_one_failing_bind_does_not_block_the_rest(app, monkeypatch):
-    import flaskr.dao as dao
+def test_one_failing_bind_does_not_block_the_rest(
+    app: object, monkeypatch: object
+) -> None:
+    from flaskr import dao
 
     disposed = []
 
     class _BrokenEngine:
-        def dispose(self, close):
-            raise RuntimeError("bind gone")
+        def dispose(self, close: object) -> None:
+            _ = close
+            message = "bind gone"
+            raise RuntimeError(message)
 
     class _GoodEngine:
-        def dispose(self, close):
+        def dispose(self, close: object) -> None:
             disposed.append(close)
 
     class _FakeDB:
-        engines = {"broken": _BrokenEngine(), None: _GoodEngine()}
+        engines: ClassVar[dict[str | None, object]] = {
+            "broken": _BrokenEngine(),
+            None: _GoodEngine(),
+        }
 
     monkeypatch.setattr(dao, "db", _FakeDB())
 

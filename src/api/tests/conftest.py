@@ -1,11 +1,17 @@
 # ruff: noqa: E402
+"""Provide pytest fixtures for backend tests."""
+
 import os
+import shutil
 import sys
 import tempfile
-import shutil
+from collections.abc import Iterator
 from importlib import import_module
 from pathlib import Path
+
 import pytest
+from flask import Flask
+from flask.testing import FlaskClient
 
 # Prevent accidental loading of user/global .env files during tests
 os.environ.setdefault("SKIP_LOAD_DOTENV", "1")
@@ -37,47 +43,54 @@ if not _test_db_uri:
     _test_db_path = _test_db_dir / "test.db"
     _test_db_uri = f"sqlite:///{_test_db_path}"
 
-from flask_sqlalchemy import SQLAlchemy
+from flaskr import dao
+from flaskr.framework.plugin.plugin_manager import set_plugin_manager
 from sqlalchemy.dialects.mysql import BIGINT, LONGTEXT
 from sqlalchemy.ext.compiler import compiles
-from flaskr import dao
-from flaskr.framework.plugin import plugin_manager as plugin_manager_module
 
 
 class _TestPluginManager:
-    def __init__(self):
+    def __init__(self) -> None:
         self.extension_functions = {}
         self.extensible_generic_functions = {}
         self.is_enabled = False
 
-    def register_extension(self, target_func_name, func):
+    def register_extension(self, target_func_name: object, func: object) -> None:
         self.extension_functions.setdefault(target_func_name, []).append(func)
 
-    def execute_extensions(self, _func_name, result, *args, **kwargs):
+    def execute_extensions(
+        self,
+        _func_name: object,
+        result: object,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        _ = (args, kwargs)
         return result
 
-    def register_extensible_generic(self, func_name, func):
+    def register_extensible_generic(self, func_name: object, func: object) -> None:
         self.extensible_generic_functions.setdefault(func_name, []).append(func)
 
-    def execute_extensible_generic(self, _func_name, *args, **kwargs):
-        return None
+    def execute_extensible_generic(
+        self, _func_name: object, *args: object, **kwargs: object
+    ) -> None:
+        _ = (args, kwargs)
 
 
-plugin_manager_module.plugin_manager = _TestPluginManager()
+set_plugin_manager(_TestPluginManager())
 
 
 @compiles(LONGTEXT, "sqlite")
-def _compile_longtext_sqlite(_type, _compiler, **_kw):
+def _compile_longtext_sqlite(_type: object, _compiler: object, **_kw: object) -> object:
     return "TEXT"
 
 
 @compiles(BIGINT, "sqlite")
-def _compile_bigint_sqlite(_type, _compiler, **_kw):
+def _compile_bigint_sqlite(_type: object, _compiler: object, **_kw: object) -> object:
     return "INTEGER"
 
 
-if dao.db is None:
-    dao.db = SQLAlchemy()
+import contextlib
 
 from tests.common.fixtures.fake_llm import (
     fake_chat_llm,
@@ -88,12 +101,8 @@ from tests.common.fixtures.fake_llm import (
 from tests.common.fixtures.fake_redis import FakeRedis
 
 
-# Path: test/test_flaskr.py
-# Compare this snippet from flaskr/plugin/test.py:
-# from ..service.schedule import *
-#
 @pytest.fixture(scope="session")
-def app():
+def app() -> Iterator[Flask | None]:
     if os.getenv("SKIP_APP_FIXTURE"):
         yield None
         return
@@ -164,28 +173,29 @@ def app():
 
 
 @pytest.fixture
-def test_client(app):
+def test_client(app: object) -> Iterator[FlaskClient]:
     with app.test_client() as client:
         yield client
 
 
 @pytest.fixture
-def token():
+def token() -> object:
     return ""
 
 
 @pytest.fixture(autouse=True)
-def mock_redis_client(monkeypatch, request):
+def mock_redis_client(monkeypatch: object, request: object) -> object:
     fake_redis = FakeRedis()
     # test_funcs.py uses its own `@patch` decorators for fine-grained Redis control.
     if "service/config/test_funcs.py" in request.node.nodeid:
         return fake_redis
-    monkeypatch.setattr(dao, "redis_client", fake_redis, raising=False)
+    monkeypatch.setattr(dao._redis_state, "client", fake_redis)
 
     module_paths = [
         "flaskr.service.user.phone_flow",
         "flaskr.service.user.email_flow",
         "flaskr.service.user.captcha",
+        "flaskr.service.user.device_auth",
         "flaskr.service.user.utils",
         "flaskr.service.user.common",
         "flaskr.service.user.auth.providers.google",
@@ -207,12 +217,12 @@ def mock_redis_client(monkeypatch, request):
     return fake_redis
 
 
-def _should_skip_llm_mock(request) -> bool:
+def _should_skip_llm_mock(request: object) -> bool:
     return request.node.get_closest_marker("no_mock_llm") is not None
 
 
 @pytest.fixture(autouse=True)
-def mock_llm_calls(monkeypatch, request):
+def mock_llm_calls(monkeypatch: object, request: object) -> None:
     if _should_skip_llm_mock(request):
         return
     llm = sys.modules.get("flaskr.api.llm")
@@ -229,12 +239,12 @@ def mock_llm_calls(monkeypatch, request):
 
 
 @pytest.fixture(autouse=True)
-def isolate_env_for_non_app_tests(request):
+def isolate_env_for_non_app_tests(request: object) -> Iterator[None]:
     if "app" in request.fixturenames:
         yield
         return
-    original = {key: os.environ.get(key) for key in ENV_VARS.keys()}
-    for key in ENV_VARS.keys():
+    original = {key: os.environ.get(key) for key in ENV_VARS}
+    for key in ENV_VARS:
         os.environ.pop(key, None)
 
     # Some tests monkeypatch env vars while a session-scoped Flask app has
@@ -242,15 +252,12 @@ def isolate_env_for_non_app_tests(request):
     # reflects per-test env changes.
     from flaskr.common import config as config_module
 
-    try:
+    original_config_instance = config_module.Config._instance
+    with contextlib.suppress(Exception):
         config_module.__ENHANCED_CONFIG__._cache.clear()
-    except Exception:
-        pass
-    try:
-        if config_module.__INSTANCE__ is not None:
-            config_module.__INSTANCE__.enhanced._cache.clear()
-    except Exception:
-        pass
+    with contextlib.suppress(Exception):
+        if config_module.Config._instance is not None:
+            config_module.Config._instance.enhanced._cache.clear()
     yield
     for key, value in original.items():
         if value is None:
@@ -258,12 +265,9 @@ def isolate_env_for_non_app_tests(request):
         else:
             os.environ[key] = value
 
-    try:
+    with contextlib.suppress(Exception):
         config_module.__ENHANCED_CONFIG__._cache.clear()
-    except Exception:
-        pass
-    try:
-        if config_module.__INSTANCE__ is not None:
-            config_module.__INSTANCE__.enhanced._cache.clear()
-    except Exception:
-        pass
+    with contextlib.suppress(Exception):
+        if config_module.Config._instance is not None:
+            config_module.Config._instance.enhanced._cache.clear()
+    config_module.Config._instance = original_config_instance

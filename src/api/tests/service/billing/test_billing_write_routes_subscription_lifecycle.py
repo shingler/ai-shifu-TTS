@@ -1,11 +1,14 @@
+"""Verify billing write routes subscription lifecycle behavior."""
+
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import pytest
 
 from tests.service.billing import (
     billing_write_routes_test_helpers as write_route_helpers,
 )
-
 from tests.service.billing.billing_write_routes_test_helpers import (
     BILLING_ORDER_STATUS_CANCELED,
     BILLING_ORDER_STATUS_PAID,
@@ -26,20 +29,20 @@ from tests.service.billing.billing_write_routes_test_helpers import (
     BILLING_SUBSCRIPTION_STATUS_EXPIRED,
     BILLING_SUBSCRIPTION_STATUS_PAST_DUE,
     BILLING_TRIAL_PRODUCT_BID,
-    BillingOrder,
-    BillingProduct,
-    BillingRenewalEvent,
-    BillingSubscription,
     CREDIT_BUCKET_CATEGORY_SUBSCRIPTION,
     CREDIT_BUCKET_STATUS_ACTIVE,
     CREDIT_BUCKET_STATUS_EXPIRED,
     CREDIT_LEDGER_ENTRY_TYPE_GRANT,
     CREDIT_SOURCE_TYPE_SUBSCRIPTION,
+    ERROR_CODE,
+    BillingOrder,
+    BillingProduct,
+    BillingRenewalEvent,
+    BillingSubscription,
     CreditLedgerEntry,
     CreditWallet,
     CreditWalletBucket,
     Decimal,
-    ERROR_CODE,
     PingxxOrder,
     StripeOrder,
     apply_billing_subscription_provider_update,
@@ -55,15 +58,20 @@ from tests.service.billing.billing_write_routes_test_helpers import (
     to_utc_iso,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 
 @pytest.fixture
-def billing_write_client(monkeypatch):
+def billing_write_client(monkeypatch: object) -> Iterator[dict[str, object]]:
     yield from write_route_helpers.billing_write_client(monkeypatch)
 
 
 class TestBillingWriteRoutesSubscriptionLifecycle:
+    """Verify billing write routes subscription lifecycle behavior."""
+
     def test_pingxx_subscription_checkout_and_sync_grant_initial_credits(
-        self, billing_write_client
+        self, billing_write_client: object
     ) -> None:
         client = billing_write_client["client"]
         app = billing_write_client["app"]
@@ -170,7 +178,7 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
             assert expire_event.scheduled_at == subscription.current_period_end_at
 
     def test_pending_pingxx_subscription_order_can_refresh_checkout(
-        self, billing_write_client
+        self, billing_write_client: object
     ) -> None:
         client = billing_write_client["client"]
 
@@ -202,7 +210,7 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
         assert billing_write_client["pingxx_requests"][1]["body"] == "月套餐·轻量版"
 
     def test_subscription_checkout_reuses_same_pending_stripe_order_within_timeout(
-        self, billing_write_client
+        self, billing_write_client: object
     ) -> None:
         client = billing_write_client["client"]
         app = billing_write_client["app"]
@@ -238,8 +246,119 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
             assert orders[0].status == BILLING_ORDER_STATUS_PENDING
             assert orders[0].expires_at is not None
 
+    def test_subscription_checkout_refreshes_stripe_session_when_callback_url_changes(
+        self, billing_write_client: object
+    ) -> None:
+        client = billing_write_client["client"]
+        app = billing_write_client["app"]
+
+        first_checkout = client.post(
+            "/api/billing/subscriptions/checkout",
+            json={
+                "product_bid": "bill-product-plan-monthly",
+                "payment_provider": "stripe",
+            },
+        ).get_json(force=True)
+
+        with app.app_context():
+            order = BillingOrder.query.filter_by(
+                bill_order_bid=first_checkout["data"]["bill_order_bid"]
+            ).one()
+            metadata = dict(order.metadata_json)
+            metadata["checkout"] = {
+                **metadata["checkout"],
+                "success_url": "https://old.example.com/payment/stripe/billing-result",
+            }
+            order.metadata_json = metadata
+            dao.db.session.add(order)
+            dao.db.session.commit()
+
+        second_checkout = client.post(
+            "/api/billing/subscriptions/checkout",
+            json={
+                "product_bid": "bill-product-plan-monthly",
+                "payment_provider": "stripe",
+            },
+        ).get_json(force=True)
+
+        assert second_checkout["code"] == 0
+        assert (
+            second_checkout["data"]["bill_order_bid"]
+            == first_checkout["data"]["bill_order_bid"]
+        )
+        assert len(billing_write_client["stripe_requests"]) == 2
+        assert billing_write_client["stripe_expire_requests"] == [
+            {"session_id": (f"cs_{first_checkout['data']['bill_order_bid']}")}
+        ]
+
+    def test_pending_subscription_checkout_route_rejects_stale_stripe_price_mapping(
+        self, billing_write_client: object
+    ) -> None:
+        client = billing_write_client["client"]
+        app = billing_write_client["app"]
+
+        checkout = client.post(
+            "/api/billing/subscriptions/checkout",
+            json={
+                "product_bid": "bill-product-plan-monthly",
+                "payment_provider": "stripe",
+            },
+        ).get_json(force=True)
+        bill_order_bid = checkout["data"]["bill_order_bid"]
+
+        with app.app_context():
+            order = BillingOrder.query.filter_by(bill_order_bid=bill_order_bid).one()
+            metadata = dict(order.metadata_json)
+            metadata["provider_price_bid"] = "mapping-old-price"
+            metadata["checkout"] = {**metadata["checkout"], "url": ""}
+            order.metadata_json = metadata
+            dao.db.session.add(order)
+            dao.db.session.commit()
+
+        refreshed = client.post(
+            f"/api/billing/orders/{bill_order_bid}/checkout",
+            json={"channel": "checkout_session"},
+        ).get_json(force=True)
+
+        assert refreshed["code"] == ERROR_CODE["server.order.orderStatusError"]
+        assert len(billing_write_client["stripe_requests"]) == 1
+        assert billing_write_client["stripe_expire_requests"] == []
+
+    def test_pending_subscription_checkout_route_rejects_changed_stripe_price_snapshot(
+        self, billing_write_client: object
+    ) -> None:
+        client = billing_write_client["client"]
+        app = billing_write_client["app"]
+
+        checkout = client.post(
+            "/api/billing/subscriptions/checkout",
+            json={
+                "product_bid": "bill-product-plan-monthly",
+                "payment_provider": "stripe",
+            },
+        ).get_json(force=True)
+        bill_order_bid = checkout["data"]["bill_order_bid"]
+
+        with app.app_context():
+            order = BillingOrder.query.filter_by(bill_order_bid=bill_order_bid).one()
+            metadata = dict(order.metadata_json)
+            metadata["provider_price_id"] = "price_old_plan_monthly"
+            metadata["checkout"] = {**metadata["checkout"], "url": ""}
+            order.metadata_json = metadata
+            dao.db.session.add(order)
+            dao.db.session.commit()
+
+        refreshed = client.post(
+            f"/api/billing/orders/{bill_order_bid}/checkout",
+            json={"channel": "checkout_session"},
+        ).get_json(force=True)
+
+        assert refreshed["code"] == ERROR_CODE["server.order.orderStatusError"]
+        assert len(billing_write_client["stripe_requests"]) == 1
+        assert billing_write_client["stripe_expire_requests"] == []
+
     def test_subscription_checkout_cancels_pending_order_when_switching_package(
-        self, billing_write_client
+        self, billing_write_client: object
     ) -> None:
         client = billing_write_client["client"]
         app = billing_write_client["app"]
@@ -266,6 +385,9 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
             second_checkout["data"]["bill_order_bid"]
             != first_checkout["data"]["bill_order_bid"]
         )
+        assert billing_write_client["stripe_expire_requests"] == [
+            {"session_id": (f"cs_{first_checkout['data']['bill_order_bid']}")}
+        ]
 
         with app.app_context():
             old_order = BillingOrder.query.filter_by(
@@ -282,7 +404,7 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
             assert new_order.status == BILLING_ORDER_STATUS_PENDING
 
     def test_expired_pending_order_is_timed_out_and_recreated_on_same_package_checkout(
-        self, billing_write_client
+        self, billing_write_client: object
     ) -> None:
         client = billing_write_client["client"]
         app = billing_write_client["app"]
@@ -326,7 +448,7 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
             assert old_order.failure_code == "timeout"
 
     def test_legacy_pending_order_without_expires_at_is_reused_within_timeout(
-        self, billing_write_client
+        self, billing_write_client: object
     ) -> None:
         client = billing_write_client["client"]
         app = billing_write_client["app"]
@@ -370,7 +492,7 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
             assert order.expires_at is not None
 
     def test_legacy_pending_order_without_expires_at_times_out_and_recreates(
-        self, billing_write_client
+        self, billing_write_client: object
     ) -> None:
         client = billing_write_client["client"]
         app = billing_write_client["app"]
@@ -414,7 +536,7 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
             assert old_order.failure_code == "timeout"
 
     def test_pending_subscription_checkout_route_marks_expired_order_timeout(
-        self, billing_write_client
+        self, billing_write_client: object
     ) -> None:
         client = billing_write_client["client"]
         app = billing_write_client["app"]
@@ -445,11 +567,11 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
             assert order.status == BILLING_ORDER_STATUS_TIMEOUT
 
     def test_pingxx_wechat_subscription_checkout_aligns_legacy_charge_extra(
-        self, billing_write_client, monkeypatch
+        self, billing_write_client: object, monkeypatch: object
     ) -> None:
         client = billing_write_client["client"]
 
-        def fake_get_config(key, default=None):
+        def fake_get_config(key: object, default: object = None) -> object:
             if key == "PINGXX_APP_ID":
                 return "app_billing_test"
             return default
@@ -477,7 +599,7 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
         }
 
     def test_subscription_checkout_and_sync_grant_initial_credits(
-        self, billing_write_client
+        self, billing_write_client: object
     ) -> None:
         client = billing_write_client["client"]
         app = billing_write_client["app"]
@@ -529,7 +651,7 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
             assert bucket.available_credits == 5
             assert ledger.amount == 5
             assert raw_order.status == 1
-            assert raw_order.checkout_session_id == "cs_billing_test"
+            assert raw_order.checkout_session_id == f"cs_{bill_order_bid}"
             assert raw_order.payment_intent_id == "pi_billing_test"
             assert (
                 StripeOrder.query.filter_by(
@@ -544,7 +666,7 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
             )
 
     def test_cancel_and_resume_subscription_toggle_status(
-        self, billing_write_client
+        self, billing_write_client: object
     ) -> None:
         client = billing_write_client["client"]
         app = billing_write_client["app"]
@@ -611,7 +733,7 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
             assert cancel_event.status == BILLING_RENEWAL_EVENT_STATUS_CANCELED
 
     def test_past_due_subscription_sets_grace_and_retry_event(
-        self, billing_write_client
+        self, billing_write_client: object
     ) -> None:
         app = billing_write_client["app"]
 
@@ -670,7 +792,7 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
             assert renewal_event.status == BILLING_RENEWAL_EVENT_STATUS_CANCELED
 
     def test_next_product_bid_schedules_downgrade_event(
-        self, billing_write_client
+        self, billing_write_client: object
     ) -> None:
         app = billing_write_client["app"]
 
@@ -704,7 +826,7 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
             assert downgrade_event.scheduled_at == subscription.current_period_end_at
 
     def test_paid_upgrade_order_switches_subscription_product_and_reschedules(
-        self, billing_write_client
+        self, billing_write_client: object
     ) -> None:
         app = billing_write_client["app"]
         current_cycle_start = datetime(2026, 4, 1, 0, 0, 0)
@@ -855,7 +977,7 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
             assert upgrade_event.status == BILLING_RENEWAL_EVENT_STATUS_PENDING
 
     def test_paid_renewal_order_applies_scheduled_next_product(
-        self, billing_write_client
+        self, billing_write_client: object
     ) -> None:
         app = billing_write_client["app"]
 
@@ -910,7 +1032,7 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
             assert renewal_event.scheduled_at == subscription.current_period_end_at
 
     def test_paid_pingxx_renewal_before_cycle_start_keeps_current_period(
-        self, billing_write_client, monkeypatch
+        self, billing_write_client: object, monkeypatch: object
     ) -> None:
         app = billing_write_client["app"]
         current_cycle_start = datetime(2026, 4, 1, 0, 0, 0)
@@ -919,7 +1041,7 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
 
         class FrozenDateTime(datetime):
             @classmethod
-            def now(cls, tz=None):
+            def now(cls, tz: object = None) -> datetime:
                 frozen_now = datetime(2026, 4, 24, 10, 0, 0)
                 if tz is not None:
                     return frozen_now.replace(tzinfo=tz)
@@ -1050,7 +1172,7 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
             assert subscription.status == BILLING_SUBSCRIPTION_STATUS_ACTIVE
 
     def test_paid_pingxx_renewal_after_cycle_end_shifts_cycle_from_payment_time(
-        self, billing_write_client
+        self, billing_write_client: object
     ) -> None:
         app = billing_write_client["app"]
         renewal_cycle_start = datetime(2026, 5, 1, 0, 0, 0)
@@ -1127,7 +1249,7 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
             )
 
     def test_existing_subscription_grant_realigns_future_dated_cycle_on_replay(
-        self, billing_write_client
+        self, billing_write_client: object
     ) -> None:
         app = billing_write_client["app"]
         paid_at = datetime(2026, 4, 15, 13, 10, 37)
@@ -1204,7 +1326,7 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
             assert subscription.current_period_end_at == bucket.effective_to
 
     def test_paid_subscription_start_reactivates_reused_expired_bucket(
-        self, billing_write_client
+        self, billing_write_client: object
     ) -> None:
         app = billing_write_client["app"]
         paid_at = datetime(2026, 6, 11, 14, 11, 8)
@@ -1320,7 +1442,7 @@ class TestBillingWriteRoutesSubscriptionLifecycle:
             assert subscription.status == BILLING_SUBSCRIPTION_STATUS_ACTIVE
 
     def test_paid_subscription_replay_repairs_existing_expired_bucket_status(
-        self, billing_write_client
+        self, billing_write_client: object
     ) -> None:
         app = billing_write_client["app"]
         paid_at = datetime(2026, 6, 11, 14, 11, 8)

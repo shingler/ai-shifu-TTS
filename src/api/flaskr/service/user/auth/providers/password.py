@@ -5,8 +5,11 @@ Supports login via phone number or email + password.
 
 from __future__ import annotations
 
-from flask import Flask
+from typing import TYPE_CHECKING
 
+from flaskr.service.common.dtos import UserToken
+from flaskr.service.common.models import raise_error
+from flaskr.service.common.phone_numbers import normalize_phone_identifier
 from flaskr.service.user.auth.base import (
     AuthProvider,
     AuthResult,
@@ -16,17 +19,17 @@ from flaskr.service.user.auth.factory import (
     has_provider,
     register_provider,
 )
+from flaskr.service.user.password_utils import verify_password
 from flaskr.service.user.repository import (
     build_user_info_from_aggregate,
     get_password_hash,
     list_credentials,
     load_user_aggregate_by_identifier,
 )
-from flaskr.service.user.password_utils import verify_password
-from flaskr.service.common.phone_numbers import normalize_phone_identifier
 from flaskr.service.user.utils import generate_token
-from flaskr.service.common.dtos import UserToken
-from flaskr.service.common.models import raise_error
+
+if TYPE_CHECKING:
+    from flask import Flask
 
 
 class PasswordAuthProvider(AuthProvider):
@@ -36,6 +39,7 @@ class PasswordAuthProvider(AuthProvider):
     supports_challenge = False
 
     def verify(self, app: Flask, request: VerificationRequest) -> AuthResult:
+        """Verify the supplied authentication credential."""
         raw_identifier = request.identifier.strip()
         identifier = (
             raw_identifier.lower()
@@ -54,7 +58,7 @@ class PasswordAuthProvider(AuthProvider):
         if not aggregate:
             raise_error("server.user.invalidCredentials")
 
-        # Find password credential – look up by user_bid only.
+        # Find password credential: look up by user_bid only.
         # The password credential's identifier may differ from the login
         # identifier (e.g. user registered with phone but logs in with
         # email, or vice-versa), so we must not filter by identifier here.

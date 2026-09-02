@@ -1,14 +1,11 @@
+"""Handle user credits for course-administration operations."""
+
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any, Dict, Optional
-
-from flask import Flask
-from sqlalchemy import and_, or_
-from sqlalchemy.orm import aliased
+from typing import TYPE_CHECKING
 
 from flaskr.dao import db
-from flaskr.util.datetime import now_utc
 from flaskr.service.billing.api import (
     build_billing_catalog,
     grant_manual_credits_to_user,
@@ -100,6 +97,12 @@ from flaskr.service.shifu.admin_dtos import (
     AdminOperationUserPackageGrantResultDTO,
     AdminOperationUserReferralRewardSummaryDTO,
 )
+from flaskr.util.datetime import now_utc
+from sqlalchemy import and_, or_
+from sqlalchemy.orm import aliased
+
+if TYPE_CHECKING:
+    from flask import Flask
 
 
 def grant_operator_user_credits(
@@ -109,6 +112,7 @@ def grant_operator_user_credits(
     operator_user_bid: str,
     payload: AdminOperationUserCreditGrantRequestDTO,
 ) -> AdminOperationUserCreditGrantResultDTO:
+    """Grant operator user credits."""
     with app.app_context():
         normalized_user_bid = str(user_bid or "").strip()
         normalized_operator_user_bid = str(operator_user_bid or "").strip()
@@ -206,6 +210,7 @@ def get_operator_user_grant_bootstrap(
     *,
     user_bid: str,
 ) -> AdminOperationUserGrantBootstrapDTO:
+    """Return operator user grant bootstrap."""
     with app.app_context():
         normalized_user_bid = str(user_bid or "").strip()
         user = _load_operator_user_or_raise(normalized_user_bid)
@@ -250,6 +255,7 @@ def grant_operator_user_package(
     operator_user_bid: str,
     payload: AdminOperationUserPackageGrantRequestDTO,
 ) -> AdminOperationUserPackageGrantResultDTO:
+    """Grant operator user package."""
     with app.app_context():
         normalized_user_bid = str(user_bid or "").strip()
         normalized_operator_user_bid = str(operator_user_bid or "").strip()
@@ -294,8 +300,9 @@ def get_operator_user_credits(
     user_bid: str,
     page_index: int,
     page_size: int,
-    filters: Optional[Dict[str, Any]] = None,
+    filters: dict[str, object] | None = None,
 ) -> AdminOperationUserCreditLedgerPageDTO:
+    """Return operator user credits."""
     with app.app_context():
         normalized_user_bid = str(user_bid or "").strip()
         safe_page_index = max(int(page_index or 1), 1)
@@ -530,6 +537,7 @@ def get_operator_user_credit_usage_detail(
     user_bid: str,
     usage_bid: str,
 ) -> AdminOperationUserCreditUsageDetailDTO:
+    """Return operator user credit usage detail."""
     with app.app_context():
         normalized_user_bid = str(user_bid or "").strip()
         normalized_usage_bid = str(usage_bid or "").strip()
@@ -552,7 +560,7 @@ def get_operator_user_credit_usage_detail(
 
         total_consumed_credits = sum(
             (abs(Decimal(row.amount or 0)) for row in owner_ledger_rows),
-            Decimal("0"),
+            Decimal(0),
         )
         context = _resolve_operator_user_credit_usage_context(main_usage_row)
         segment_rows = _load_operator_user_credit_usage_segment_rows(
@@ -565,7 +573,7 @@ def get_operator_user_credit_usage_detail(
         )
         generated_block_bids = [
             str(getattr(row, "generated_block_bid", "") or "").strip()
-            for row in detail_rows + [main_usage_row]
+            for row in [*detail_rows, main_usage_row]
         ]
         block_content_map = _load_generated_block_content_map(generated_block_bids)
         fallback_content = block_content_map.get(
@@ -601,7 +609,7 @@ def get_operator_user_credit_usage_detail(
                 consumed_credits=_format_decimal(
                     allocated_credit_map.get(
                         str(getattr(row, "usage_bid", "") or "").strip(),
-                        Decimal("0"),
+                        Decimal(0),
                     )
                 ),
                 usage_units=int(getattr(row, "total", 0) or 0),

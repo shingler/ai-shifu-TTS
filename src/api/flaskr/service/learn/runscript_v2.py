@@ -1,3 +1,5 @@
+"""Execute learning sessions and stream their results."""
+
 import contextlib
 import json
 import queue
@@ -6,17 +8,28 @@ import threading
 import time
 import traceback
 import uuid
+from collections.abc import Generator
 from datetime import datetime
-from typing import Any, Generator, Optional
+from typing import TYPE_CHECKING
 
 from flask import Flask
-from sqlalchemy import text as sa_text
-from sqlalchemy.exc import InterfaceError, OperationalError, ResourceClosedError
-
-from flaskr.service.common.models import AppException, raise_error
-from flaskr.service.user.repository import load_user_aggregate
-from flaskr.i18n import _
-
+from flaskr.common.cache_provider import cache as cache_provider
+from flaskr.common.log import thread_local as log_thread_local
+from flaskr.common.shifu_context import (
+    apply_shifu_context_snapshot,
+    get_shifu_context_snapshot,
+)
+from flaskr.dao import (
+    db,
+    invalidate_session,
+    is_abnormal_stream_termination,
+    is_protocol_interrupt_error,
+)
+from flaskr.i18n import _, get_current_language, set_language
+from flaskr.service.common.models import AppError, raise_error
+from flaskr.service.learn.const import INPUT_TYPE_ASK
+from flaskr.service.learn.context_v2 import RunScriptContextV2
+from flaskr.service.learn.exceptions import BreakError
 from flaskr.service.learn.learn_dtos import (
     AudioBackfillReadyDTO,
     GeneratedType,
@@ -24,34 +37,23 @@ from flaskr.service.learn.learn_dtos import (
     RunMarkdownFlowDTO,
     RunStatusDTO,
 )
-from flaskr.common.cache_provider import cache as cache_provider
-from flaskr.dao import (
-    db,
-    invalidate_session,
-    is_abnormal_stream_termination,
-    is_protocol_interrupt_error,
-)
-from flaskr.service.learn.const import INPUT_TYPE_ASK
+from flaskr.service.learn.listen_elements import ListenElementRunAdapter
+from flaskr.service.order.consts import ORDER_STATUS_SUCCESS
+from flaskr.service.order.models import Order
 from flaskr.service.shifu.shifu_struct_manager import (
-    get_shifu_dto,
-    get_outline_item_dto,
     ShifuInfoDto,
     ShifuOutlineItemDto,
+    get_outline_item_dto,
+    get_shifu_dto,
     get_shifu_struct,
 )
-from flaskr.service.shifu.shifu_history_manager import HistoryItem
-from flaskr.service.order.models import Order
-from flaskr.service.order.consts import ORDER_STATUS_SUCCESS
-from flaskr.service.learn.context_v2 import RunScriptContextV2
-from flaskr.service.learn.listen_elements import ListenElementRunAdapter
-from flaskr.common.log import thread_local as log_thread_local
-from flaskr.service.learn.exceptions import BreakException
-from flaskr.i18n import get_current_language, set_language
-from flaskr.common.shifu_context import (
-    get_shifu_context_snapshot,
-    apply_shifu_context_snapshot,
-)
+from flaskr.service.user.repository import load_user_aggregate
 from flaskr.util.datetime import to_utc_iso
+from sqlalchemy import text as sa_text
+from sqlalchemy.exc import InterfaceError, OperationalError, ResourceClosedError
+
+if TYPE_CHECKING:
+    from flaskr.service.shifu.shifu_history_manager import HistoryItem
 
 RUN_SCRIPT_TIMEOUT_SECONDS = 5 * 60
 RUN_SCRIPT_STATUS_REFRESH_SECONDS = 30
@@ -82,7 +84,7 @@ def _remove_db_session_safely(app: Flask, *, source: str) -> None:
 _is_protocol_desync_error = is_protocol_interrupt_error
 
 
-def _discard_session_connection(app: Flask, *, source: str) -> None:
+def _discard_session_connection(*, source: str) -> None:
     """Drop the session's DB connection instead of returning it to the pool.
 
     Used when the streaming generator terminates abnormally: the close (or a
@@ -144,13 +146,14 @@ def _ensure_healthy_db_connection(app: Flask) -> None:
         # Session.invalidate() both resets the session state WITHOUT emitting
         # SQL and discards the raw connection - a rollback here would send a
         # ROLLBACK on the very stream that just proved desynced.
-        _discard_session_connection(app, source="db connection probe failure")
+        _discard_session_connection(source="db connection probe failure")
     if last_error is not None:
         raise last_error
-    raise RuntimeError(
+    message = (
         "db connection probe kept returning mismatched results; "
         "no healthy connection available"
     )
+    raise RuntimeError(message)
 
 
 def _get_max_parallel_ask_count(app: Flask) -> int:
@@ -198,8 +201,9 @@ def _get_ask_sem_key(app: Flask, user_bid: str, outline_bid: str) -> str:
 def _ask_sem_acquire(app: Flask, user_bid: str, outline_bid: str) -> bool:
     """Try to acquire an ask semaphore slot. Returns True if slot acquired."""
     try:
-        from flaskr.dao import redis_client
+        from flaskr.dao import get_redis_client
 
+        redis_client = get_redis_client()
         if redis_client is None:
             return True  # fail open when Redis is unavailable
         result = redis_client.eval(
@@ -223,8 +227,9 @@ def _ask_sem_acquire(app: Flask, user_bid: str, outline_bid: str) -> bool:
 def _ask_sem_release(app: Flask, user_bid: str, outline_bid: str) -> None:
     """Release an ask semaphore slot."""
     try:
-        from flaskr.dao import redis_client
+        from flaskr.dao import get_redis_client
 
+        redis_client = get_redis_client()
         if redis_client is None:
             return
         redis_client.eval(
@@ -287,7 +292,7 @@ def _clear_run_script_status(app: Flask, user_bid: str, outline_bid: str) -> Non
 
 def _get_run_script_started_at(
     app: Flask, user_bid: str, outline_bid: str
-) -> Optional[int]:
+) -> int | None:
     try:
         raw = cache_provider.get(_get_run_script_status_key(app, user_bid, outline_bid))
     except Exception as exc:
@@ -320,19 +325,18 @@ def run_script_inner(
     user_bid: str,
     shifu_bid: str,
     outline_bid: str,
-    input: str | dict = None,
-    input_type: str = None,
-    reload_generated_block_bid: str = None,
-    reload_element_bid: str = None,
+    user_input: str | dict | None = None,
+    input_type: str | None = None,
+    reload_generated_block_bid: str | None = None,
+    reload_element_bid: str | None = None,
     listen: bool = False,
+    learning_mode: str = "read",
     preview_mode: bool = False,
     stop_event: threading.Event | None = None,
     element_adapter: ListenElementRunAdapter | None = None,
     manage_app_context: bool = True,
 ) -> Generator[RunMarkdownFlowDTO | RunElementSSEMessageDTO, None, None]:
-    """
-    Core function for running course scripts
-    """
+    """Core function for running course scripts."""
 
     def _finalize_langfuse_if_available(
         context: RunScriptContextV2 | None,
@@ -370,7 +374,7 @@ def run_script_inner(
                 lesson_info = None
             else:
                 lesson_info = outline_item_info
-                app.logger.info(f"lesson_info: {lesson_info.__json__()}")
+                app.logger.info("lesson_info: %s", lesson_info.__json__())
 
             if shifu_info.price > 0:
                 success_buy_record = (
@@ -383,10 +387,7 @@ def run_script_inner(
                     .order_by(Order.id.desc())
                     .first()
                 )
-                if not success_buy_record:
-                    is_paid = False
-                else:
-                    is_paid = True
+                is_paid = bool(success_buy_record)
             else:
                 is_paid = True
 
@@ -398,11 +399,12 @@ def run_script_inner(
                 user_info=user_info,
                 is_paid=is_paid,
                 listen=listen,
+                learning_mode=learning_mode,
                 preview_mode=preview_mode,
                 stop_event=stop_event,
             )
 
-            run_script_context.set_input(input, input_type)
+            run_script_context.set_input(user_input, input_type)
 
             ready_element_bids_by_block_bid: dict[str, list[str]] = {}
 
@@ -422,9 +424,9 @@ def run_script_inner(
                     element_bids.append(element_bid)
 
             def _iter_run_events(
-                events,
+                events: object,
                 ready_element_bids_by_block_bid: dict[str, list[str]],
-            ):
+            ) -> Generator[object, None, None]:
                 if element_adapter is None:
                     for event in events:
                         _remember_audio_backfill_ready_element(
@@ -442,7 +444,7 @@ def run_script_inner(
 
             def _iter_audio_backfill_ready_events(
                 ready_element_bids_by_block_bid: dict[str, list[str]],
-            ):
+            ) -> Generator[object, None, None]:
                 if input_type == INPUT_TYPE_ASK:
                     return
                 for (
@@ -463,7 +465,7 @@ def run_script_inner(
                     # exchange may have been interrupted, so discard rather
                     # than roll back on a possibly desynced connection.
                     _discard_session_connection(
-                        app, source="run_script_inner stop_event cancel"
+                        source="run_script_inner stop_event cancel"
                     )
                     return
                 yield from _iter_run_events(
@@ -481,12 +483,12 @@ def run_script_inner(
                 ready_element_bids_by_block_bid.clear()
             while run_script_context.has_next():
                 app.logger.warning(
-                    f"run_script_context.has_next(): {run_script_context.has_next()}"
+                    "run_script_context.has_next(): %s", run_script_context.has_next()
                 )
                 if stop_event and stop_event.is_set():
                     app.logger.info("run_script_inner cancelled by stop_event")
                     _discard_session_connection(
-                        app, source="run_script_inner stop_event cancel"
+                        source="run_script_inner stop_event cancel"
                     )
                     return
                 app.logger.info("run_script_context.run")
@@ -499,23 +501,26 @@ def run_script_inner(
             yield from _iter_audio_backfill_ready_events(
                 ready_element_bids_by_block_bid
             )
-        except BreakException:
+        except BreakError:
             _finalize_langfuse_if_available(run_script_context)
             db.session.commit()
-            app.logger.info("BreakException")
+            yield from _iter_audio_backfill_ready_events(
+                ready_element_bids_by_block_bid
+            )
+            app.logger.info("BreakError")
         except GeneratorExit:
             # The close lands at an arbitrary yield point (client disconnect),
             # so the connection's protocol state is unknowable: this is the
             # exact checkin path the pool-level desync detector caught in
             # production. Discard the connection instead of rolling back on it.
-            _discard_session_connection(app, source="run_script_inner GeneratorExit")
+            _discard_session_connection(source="run_script_inner GeneratorExit")
             app.logger.info("GeneratorExit")
         except Exception as exc:
             _finalize_langfuse_if_available(run_script_context)
             if _is_protocol_desync_error(exc):
                 # Rolling back on a desynced connection consumes stale packets
                 # ("Command Out of Sync") and re-pools the poisoned stream.
-                _discard_session_connection(app, source="run_script_inner stream error")
+                _discard_session_connection(source="run_script_inner stream error")
             else:
                 db.session.rollback()
             raise
@@ -530,7 +535,8 @@ def run_script_inner(
     yield from _run()
 
 
-def fmt(o):
+def fmt(o: object) -> object:
+    """Serialize a value for the shared API response envelope."""
     if isinstance(o, datetime):
         return to_utc_iso(o)
     return o.__json__()
@@ -540,15 +546,15 @@ def _to_sse_chunk(payload: object) -> str:
     return (
         "data: "
         + json.dumps(payload, default=fmt, ensure_ascii=False)
-        + "\n\n".encode("utf-8").decode("utf-8")
+        + b"\n\n".decode("utf-8")
     )
 
 
 def _log_run_script_stream_error(app: Flask, stream_error: Exception) -> None:
-    """Log a run-script stream error, keeping handled AppExceptions off ERROR.
+    """Log a run-script stream error, keeping handled AppErrors off ERROR.
 
     Unexpected errors are logged at ERROR for operational alerting, while a
-    handled, user-facing AppException is logged at INFO so it stays out of the
+    handled, user-facing AppError is logged at INFO so it stays out of the
     alert stream but remains diagnosable.
     """
     error_traceback = "".join(
@@ -564,8 +570,8 @@ def _log_run_script_stream_error(app: Flask, stream_error: Exception) -> None:
         "traceback": error_traceback,
     }
 
-    if isinstance(stream_error, AppException):
-        # AppException is already a handled, user-facing business error (for example,
+    if isinstance(stream_error, AppError):
+        # AppError is already a handled, user-facing business error (for example,
         # a stale lesson URL after a course republish). Keep it out of ERROR-level
         # operational alerts while preserving enough context for diagnostics.
         app.logger.info("run_script handled app exception")
@@ -682,15 +688,17 @@ def run_script(
     shifu_bid: str,
     outline_bid: str,
     user_bid: str,
-    input: str | dict = None,
-    input_type: str = None,
-    reload_generated_block_bid: str = None,
-    reload_element_bid: str = None,
+    user_input: str | dict | None = None,
+    input_type: str | None = None,
+    reload_generated_block_bid: str | None = None,
+    reload_element_bid: str | None = None,
     listen: bool = False,
+    learning_mode: str = "read",
     preview_mode: bool = False,
-    shifu_context_snapshot: Optional[dict[str, Any]] = None,
-    language: Optional[str] = None,
+    shifu_context_snapshot: dict[str, object] | None = None,
+    language: str | None = None,
 ) -> Generator[str, None, None]:
+    """Run script."""
     timeout = RUN_SCRIPT_TIMEOUT_SECONDS
     blocking_timeout = 1
     lock_retry_count = 5
@@ -759,7 +767,7 @@ def run_script(
         parent_shifu_context = shifu_context_snapshot or get_shifu_context_snapshot()
         producer_thread: threading.Thread | None = None
 
-        def producer():
+        def producer() -> None:
             # Propagate logging thread-local context into this background thread
             if parent_request_id:
                 log_thread_local.request_id = parent_request_id
@@ -779,11 +787,12 @@ def run_script(
                     user_bid=user_bid,
                     shifu_bid=shifu_bid,
                     outline_bid=outline_bid,
-                    input=input,
+                    user_input=user_input,
                     input_type=input_type,
                     reload_generated_block_bid=reload_generated_block_bid,
                     reload_element_bid=reload_element_bid,
                     listen=runtime_listen,
+                    learning_mode=learning_mode,
                     preview_mode=preview_mode,
                     stop_event=stop_event,
                     element_adapter=element_adapter,
@@ -813,7 +822,7 @@ def run_script(
                         )
                     else:
                         output_queue.put(("error", exc))
-                except BaseException as exc:  # noqa: BLE001 - GreenletExit etc.
+                except BaseException as exc:
                     producer_exc = exc
                     raise
                 finally:
@@ -828,9 +837,7 @@ def run_script(
                         # run_script_inner already invalidated and removed the
                         # session this resolves a fresh registry Session and
                         # invalidating it is a harmless no-op.
-                        _discard_session_connection(
-                            app, source="run_script producer abort"
-                        )
+                        _discard_session_connection(source="run_script producer abort")
                     _remove_db_session_safely(app, source="run_script producer")
                     output_queue.put(("done", None))
 
@@ -933,7 +940,7 @@ def run_script(
                         yield (
                             "data: "
                             + json.dumps(payload, default=fmt, ensure_ascii=False)
-                            + "\n\n".encode("utf-8").decode("utf-8")
+                            + b"\n\n".decode("utf-8")
                         )
                         if isinstance(payload_type, str):
                             last_stream_type = payload_type
@@ -967,41 +974,44 @@ def run_script(
                     done_received = True
                     break
 
-            if stream_error and not client_disconnected:
-                if isinstance(stream_error, Exception):
-                    _log_run_script_stream_error(app, stream_error)
-                    if isinstance(stream_error, AppException):
-                        error_content = str(stream_error)
-                    elif _is_retryable_llm_stream_connection_error(stream_error):
-                        error_content = str(_("server.learn.llmStreamInterrupted"))
-                    else:
-                        error_content = str(_("server.common.unknownError"))
-                    yield _to_sse_chunk(
-                        _make_terminal_event(
-                            outline_bid=outline_bid,
-                            event_type="error",
-                            content=error_content,
-                            element_adapter=stream_element_adapter,
-                        )
-                    )
-                    last_stream_type = "error"
-                    block_end_event = _make_terminal_event(
+            if (
+                stream_error
+                and not client_disconnected
+                and isinstance(stream_error, Exception)
+            ):
+                _log_run_script_stream_error(app, stream_error)
+                if isinstance(stream_error, AppError):
+                    error_content = str(stream_error)
+                elif _is_retryable_llm_stream_connection_error(stream_error):
+                    error_content = str(_("server.learn.llmStreamInterrupted"))
+                else:
+                    error_content = str(_("server.common.unknownError"))
+                yield _to_sse_chunk(
+                    _make_terminal_event(
                         outline_bid=outline_bid,
-                        event_type=GeneratedType.BREAK.value,
-                        content="",
+                        event_type="error",
+                        content=error_content,
                         element_adapter=stream_element_adapter,
-                        is_terminal=False if runtime_listen else None,
                     )
-                    if not _should_suppress_live_payload(block_end_event):
-                        yield _to_sse_chunk(block_end_event)
-                        last_stream_type = (
-                            GeneratedType.DONE.value
-                            if use_element_protocol
-                            else GeneratedType.BREAK.value
-                        )
-                        last_stream_done_is_terminal = (
-                            False if use_element_protocol else None
-                        )
+                )
+                last_stream_type = "error"
+                block_end_event = _make_terminal_event(
+                    outline_bid=outline_bid,
+                    event_type=GeneratedType.BREAK.value,
+                    content="",
+                    element_adapter=stream_element_adapter,
+                    is_terminal=False if runtime_listen else None,
+                )
+                if not _should_suppress_live_payload(block_end_event):
+                    yield _to_sse_chunk(block_end_event)
+                    last_stream_type = (
+                        GeneratedType.DONE.value
+                        if use_element_protocol
+                        else GeneratedType.BREAK.value
+                    )
+                    last_stream_done_is_terminal = (
+                        False if use_element_protocol else None
+                    )
 
             if not client_disconnected and not (
                 use_element_protocol
@@ -1072,6 +1082,8 @@ def get_run_status(
     outline_bid: str,
     user_bid: str,
 ) -> RunStatusDTO:
+    """Return run status."""
+    _ = shifu_bid
     started_at = _get_run_script_started_at(app, user_bid, outline_bid)
     if started_at is None:
         return RunStatusDTO(is_running=False, running_time=0)

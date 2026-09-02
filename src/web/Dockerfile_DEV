@@ -1,0 +1,23 @@
+FROM node:22.16.0 AS base
+
+RUN corepack enable
+
+# set work directory
+WORKDIR /app
+
+# install project dependencies
+# copy package.json and package-lock.json files
+COPY package*.json ./
+
+# install dependencies
+RUN npm ci --ignore-scripts
+
+# copy project source code after dependencies so source-only changes reuse the
+# lockfile-keyed install layer
+COPY . .
+
+# expose port
+EXPOSE 3000
+
+# start service
+CMD ["npm", "run", "dev"]

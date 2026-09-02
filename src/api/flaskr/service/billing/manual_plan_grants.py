@@ -2,23 +2,17 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any
-
-from flask import Flask
-from redis.exceptions import LockError
+from typing import TYPE_CHECKING
 
 from flaskr.common.cache_provider import cache as redis
 from flaskr.dao import db
 from flaskr.service.common.models import raise_error, raise_param_error
-from flaskr.util.uuid import generate_id
 from flaskr.util.datetime import now_utc
+from flaskr.util.uuid import generate_id
+from redis.exceptions import LockError
 
-from .credit_notifications import (
-    enqueue_credit_notification,
-    stage_credit_granted_notification_for_order,
-)
 from .consts import (
     BILLING_ORDER_STATUS_PAID,
     BILLING_ORDER_TYPE_SUBSCRIPTION_START,
@@ -27,13 +21,25 @@ from .consts import (
     BILLING_PRODUCT_TYPE_PLAN,
     BILLING_SUBSCRIPTION_STATUS_DRAFT,
 )
+from .credit_notifications import (
+    enqueue_credit_notification,
+    pending_credit_notification_bids,
+    stage_credit_granted_notification_for_order,
+)
 from .models import BillingOrder, BillingProduct, BillingSubscription
 from .primitives import normalize_bid as _normalize_bid
 from .queries import (
     calculate_self_managed_billing_cycle_end as _calculate_self_managed_billing_cycle_end,
+)
+from .queries import (
     load_primary_active_subscription as _load_primary_active_subscription,
 )
 from .subscriptions import grant_paid_order_credits, is_self_managed_billing_provider
+
+if TYPE_CHECKING:
+    from datetime import datetime
+
+    from flask import Flask
 
 _NOTIFICATION_EXTENSION_KEY = "admin_manual_plan_grant"
 _NOTIFICATION_STATUS_TEMPLATE_PENDING = "template_pending"
@@ -118,7 +124,7 @@ def _build_notification_extension_payload(
     requested_at: datetime,
     operator_user_bid: str,
     grant_channel: str,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     return {
         "status": _NOTIFICATION_STATUS_TEMPLATE_PENDING,
         "requested_at": requested_at.isoformat(),
@@ -180,7 +186,6 @@ def grant_manual_plan_to_user(
     grant_channel: str = "operator_user_management",
 ) -> ManualPlanGrantResult:
     """Grant one active billing plan to one user via a manual paid order."""
-
     with app.app_context():
         normalized_user_bid = _normalize_bid(user_bid)
         normalized_product_bid = _normalize_bid(product_bid)
@@ -218,7 +223,7 @@ def grant_manual_plan_to_user(
             now = now_utc()
             if existing_order is not None:
                 granted = grant_paid_order_credits(app, existing_order)
-                notification_bid = ""
+                notification_bids: tuple[str, ...] = ()
                 if granted:
                     grant_notification = stage_credit_granted_notification_for_order(
                         app,
@@ -227,10 +232,9 @@ def grant_manual_plan_to_user(
                         commit=False,
                         enqueue=False,
                     )
-                    if grant_notification.get("status") == "pending":
-                        notification_bid = str(
-                            grant_notification.get("notification_bid") or ""
-                        ).strip()
+                    notification_bids = pending_credit_notification_bids(
+                        grant_notification
+                    )
                 notification_status = _ensure_notification_extension_metadata(
                     existing_order,
                     requested_at=now,
@@ -239,7 +243,7 @@ def grant_manual_plan_to_user(
                 )
                 db.session.add(existing_order)
                 db.session.commit()
-                if notification_bid:
+                for notification_bid in notification_bids:
                     enqueue_credit_notification(app, notification_bid=notification_bid)
                 subscription = (
                     BillingSubscription.query.filter(
@@ -391,7 +395,7 @@ def grant_manual_plan_to_user(
             db.session.flush()
 
             granted = grant_paid_order_credits(app, order)
-            notification_bid = ""
+            notification_bids: tuple[str, ...] = ()
             if granted:
                 grant_notification = stage_credit_granted_notification_for_order(
                     app,
@@ -400,13 +404,10 @@ def grant_manual_plan_to_user(
                     commit=False,
                     enqueue=False,
                 )
-                if grant_notification.get("status") == "pending":
-                    notification_bid = str(
-                        grant_notification.get("notification_bid") or ""
-                    ).strip()
+                notification_bids = pending_credit_notification_bids(grant_notification)
 
             db.session.commit()
-            if notification_bid:
+            for notification_bid in notification_bids:
                 enqueue_credit_notification(app, notification_bid=notification_bid)
             return ManualPlanGrantResult(
                 user_bid=normalized_user_bid,
@@ -420,7 +421,5 @@ def grant_manual_plan_to_user(
                 reused_existing_request=False,
             )
         finally:
-            try:
+            with contextlib.suppress(LockError):
                 grant_lock.release()
-            except LockError:
-                pass

@@ -14,14 +14,15 @@ details behind those rules.
 | Task | Command | Location |
 |------|---------|----------|
 | Start backend dev server | `flask run` | `cd src/api` |
-| Start Cook Web (frontend & CMS) | `npm run dev` | `cd src/cook-web` |
+| Start Cook Web (frontend & CMS) | `npm run dev` | `cd src/web` |
 | Run backend tests | `pytest` | `cd src/api` |
+| Run frontend unit tests | `npm run test:ci` | `cd src/web` |
 | Generate DB migration | `FLASK_APP=app.py flask db migrate -m "message"` | `cd src/api` |
 | Apply DB migration | `FLASK_APP=app.py flask db upgrade` | `cd src/api` |
 | Check code quality | `lefthook run pre-commit --all-files` | Root directory |
 | Start all services (Docker) | `docker compose -f docker-compose.latest.yml up -d` | `cd docker` |
 | Start Docker dev stack (build local latest) | `./dev_in_docker.sh` | `cd docker` |
-| Build Cook Web dev image | `docker build ../src/cook-web -t ai-shifu-cook-web-dev -f ../src/cook-web/Dockerfile_DEV` | `cd docker` |
+| Build Cook Web dev image | `docker build ../src/web -t ai-shifu-cook-web-dev -f ../src/web/Dockerfile_DEV` | `cd docker` |
 
 ### Essential Environment Variables
 
@@ -29,7 +30,7 @@ details behind those rules.
 # Backend (src/api/.env)
 FLASK_APP=app.py
 
-# Cook Web (src/cook-web/.env.local)
+# Cook Web (src/web/.env.local)
 NEXT_PUBLIC_API_URL=http://localhost:5000
 ```
 
@@ -40,10 +41,25 @@ tools already installed on your machine). The git hooks only fire after
 `lefthook install` has wired them into `.git/hooks`, and each hook shells out to
 tools that must already be on `PATH`. One-time setup:
 
+Install lefthook for your platform.
+
+macOS (Homebrew):
+
 ```bash
 brew install lefthook
-pip install ruff==0.16.3 commitizen==4.16.2 pre-commit-hooks==6.0.0
-(cd src/cook-web && npm ci)   # provides prettier + eslint
+```
+
+Linux or Windows (npm):
+
+```bash
+npm install -g @evilmartians/lefthook
+```
+
+Then install the remaining development tools:
+
+```bash
+pip install ruff==0.16.5 commitizen==4.16.2 pre-commit-hooks==6.0.0
+(cd src/web && npm ci)   # provides prettier + eslint
 lefthook install
 ```
 
@@ -94,7 +110,7 @@ maintains control of the narrative progression.
 The project follows a microservices architecture with two main components:
 
 - Backend API (`src/api/`): Flask-based Python API with SQLAlchemy ORM
-- Cook Web (`src/cook-web/`): Next.js-based unified frontend and content
+- Cook Web (`src/web/`): Next.js-based unified frontend and content
   management interface
 
 ### Backend Architecture Notes
@@ -120,8 +136,8 @@ The project follows a microservices architecture with two main components:
 
 - Cook Web uses Next.js, TypeScript, and Tailwind CSS
 - The frontend provides both learner-facing routes and authoring/admin tools
-- Shared request handling lives in `src/cook-web/src/lib/request.ts` and
-  `src/cook-web/src/lib/api.ts`
+- Shared request handling lives in `src/web/src/lib/request.ts` and
+  `src/web/src/lib/api.ts`
 - Legacy `c-*` directories are still active compatibility surfaces
 
 #### Unified Request System
@@ -321,6 +337,220 @@ src/api/tests/
 - Critical paths should target 100 percent coverage
 - Coverage command: `pytest --cov=flaskr --cov-report=html`
 
+### Ruff Findings And Rule Adoption
+
+Treat Ruff findings as code or contract signals, not as requests to make the
+configuration quieter. For a finding in new or changed code:
+
+1. Read `ruff rule <CODE>`, the nearest `AGENTS.md`, the implementation, its
+   call sites, and the closest tests.
+2. Prefer the existing project abstraction or a direct code fix. Add focused
+   regression coverage whenever the rewrite can change behavior, error paths,
+   serialization, persistence, timing, or a public/internal contract.
+3. If a framework or protocol requires the flagged construct, use an inline
+   `# noqa: CODE` for that construct and explain the reason in nearby English
+   prose. Do not use a blanket `# noqa`.
+4. Use `per-file-ignores` only when the purpose of a file or file class
+   intrinsically conflicts with the rule, such as a lint fixture or immutable
+   migration history. A single ordinary call site belongs inline, not in
+   `ruff.toml`.
+5. Use a global ignore only when a documented repository-wide contract
+   fundamentally conflicts with the rule. Do not weaken `select` or `ignore`
+   to make an unrelated PR pass.
+
+For `RUF001`, retain intentional fullwidth Chinese punctuation (`，`, `：`,
+`！`, `？`, and `；`) in Chinese prose, notification formatting, TTS boundary
+patterns, and regression fixtures. Suppress each audited source line with
+`# noqa: RUF001` and an English reason; do not add characters to
+`allowed-confusables`, because that option also weakens the distinct RUF002 and
+RUF003 checks. Treat every other confusable as suspicious and replace it with
+the intended code point unless an exact external protocol or regression fixture
+requires it. Python test modules and test
+configuration files are exempt from RUF001 because they must preserve user text,
+provider payloads, protocol samples, and malformed inputs verbatim. Do not copy
+that exemption into production paths; add new tests under a `tests/` directory
+or use the conventional `test_*.py`, `*_test.py`, or `conftest.py` filename.
+
+For `N803`, keep Python function and method arguments in snake_case even when
+the corresponding serialized field uses camelCase. Translate from the Python
+argument to the wire-facing attribute inside the DTO and update internal
+keyword callers; do not copy JSON spelling into a Python signature or add an
+ignore-name pattern. Preserve an external callback or override signature only
+when the caller truly owns the keyword contract, and explain that exception at
+the parameter.
+
+For `S101`, use `assert` only where assertion reporting is the interface, such
+as pytest tests and executable self-test fixtures. Production validation,
+authorization, and state guards must raise explicit exceptions because Python
+removes assertions under `-O`. Delete stale exact-file exceptions when the path
+disappears or an existing test pattern already owns it.
+
+For `ARG002`, remove method parameters only when the repository owns the
+signature and all callers. Keep externally owned framework, protocol, fixture,
+and test-double signatures intact; explicitly consume compatibility values near
+the boundary so keyword contracts remain visible and lint-clean.
+
+Apply the same ownership test to `ARG001`: remove a function parameter only
+when all callers are repository-owned; explicitly consume values required by
+framework callbacks, fixtures, migrations, and compatibility facades.
+
+For `ARG005`, prefer zero-argument lambdas when callers pass nothing. When a
+callback or test double must accept positional or keyword arguments, use a
+named helper or underscore-prefixed parameters that preserve the actual call
+contract; do not rename externally supplied keyword parameters.
+
+For `ANN002`, annotate the element type accepted by `*args`, not a tuple type.
+Use the narrow shared type when the forwarding contract is homogeneous and
+`object` only for genuinely heterogeneous compatibility forwarding.
+
+For `ANN003`, annotate the value type accepted by `**kwargs`, not a dictionary
+type. Prefer a shared narrow value type for homogeneous options and `object`
+only when an adapter genuinely forwards heterogeneous keyword values.
+
+For `D102`, document the observable responsibility or contract of each public
+production and tool method. Keep behavior-focused pytest functions exempt;
+their names and assertions are the executable specification. Do not add generic
+docstrings that merely restate the method name or signature.
+
+For `D103`, document the result, side effect, data boundary, route group, or
+command-line workflow owned by each public production or contributor-tool
+function. Prefer contract verbs such as `Return`, `Yield`, `Serialize`,
+`Register`, and `Run`; expand a precise function name only when it needs a
+destination, source, or protocol boundary to be unambiguous. Do not add opaque
+filler that merely says an operation is performed. Behavior-named tests and
+deliberately minimal architecture fixtures remain exempt, as does immutable
+Alembic history with its conventional `upgrade` and `downgrade` hooks. Because
+function docstrings are runtime data, search for `__doc__` or inspection
+consumers before bulk work, prove executable AST equality after removing only
+the new function docstrings, and run focused Swagger or CLI regressions for the
+affected surfaces.
+
+For `N815`, keep Python DTO field names in snake_case even when the public JSON
+contract uses camelCase. Pydantic DTOs should declare the public name with
+`Field(alias="...")`, accept internal construction through `populate_by_name`,
+and serialize with `by_alias=True`; tests must lock both the Python attribute
+and exact wire keys. A non-Pydantic DTO whose annotated name directly drives
+both JSON and generated Swagger may use one explained inline suppression for
+that field. Do not exempt the containing file or rename the external contract.
+
+For `G004`, keep log message construction lazy: pass a constant message and
+its values as positional logging arguments, preserving the message text,
+argument order, and log level. Use `%s` for normal or `!s` interpolation,
+`%r`/`%a` for the matching conversion, and escape a literal percent as `%%`.
+When an f-string field has a format specification that logging interpolation
+cannot express exactly, pre-format only that field with `format(value, "spec")`
+and keep the rest of the message parameterized. Do not hide an f-string in a
+temporary variable merely to silence the rule.
+
+For the Ruff `EM` family (`EM101`-`EM103`), assign a direct string literal,
+contextual f-string, or `.format()` expression to a collision-free local
+immediately before raising it, then pass that local as the same constructor
+argument. Prefer `message`; use `error_message` or `exception_message` when the
+whole function already uses that name. Preserve the exception type, exact
+message expression, remaining positional and keyword arguments, and any
+explicit `raise ... from` cause. Do not evade the rule by concatenating strings,
+changing formatting, or dropping useful values from the error. Scan the whole
+function, including nested scopes, before introducing the local so a new binding
+cannot shadow an existing local, free variable, or global lookup. For bulk
+changes, prove the rewrite is structurally reversible and run tests that exercise
+the affected error paths. A `pytest.raises` body must remain one simple statement:
+bind its fixed message immediately before the context-manager block and keep only
+the `raise` inside.
+
+For `D205`, put the complete summary on the first physical docstring line,
+then use exactly one blank line before details, sections, or embedded protocol
+content. Do not wrap the summary across source lines; line length is formatter
+owned. In Flasgger route docstrings, keep the `---` YAML separator after that
+blank line and run the Swagger-docstring parser regression test rather than
+suppressing the rule or reindenting the specification.
+
+For `D107`, describe what constructing the instance establishes: its payload,
+owned state, bound dependency, or non-obvious setup. Keep the constructor
+docstring to one line when that is the whole contract, and add details only for
+real side effects or invariants. Do not copy the signature or write a generic
+"Initialize the object" sentence merely to satisfy the rule. Test doubles
+should name the state or collaborator they stand in for.
+
+For `D105`, document the observable protocol contract instead of restating the
+magic method name. A `__json__` docstring says whether it returns a scalar,
+JSON-compatible data, or a JSON string; mapping methods identify the keys or
+payload they proxy; representation and comparison methods describe their
+visible result. Keep a one-line contract when sufficient, and make test-double
+operators name the fake expression they build. Do not write filler such as
+"Implement `__json__`".
+
+For `N806`, distinguish a class declaration or module-level class import from
+a value bound inside a function. Keep real class names in CapWords, but bind a
+locally loaded model or constructor to a descriptive snake_case name such as
+`draft_shifu_model` or `session_factory`, then use that name consistently in
+the function. Preserve a deliberate lazy import instead of moving it to module
+scope merely for lint, and do not add a per-file exception for ordinary local
+bindings. Run the tests that exercise the local loader or factory so the rename
+cannot silently point queries or object creation at a different class.
+
+For `D100`, describe why the module exists at its ownership boundary. A
+production module names the service responsibility, protocol, or data contract
+it owns; a test module names the behavior group it protects; an executable
+script states the operation it performs. Do not mechanically restate the file
+name or write generic filler such as "module helpers". Remove an unreferenced
+empty placeholder instead of inventing a purpose for it. Keep the docstring as
+the first Python statement while preserving shebangs, encoding comments, and
+file-level tool directives. Because adding it changes `module.__doc__`, search
+runtime introspection before a bulk adoption and verify executable AST equality
+after removing the new module docstrings.
+
+For `D101`, document the class's role or observable contract, not its spelling.
+DTOs name the payload they carry, persistence models name the state they store,
+protocols name the operations they require, exceptions name the failure they
+signal, and test doubles name the collaborator or failure they simulate. A test
+class names the behavior group it verifies. Keep the contract to one line when
+that is sufficient, and do not write filler such as "Class for X" or merely
+split the CapWords name into a sentence. Because a class docstring is visible
+through `Class.__doc__` and may feed schema or inspection frameworks, search
+runtime introspection before adding it and verify executable AST equality after
+removing only the new class docstrings. Run focused schema tests when a touched
+class is registered with Swagger or created by Pydantic.
+For `TC002` and `TC003`, move a third-party or standard-library import into an
+`if TYPE_CHECKING:` block only after confirming every use is an annotation that
+Python does not need to resolve at runtime. Postponed annotations are the
+normal proof; a quoted annotation or a local variable annotation that is never
+evaluated is also safe. An import's source does not prove that it is safe to
+defer: keep imports that provide registration side effects or that a framework,
+decorator, function signature without postponed evaluation, or explicit
+runtime reflection resolves while importing the module. When one import
+statement mixes runtime values with annotation-only types, split the statement
+and move only the type-only names.
+
+Pydantic `BaseModel` fields are declared as runtime-evaluated in `ruff.toml`,
+so both their standard-library and third-party field types stay imported
+normally; do not replace that contract with scattered `noqa` comments. When
+another shared runtime-evaluated base class or decorator is introduced, model
+it centrally in Ruff and add an import or schema smoke test. Use a narrow
+explained suppression only for a one-off runtime consumer that Ruff cannot
+model. Search tests for `monkeypatch`, `getattr`, and module-attribute
+assertions before moving an import: preserve a real injection seam, but remove
+an obsolete patch that never influences the code under test instead of keeping
+a fake runtime dependency.
+
+Adopt or remove exceptions one rule unit at a time. A rule unit is normally
+one Ruff code; combine codes only when they report the same construct and have
+the same fix and exception boundary. Base each rule PR on the preceding rule
+branch, and keep unrelated cleanup out of the diff. Track the stack and rule
+census in `docs/exec-plans/active/ruff-rule-minimization.md`.
+
+For each rule unit, run the focused check first and then the repository gates:
+
+```bash
+ruff check . --select CODE
+ruff check .
+ruff format --check .
+python scripts/check_repo_harness.py
+```
+
+Run the nearest behavior tests for every touched runtime surface. Lint passing
+does not replace test coverage. Before committing, also run
+`python scripts/check_dev_tools.py` and `lefthook run pre-commit --all-files`.
+
 ## Development Workflow
 
 ### Branch Naming
@@ -355,10 +585,14 @@ src/api/tests/
 
 - `backend-tests.yml`: runs backend tests for `src/api/**` changes and on
   direct pushes to `main`.
-- `contract-tests.yml`: runs contract tests for backend-facing changes.
+- `frontend-tests.yml`: runs Cook Web Jest tests for frontend and shared i18n
+  changes while reporting a successful no-op check for unrelated PRs.
 - `prettier-check.yml`: checks Cook Web formatting for frontend changes.
-- `translations-check.yml`: validates translation parity, key usage, and
-  locale metadata on PRs, selected branches, and a schedule.
+- `repo-harness.yml`: the `Static Checks` job validates architecture
+  boundaries, generated AI and knowledge artifacts, translation parity and
+  locale metadata, and the MarkdownFlow release pins on PRs into `main`.
+- `runtime-harness.yml`: runs the Docker-backed Playwright smoke harness for
+  runtime-affecting backend, frontend, Docker, and script changes.
 - `prepare-release.yml`: manually prepares a release draft from a requested
   `vX.Y.Z` version and updates versioned project files.
 - `build-latest.yml`: builds the freshest published Docker images from `main`

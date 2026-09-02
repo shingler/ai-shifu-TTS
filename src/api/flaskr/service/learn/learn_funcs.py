@@ -1,17 +1,25 @@
+"""Load and update learning records, reactions, and TTS output."""
+
 import base64
 import json
 import logging
 import queue
 import time
 import uuid
+from collections.abc import Iterator
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from flask import Flask, has_request_context, request
-from markdown_flow import (
-    InteractionParser,
+from flaskr.api.tts import (
+    AudioSettings,
+    VoiceSettings,
+    get_default_audio_settings,
+    get_default_voice_settings,
+    get_tts_provider,
+    is_tts_configured,
+    synthesize_text,
 )
-
 from flaskr.dao import db
 from flaskr.i18n import _
 from flaskr.service.common import raise_error, raise_error_with_args
@@ -23,22 +31,22 @@ from flaskr.service.learn.learn_dtos import (
     GeneratedInfoDTO,
     GeneratedType,
     LearnBannerInfoDTO,
-    LearnOutlineItemsWithBannerInfoDTO,
     LearnOutlineItemInfoDTO,
+    LearnOutlineItemsWithBannerInfoDTO,
     LearnShifuInfoDTO,
     LearnStatus,
     LikeStatus,
     OutlineType,
     RunMarkdownFlowDTO,
 )
-from flaskr.service.learn.lesson_feedback import (
-    build_lesson_feedback_interaction_md,
-    is_lesson_feedback_interaction,
-)
 from flaskr.service.learn.legacy_record_builder import (
     LegacyGeneratedBlockRecord,
     LegacyLearnRecord,
     build_legacy_record_for_progress,
+)
+from flaskr.service.learn.lesson_feedback import (
+    build_lesson_feedback_interaction_md,
+    is_lesson_feedback_interaction,
 )
 from flaskr.service.learn.listen_element_matching import (
     get_speakable_text_elements,
@@ -78,45 +86,42 @@ from flaskr.service.shifu.models import (
 from flaskr.service.shifu.shifu_history_manager import HistoryItem
 from flaskr.service.shifu.struct_utils import find_node_with_parents
 from flaskr.service.shifu.utils import get_shifu_res_url
-from flaskr.api.tts import (
-    get_default_audio_settings,
-    get_default_voice_settings,
-    get_tts_provider,
-    is_tts_configured,
-    synthesize_text,
-)
 from flaskr.service.tts import (
     has_speakable_text,
     preprocess_for_tts,
     resolve_tts_billable_chars,
 )
-from flaskr.service.tts.api import create_streaming_tts_processor, TTSRpmQueueTimeout
-from flaskr.service.tts.audio_utils import (
-    concat_audio_best_effort,
-    get_audio_duration_ms,
+from flaskr.service.tts.api import (
+    TTSRpmQueueTimeoutError,
+    create_streaming_tts_processor,
+    find_ready_cloned_voice,
+    find_tracked_cloned_voice,
+    get_clone_provider_spec,
 )
 from flaskr.service.tts.audio_record_utils import (
     build_completed_audio_record,
     save_audio_record,
 )
+from flaskr.service.tts.audio_utils import (
+    concat_audio_best_effort,
+    get_audio_duration_ms,
+)
+from flaskr.service.tts.models import (
+    AUDIO_STATUS_COMPLETED,
+    TTS_MINIMAX_CLONE_STATUS_READY,
+    LearnGeneratedAudio,
+)
+from flaskr.service.tts.pipeline import split_text_for_tts
 from flaskr.service.tts.subtitle_utils import (
     append_subtitle_cue,
     normalize_subtitle_cues,
 )
-from flaskr.service.tts.api import (
-    find_ready_cloned_voice,
-    find_tracked_cloned_voice,
-    get_clone_provider_spec,
-)
-from flaskr.service.tts.models import (
-    AUDIO_STATUS_COMPLETED,
-    LearnGeneratedAudio,
-    TTS_MINIMAX_CLONE_STATUS_READY,
-)
-from flaskr.service.tts.pipeline import split_text_for_tts
 from flaskr.service.tts.tts_handler import upload_audio_to_oss
 from flaskr.service.tts.validation import validate_tts_settings_strict
 from flaskr.util import generate_id
+from markdown_flow import (
+    InteractionParser,
+)
 
 
 def _normalize_dt_to_utc(
@@ -125,15 +130,14 @@ def _normalize_dt_to_utc(
     if value is None:
         return None
     if value.tzinfo is not None:
-        return value.astimezone(timezone.utc)
-    return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(UTC)
+    return value.replace(tzinfo=UTC)
 
 
 def _resolve_published_effective_updated_at(
     outline_item: PublishedOutlineItem,
 ) -> datetime | None:
-    updated_at = _normalize_dt_to_utc(getattr(outline_item, "updated_at", None))
-    return updated_at
+    return _normalize_dt_to_utc(getattr(outline_item, "updated_at", None))
 
 
 def _resolve_progress_effective_updated_at(
@@ -247,7 +251,14 @@ def _has_next_outline_item(
     return False
 
 
-def get_shifu_info(app: Flask, shifu_bid: str, preview_mode: bool) -> LearnShifuInfoDTO:
+def get_shifu_info(
+    app: Flask,
+    shifu_bid: str,
+    preview_mode: bool,
+    *,
+    viewer_user_bid: str = "",
+) -> LearnShifuInfoDTO:
+    """Return shifu info."""
     with app.app_context():
         model = DraftShifu if preview_mode else PublishedShifu
         shifu = (
@@ -266,12 +277,19 @@ def get_shifu_info(app: Flask, shifu_bid: str, preview_mode: bool) -> LearnShifu
             price=str(shifu.price),
             keywords=shifu.keywords.split(",") if shifu.keywords else [],
             tts_enabled=tts_enabled,
+            default_listen_mode_enabled=bool(
+                getattr(shifu, "default_listen_mode_enabled", 0)
+            ),
+            is_owner=bool(viewer_user_bid)
+            and str(shifu.created_user_bid or "").strip()
+            == str(viewer_user_bid).strip(),
         )
 
 
 def get_outline_item_tree(
     app: Flask, shifu_bid: str, user_bid: str, preview_mode: bool
 ) -> LearnOutlineItemsWithBannerInfoDTO:
+    """Return outline item tree."""
     with app.app_context():
         outline_type_map = {
             UNIT_TYPE_VALUE_TRIAL: OutlineType.TRIAL,
@@ -306,10 +324,7 @@ def get_outline_item_tree(
                 .order_by(Order.id.desc())
                 .first()
             )
-            if not buy_record:
-                is_paid = False
-            else:
-                is_paid = True
+            is_paid = bool(buy_record)
         struct = (
             struct_model.query.filter(
                 struct_model.shifu_bid == shifu_bid, struct_model.deleted == 0
@@ -363,11 +378,7 @@ def get_outline_item_tree(
             latest_progress_updated_at = _resolve_progress_effective_updated_at(
                 latest_progress_record
             )
-            if latest_progress_record is None:
-                latest_progress_record_map[progress_record.outline_item_bid] = (
-                    progress_record
-                )
-            elif (
+            if latest_progress_record is None or (
                 (
                     progress_updated_at is not None
                     and latest_progress_updated_at is not None
@@ -386,15 +397,15 @@ def get_outline_item_tree(
                     progress_record
                 )
 
-        def build_outline_item_tree(item: HistoryItem):
+        def build_outline_item_tree(
+            item: HistoryItem,
+        ) -> LearnOutlineItemInfoDTO | None:
             outline_item: DraftOutlineItem | PublishedOutlineItem = next(
                 (i for i in outline_items_dbs if i.id == item.id), None
             )
             if not outline_item or outline_item.hidden == 1:
                 return None
-            progress_record = progress_records_map.get(
-                outline_item.outline_item_bid, None
-            )
+            progress_record = progress_records_map.get(outline_item.outline_item_bid)
             if not progress_record:
                 status = LEARN_STATUS_NOT_STARTED
             else:
@@ -457,15 +468,14 @@ def get_outline_item_tree(
                 banner_info=banner_info_dto,
                 outline_items=outline_items,
             )
-        if not is_paid:
-            if add_banner:
-                banner_info_dto = LearnBannerInfoDTO(
-                    title=_("server.banner.bannerTitle"),
-                    pop_up_title=_("server.banner.bannerPopUpTitle"),
-                    pop_up_content=_("server.banner.bannerPopUpContent"),
-                    pop_up_confirm_text=_("server.banner.bannerPopUpConfirmText"),
-                    pop_up_cancel_text=_("server.banner.bannerPopUpCancelText"),
-                )
+        if not is_paid and add_banner:
+            banner_info_dto = LearnBannerInfoDTO(
+                title=_("server.banner.bannerTitle"),
+                pop_up_title=_("server.banner.bannerPopUpTitle"),
+                pop_up_content=_("server.banner.bannerPopUpContent"),
+                pop_up_confirm_text=_("server.banner.bannerPopUpConfirmText"),
+                pop_up_cancel_text=_("server.banner.bannerPopUpCancelText"),
+            )
         return LearnOutlineItemsWithBannerInfoDTO(
             banner_info=banner_info_dto,
             outline_items=outline_items,
@@ -475,6 +485,7 @@ def get_outline_item_tree(
 def get_learn_record(
     app: Flask, shifu_bid: str, outline_bid: str, user_bid: str, preview_mode: bool
 ) -> LegacyLearnRecord:
+    """Rebuild the learner's legacy record from persisted progress."""
     with app.app_context():
         is_paid = preview_mode
         if not is_paid:
@@ -500,7 +511,7 @@ def get_learn_record(
             return LegacyLearnRecord(
                 records=[],
             )
-        app.logger.info(f"progress_record: {progress_record.progress_record_bid}")
+        app.logger.info("progress_record: %s", progress_record.progress_record_bid)
         records = build_legacy_record_for_progress(
             progress_record,
             user_bid=user_bid,
@@ -523,9 +534,10 @@ def get_learn_record(
                     for button in parsed_interaction.get("buttons"):
                         if button.get("value") == "_sys_pay":
                             pass
-                        if button.get("value") == "_sys_login":
-                            if bool(request.user.mobile):
-                                records.remove(last_record)
+                        if button.get("value") == "_sys_login" and bool(
+                            request.user.mobile
+                        ):
+                            records.remove(last_record)
         struct_model = LogDraftStruct if preview_mode else LogPublishedStruct
         outline_item_model = DraftOutlineItem if preview_mode else PublishedOutlineItem
         has_next_outline = False
@@ -646,6 +658,7 @@ def get_learn_record(
 def reset_learn_record(
     app: Flask, shifu_bid: str, outline_bid: str, user_bid: str
 ) -> bool:
+    """Reset learn record."""
     with app.app_context():
         progress_records = LearnProgressRecord.query.filter(
             LearnProgressRecord.user_bid == user_bid,
@@ -664,6 +677,7 @@ def reset_learn_record(
 def handle_reaction(
     app: Flask, shifu_bid: str, user_bid: str, generated_block_bid: str, action: str
 ) -> bool:
+    """Persist a learner's reaction to one generated block."""
     with app.app_context():
         generated_block = LearnGeneratedBlock.query.filter(
             LearnGeneratedBlock.user_bid == user_bid,
@@ -693,6 +707,7 @@ def get_generated_content(
     user_bid: str,
     preview_mode: bool,
 ) -> GeneratedInfoDTO:
+    """Return generated content."""
     with app.app_context():
         generated_block = LearnGeneratedBlock.query.filter(
             LearnGeneratedBlock.user_bid == user_bid,
@@ -799,7 +814,7 @@ def _resolve_runtime_tts_voice_id(
     default_voice_settings = get_default_voice_settings(normalized_provider)
     fallback_voice_id = (getattr(default_voice_settings, "voice_id", "") or "").strip()
     if not fallback_voice_id and built_in_voice_ids:
-        fallback_voice_id = sorted(built_in_voice_ids)[0]
+        fallback_voice_id = min(built_in_voice_ids)
     app.logger.warning(
         "%s TTS voice_id %s is not a current built-in voice or ready cloned voice; falling back to %s",
         normalized_provider,
@@ -814,7 +829,7 @@ def _resolve_shifu_tts_settings(
     *,
     shifu_bid: str,
     preview_mode: bool,
-):
+) -> tuple[str, str, VoiceSettings, AudioSettings]:
     shifu_model = DraftShifu if preview_mode else PublishedShifu
     shifu = (
         shifu_model.query.filter(
@@ -869,18 +884,21 @@ def _yield_tts_segments(
     text: str,
     provider: str,
     tts_model: str,
-    voice_settings,
-    audio_settings,
-):
+    voice_settings: object,
+    audio_settings: object,
+) -> Iterator[tuple[int, bytes, int, str, int, int, int]]:
     provider_name = (provider or "").strip().lower()
     if not provider_name:
-        raise ValueError("TTS provider is required")
+        error_message = "TTS provider is required"
+        raise ValueError(error_message)
     if not is_tts_configured(provider_name):
-        raise ValueError(f"TTS provider is not configured: {provider_name}")
+        message = f"TTS provider is not configured: {provider_name}"
+        raise ValueError(message)
 
     segments = split_text_for_tts(text, provider_name=provider_name)
     if not segments:
-        raise ValueError("No speakable text after preprocessing")
+        error_message = "No speakable text after preprocessing"
+        raise ValueError(error_message)
 
     safe_audio_settings = replace(audio_settings, format="mp3")
     for index, segment_text in enumerate(segments):
@@ -904,7 +922,9 @@ def _yield_tts_segments(
         )
 
 
-def _build_tts_usage_metadata(*, voice_settings, audio_settings) -> dict:
+def _build_tts_usage_metadata(
+    *, voice_settings: object, audio_settings: object
+) -> dict:
     return {
         "voice_id": voice_settings.voice_id or "",
         "speed": voice_settings.speed,
@@ -925,6 +945,7 @@ def _build_tts_usage_context(
     outline_item_bid: str | None = None,
     progress_record_bid: str | None = None,
     generated_block_bid: str | None = None,
+    learning_mode: str = "",
 ) -> UsageContext:
     kwargs = {
         "user_bid": user_bid,
@@ -938,6 +959,9 @@ def _build_tts_usage_context(
         kwargs["progress_record_bid"] = progress_record_bid
     if generated_block_bid is not None:
         kwargs["generated_block_bid"] = generated_block_bid
+    normalized_learning_mode = str(learning_mode or "").strip().lower()
+    if normalized_learning_mode in {"read", "listen", "classroom"}:
+        kwargs["learning_mode"] = normalized_learning_mode
     return UsageContext(**kwargs)
 
 
@@ -947,8 +971,8 @@ def _finalize_tts_stream_audio(
     audio_parts: list[bytes],
     subtitle_cues: list[dict] | None,
     audio_bid: str,
-    audio_settings,
-    voice_settings,
+    audio_settings: object,
+    voice_settings: object,
     tts_model: str,
     cleaned_text: str,
     segment_count: int,
@@ -961,9 +985,10 @@ def _finalize_tts_stream_audio(
 ) -> tuple[str, int]:
     final_audio = concat_audio_best_effort(audio_parts)
     if not final_audio:
-        raise ValueError("No audio data produced")
+        message = "No audio data produced"
+        raise ValueError(message)
 
-    duration_ms = int(get_audio_duration_ms(final_audio, format="mp3") or 0)
+    duration_ms = int(get_audio_duration_ms(final_audio, audio_format="mp3") or 0)
     oss_url, bucket_name = upload_audio_to_oss(app, final_audio, audio_bid)
 
     if persist_audio:
@@ -997,13 +1022,13 @@ def _yield_with_tts_error_mapping(
     app: Flask,
     *,
     unknown_error_log: str,
-    body,
-):
+    body: object,
+) -> Iterator[object]:
     try:
         yield from body()
     except ValueError as exc:
         raise_error_with_args("server.common.paramsError", param_message=str(exc))
-    except TTSRpmQueueTimeout as exc:
+    except TTSRpmQueueTimeoutError as exc:
         # The TTS provider's RPM quota is saturated. This is expected
         # backpressure, not a crash: log at WARNING (so it does not page ops as
         # an ERROR) and surface a retryable message instead of a generic
@@ -1093,8 +1118,9 @@ def _tts_synth_sem_acquire(app: Flask, user_bid: str, outline_bid: str) -> str:
     if max_count <= 0 or not user_bid or not outline_bid:
         return _TTS_SLOT_BYPASS
     try:
-        from flaskr.dao import redis_client
+        from flaskr.dao import get_redis_client
 
+        redis_client = get_redis_client()
         if redis_client is None:
             return _TTS_SLOT_BYPASS  # fail open when Redis is unavailable
         result = redis_client.eval(
@@ -1120,8 +1146,9 @@ def _tts_synth_sem_release(app: Flask, user_bid: str, outline_bid: str) -> None:
     if _get_max_parallel_tts_synth_count(app) <= 0 or not user_bid or not outline_bid:
         return
     try:
-        from flaskr.dao import redis_client
+        from flaskr.dao import get_redis_client
 
+        redis_client = get_redis_client()
         if redis_client is None:
             return
         redis_client.eval(
@@ -1144,8 +1171,8 @@ def _yield_tts_synthesis(
     user_bid: str,
     outline_bid: str,
     unknown_error_log: str,
-    body,
-):
+    body: object,
+) -> Iterator[object]:
     """Run a TTS synthesis body under a per-(user, outline) concurrency slot.
 
     Cache-hit paths never reach here, so they do not consume a slot. When the
@@ -1188,7 +1215,7 @@ def _record_stream_segment_usage(
     parent_usage_bid: str,
     segment_index: int,
     usage_metadata: dict,
-):
+) -> None:
     segment_length = len(segment_text or "")
     output_chars = resolve_tts_billable_chars(segment_text, usage_characters)
     record_tts_usage(
@@ -1225,7 +1252,7 @@ def _record_stream_summary_usage(
     duration_ms: int,
     segment_count: int,
     usage_metadata: dict,
-):
+) -> None:
     raw_length = len(raw_text or "")
     cleaned_length = len(cleaned_text or "")
     output_chars = total_output_chars or cleaned_length
@@ -1375,7 +1402,7 @@ def _has_speakable_tts_segment(text: str) -> bool:
     return bool(cleaned and len(cleaned.strip()) >= 2 and has_speakable_text(cleaned))
 
 
-def _float_settings_match(left, right) -> bool:
+def _float_settings_match(left: object, right: object) -> bool:
     try:
         return abs(float(left) - float(right)) < 0.0001
     except (TypeError, ValueError):
@@ -1385,7 +1412,7 @@ def _float_settings_match(left, right) -> bool:
 def _audio_record_matches_tts_settings(
     audio_record: LearnGeneratedAudio | None,
     *,
-    voice_settings,
+    voice_settings: object,
     tts_model: str,
 ) -> bool:
     if audio_record is None:
@@ -1428,8 +1455,8 @@ def _yield_stream_tts_audio_segments(
     text: str,
     provider: str,
     tts_model: str,
-    voice_settings,
-    audio_settings,
+    voice_settings: object,
+    audio_settings: object,
     usage_context: UsageContext,
     parent_usage_bid: str,
     usage_metadata: dict,
@@ -1440,7 +1467,7 @@ def _yield_stream_tts_audio_segments(
     stats: dict,
     position: int | None = None,
     av_contract: dict | None = None,
-):
+) -> Iterator[RunMarkdownFlowDTO]:
     for (
         index,
         audio_data,
@@ -1507,7 +1534,7 @@ def _yield_run_tts_audio_events(
     text: str,
     provider: str,
     tts_model: str,
-    voice_settings,
+    voice_settings: object,
     generated_block: LearnGeneratedBlock,
     user_bid: str,
     shifu_bid: str,
@@ -1515,7 +1542,8 @@ def _yield_run_tts_audio_events(
     position: int | None = None,
     stream_element_number: int | None = None,
     stream_element_type: str | None = None,
-):
+    learning_mode: str = "",
+) -> Iterator[RunMarkdownFlowDTO]:
     from flaskr.common.config import get_config
 
     max_segment_chars = get_config("TTS_MAX_SEGMENT_CHARS") or 300
@@ -1537,6 +1565,7 @@ def _yield_run_tts_audio_events(
         stream_element_number=stream_element_number,
         stream_element_type=stream_element_type,
         usage_scene=BILL_USAGE_SCENE_PREVIEW if preview_mode else BILL_USAGE_SCENE_PROD,
+        learning_mode=learning_mode,
     )
     emitted_audio_complete = False
     for event in processor.process_chunk(text or ""):
@@ -1550,10 +1579,11 @@ def _yield_run_tts_audio_events(
         )
         yield event
     if not emitted_audio_complete:
-        raise RuntimeError("TTS stream finalized without audio_complete")
+        message = "TTS stream finalized without audio_complete"
+        raise RuntimeError(message)
 
 
-def _audio_stream_element_type(element) -> str:
+def _audio_stream_element_type(element: object) -> str:
     element_type = getattr(element, "element_type", "") or ""
     return str(getattr(element_type, "value", element_type) or "")
 
@@ -1566,7 +1596,8 @@ def stream_generated_block_audio(
     user_bid: str,
     preview_mode: bool,
     listen: bool = False,
-):
+) -> Iterator[object]:
+    """Stream generated block audio."""
     with app.app_context():
         generated_block = LearnGeneratedBlock.query.filter(
             LearnGeneratedBlock.user_bid == user_bid,
@@ -1588,7 +1619,7 @@ def stream_generated_block_audio(
             )
         )
 
-        def _resolve_existing_single_block_audio():
+        def _resolve_existing_single_block_audio() -> LearnGeneratedAudio | None:
             existing_audios = (
                 LearnGeneratedAudio.query.filter(
                     LearnGeneratedAudio.generated_block_bid == generated_block_bid,
@@ -1615,7 +1646,9 @@ def stream_generated_block_audio(
                 None,
             )
 
-        def _yield_existing_single_block_audio(existing_audio: LearnGeneratedAudio):
+        def _yield_existing_single_block_audio(
+            existing_audio: LearnGeneratedAudio,
+        ) -> Iterator[object]:
             yield _build_audio_complete_message(
                 outline_bid=generated_block.outline_item_bid or "",
                 generated_block_bid=generated_block_bid,
@@ -1631,7 +1664,7 @@ def stream_generated_block_audio(
                 yield from _yield_existing_single_block_audio(existing_audio)
                 return
 
-        def _yield_single_block_audio():
+        def _yield_single_block_audio() -> Iterator[object]:
             cleaned_text = preprocess_for_tts(raw_text)
             if not cleaned_text or len(cleaned_text.strip()) < 2:
                 raise_error_with_args(
@@ -1639,7 +1672,7 @@ def stream_generated_block_audio(
                     param_message="No speakable text available for TTS synthesis",
                 )
 
-            def _generate_single_audio():
+            def _generate_single_audio() -> Iterator[object]:
                 yield from _yield_run_tts_audio_events(
                     app=app,
                     text=raw_text,
@@ -1650,6 +1683,7 @@ def stream_generated_block_audio(
                     user_bid=user_bid,
                     shifu_bid=shifu_bid,
                     preview_mode=preview_mode,
+                    learning_mode="listen" if listen else "read",
                 )
 
             yield from _yield_tts_synthesis(
@@ -1660,7 +1694,7 @@ def stream_generated_block_audio(
                 body=_generate_single_audio,
             )
 
-        def _yield_preview_single_block_audio():
+        def _yield_preview_single_block_audio() -> Iterator[object]:
             cleaned_text = preprocess_for_tts(raw_text)
             if not cleaned_text or len(cleaned_text.strip()) < 2:
                 raise_error_with_args(
@@ -1677,6 +1711,7 @@ def stream_generated_block_audio(
                 outline_item_bid=generated_block.outline_item_bid,
                 progress_record_bid=generated_block.progress_record_bid,
                 generated_block_bid=generated_block.generated_block_bid,
+                learning_mode="listen" if listen else "read",
             )
             parent_usage_bid = generate_id(app)
             usage_metadata = _build_tts_usage_metadata(
@@ -1687,7 +1722,7 @@ def stream_generated_block_audio(
             audio_parts: list[bytes] = []
             subtitle_cues: list[dict] = []
 
-            def _generate_preview_audio():
+            def _generate_preview_audio() -> Iterator[object]:
                 yield from _yield_stream_tts_audio_segments(
                     app=app,
                     text=raw_text,
@@ -1800,7 +1835,7 @@ def stream_generated_block_audio(
                     )
                     return
 
-                def _generate_legacy_audio():
+                def _generate_legacy_audio() -> Iterator[object]:
                     yield from _yield_run_tts_audio_events(
                         app=app,
                         text=raw_text,
@@ -1812,6 +1847,7 @@ def stream_generated_block_audio(
                         shifu_bid=shifu_bid,
                         preview_mode=preview_mode,
                         position=0,
+                        learning_mode="listen",
                     )
 
                 yield from _yield_tts_synthesis(
@@ -1893,7 +1929,7 @@ def stream_generated_block_audio(
                 )
                 return
 
-            def _generate_av_audio():
+            def _generate_av_audio() -> Iterator[object]:
                 for position, element in enumerate(speakable_elements):
                     speakable_text = str(element.content_text or "")
                     # Skip before the cache lookup so historical records for
@@ -1930,6 +1966,7 @@ def stream_generated_block_audio(
                         position=position,
                         stream_element_number=element.element_index,
                         stream_element_type=_audio_stream_element_type(element),
+                        learning_mode="listen",
                     )
 
             yield from _yield_tts_synthesis(
@@ -1956,7 +1993,8 @@ def stream_preview_tts_audio(
     user_bid: str,
     text: str,
     preview_mode: bool,
-):
+) -> Iterator[object]:
+    """Stream preview TTS audio."""
     with app.app_context():
         provider, tts_model, voice_settings, audio_settings = (
             _resolve_shifu_tts_settings(
@@ -1982,6 +2020,7 @@ def stream_preview_tts_audio(
             shifu_bid=shifu_bid,
             audio_bid=audio_bid,
             usage_scene=usage_scene,
+            learning_mode="listen",
         )
         parent_usage_bid = generate_id(app)
         usage_metadata = _build_tts_usage_metadata(
@@ -1992,7 +2031,7 @@ def stream_preview_tts_audio(
         audio_parts: list[bytes] = []
         subtitle_cues: list[dict] = []
 
-        def _generate_preview_audio():
+        def _generate_preview_audio() -> Iterator[object]:
             yield from _yield_stream_tts_audio_segments(
                 app=app,
                 text=text or "",

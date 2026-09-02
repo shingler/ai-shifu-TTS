@@ -1,3 +1,5 @@
+"""Create request-scoped observability metadata."""
+
 from __future__ import annotations
 
 import time
@@ -12,7 +14,6 @@ from opentelemetry.trace import SpanKind, Status, StatusCode
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
 from .request_context import thread_local
-
 
 HTTP_REQUEST_COUNT = Counter(
     "ai_shifu_http_requests_total",
@@ -47,6 +48,7 @@ def _float_config(app: Flask, key: str, default: float) -> float:
 
 
 def init_observability(app: Flask) -> Flask:
+    """Register metrics, health checks, and request tracing."""
     if getattr(app, "_ai_shifu_observability_initialized", False):
         return app
 
@@ -54,7 +56,7 @@ def init_observability(app: Flask) -> Flask:
     health_path = app.config.get(
         "INTERNAL_OBSERVABILITY_HEALTH_PATH", "/internal/observability/health"
     )
-    traces_enabled = _bool_config(app, "OBSERVABILITY_TRACES_ENABLED", False)
+    traces_enabled = _bool_config(app, "OBSERVABILITY_TRACES_ENABLED", default=False)
     sample_rate = _float_config(app, "OTEL_TRACE_SAMPLE_RATE", 1.0)
 
     if traces_enabled:
@@ -82,7 +84,7 @@ def init_observability(app: Flask) -> Flask:
         tracer = None
 
     @app.before_request
-    def _start_request_observability():
+    def _start_request_observability() -> None:
         request_id = request.headers.get("X-Request-ID", "") or getattr(
             thread_local, "request_id", ""
         )
@@ -112,7 +114,7 @@ def init_observability(app: Flask) -> Flask:
         set_thread_local_trace_ids()
 
     @app.after_request
-    def _finalize_request_observability(response):
+    def _finalize_request_observability(response: Response) -> Response:
         duration_ms = _record_request_metrics(response.status_code)
         span = getattr(g, "_ai_shifu_observability_span", None)
         if span is not None:
@@ -134,7 +136,7 @@ def init_observability(app: Flask) -> Flask:
         return response
 
     @app.teardown_request
-    def _teardown_request_observability(error: Exception | None):
+    def _teardown_request_observability(error: Exception | None) -> None:
         if error is None:
             return
         span = getattr(g, "_ai_shifu_observability_span", None)
@@ -143,11 +145,11 @@ def init_observability(app: Flask) -> Flask:
             span.set_status(Status(StatusCode.ERROR, str(error)))
 
     @app.route(metrics_path, methods=["GET"])
-    def metrics_handler():
+    def metrics_handler() -> Response:
         return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
     @app.route(health_path, methods=["GET"])
-    def observability_health_handler():
+    def observability_health_handler() -> Response:
         return jsonify(
             {
                 "ok": True,
@@ -170,6 +172,7 @@ def record_credit_notification_event(
     status: str = "",
     count: int = 1,
 ) -> None:
+    """Record credit notification event."""
     try:
         CREDIT_NOTIFICATION_EVENTS.labels(
             str(event or "unknown"),
@@ -205,6 +208,7 @@ def _record_request_metrics(status_code: int) -> float:
 
 
 def current_trace_ids() -> tuple[str, str]:
+    """Return the active request and observation trace IDs."""
     span = trace.get_current_span()
     if span is None:
         return "-", "-"
@@ -215,6 +219,7 @@ def current_trace_ids() -> tuple[str, str]:
 
 
 def set_thread_local_trace_ids() -> tuple[str, str]:
+    """Set thread local trace IDs."""
     trace_id, span_id = current_trace_ids()
     thread_local.trace_id = trace_id
     thread_local.span_id = span_id

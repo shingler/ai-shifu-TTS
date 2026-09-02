@@ -3,15 +3,33 @@
 from __future__ import annotations
 
 from flask import Flask, request
-
 from flaskr.dao.uow import unit_of_work
 from flaskr.framework.plugin.inject import inject
 from flaskr.route.common import make_common_response
-from flaskr.service.billing.capabilities import build_billing_route_bootstrap
+from flaskr.service.billing.admin_ops_state import (
+    build_admin_billing_ops_state,
+    update_admin_billing_config_status,
+)
+from flaskr.service.billing.admin_provider_prices import (
+    activate_admin_billing_provider_price_mapping,
+    build_admin_billing_provider_prices_page,
+    create_admin_billing_provider_price_mapping,
+    provider_price_mapping_error_payload,
+    restore_admin_billing_provider_price_mapping,
+    retire_admin_billing_provider_price_mapping,
+    validate_admin_billing_provider_price_mapping,
+)
 from flaskr.service.billing.admin_target_users import (
     resolve_admin_entitlement_grant_target,
     resolve_existing_admin_billing_target_user_bid,
     run_admin_creator_granted_post_auth,
+)
+from flaskr.service.billing.campaign_provider_discounts import (
+    CampaignProviderDiscountError,
+    list_admin_campaign_provider_discounts,
+    publish_admin_campaign_provider_discounts,
+    retire_admin_campaign_provider_discounts,
+    validate_admin_campaign_provider_discount,
 )
 from flaskr.service.billing.campaigns import (
     build_admin_billing_campaign_detail,
@@ -21,6 +39,7 @@ from flaskr.service.billing.campaigns import (
     update_admin_billing_campaign,
     update_admin_billing_campaign_status,
 )
+from flaskr.service.billing.capabilities import build_billing_route_bootstrap
 from flaskr.service.billing.checkout import (
     create_billing_order_checkout,
     create_billing_subscription_checkout,
@@ -42,21 +61,24 @@ from flaskr.service.billing.customization import (
     verify_creator_integration,
 )
 from flaskr.service.billing.domains import manage_creator_domain_binding
-from flaskr.service.billing.admin_ops_state import (
-    build_admin_billing_ops_state,
-    update_admin_billing_config_status,
-)
 from flaskr.service.billing.entitlements import (
     grant_creator_manual_entitlement,
     serialize_creator_entitlements,
 )
+from flaskr.service.billing.provider_catalog_admin import (
+    build_admin_provider_catalog_inbox_page,
+)
+from flaskr.service.billing.provider_catalog_sync import (
+    run_admin_provider_catalog_reconcile,
+)
+from flaskr.service.billing.provider_price_mappings import ProviderPriceMappingError
 from flaskr.service.billing.read_models import (
     adjust_admin_billing_ledger,
     build_admin_bill_daily_ledger_summary_page,
     build_admin_bill_daily_usage_metrics_page,
-    build_admin_billing_focus_teachers_page,
     build_admin_bill_entitlements_page,
     build_admin_bill_subscriptions_page,
+    build_admin_billing_focus_teachers_page,
     build_billing_catalog,
     build_billing_ledger_page,
     build_billing_overview,
@@ -67,7 +89,8 @@ from flaskr.service.billing.subscriptions import (
     resume_billing_subscription,
 )
 from flaskr.service.billing.trials import acknowledge_trial_welcome_dialog
-from flaskr.service.common.models import raise_error, raise_param_error
+from flaskr.service.common.models import AppError, raise_error, raise_param_error
+
 from .primitives import is_billing_enabled
 
 # Compatibility aliases keep existing route tests patchable while the concrete
@@ -143,7 +166,7 @@ def _get_optional_bool_query_arg(name: str) -> bool | None:
     return _to_optional_bool(normalized, name)
 
 
-def _to_optional_bool(value, field_name: str) -> bool:
+def _to_optional_bool(value: object, field_name: str) -> bool:
     if isinstance(value, bool):
         return value
     normalized = str(value or "").strip().lower()
@@ -152,27 +175,54 @@ def _to_optional_bool(value, field_name: str) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     raise_param_error(field_name)
+    return None
+
+
+def _raise_provider_price_mapping_route_error(exc: Exception) -> None:
+    if isinstance(exc, ProviderPriceMappingError):
+        payload = provider_price_mapping_error_payload(exc)
+        raise AppError(
+            payload["message"],
+            9999,
+            {"provider_price_mapping_error": payload},
+        )
+    raise exc
+
+
+def _raise_campaign_provider_discount_route_error(exc: Exception) -> None:
+    if isinstance(exc, CampaignProviderDiscountError):
+        raise AppError(
+            exc.message,
+            9999,
+            {
+                "campaign_provider_discount_error": {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                }
+            },
+        )
+    _raise_provider_price_mapping_route_error(exc)
 
 
 @inject
 def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> None:
     """Register creator billing routes."""
-
     app.logger.info("register billing routes %s", path_prefix)
     admin_path_prefix = "/api/admin/billing"
 
     @app.route(path_prefix, methods=["GET"])
-    def billing_bootstrap_api():
+    def billing_bootstrap_api() -> str:
         _require_billing_access(app)
         return make_common_response(build_billing_route_bootstrap(path_prefix))
 
     @app.route(path_prefix + "/catalog", methods=["GET"])
-    def billing_catalog_api():
+    def billing_catalog_api() -> str:
         _require_billing_access(app)
         return make_common_response(build_billing_catalog(app))
 
     @app.route(path_prefix + "/overview", methods=["GET"])
-    def billing_overview_api():
+    def billing_overview_api() -> str:
         _require_billing_access(app)
         return make_common_response(
             build_billing_overview(
@@ -182,7 +232,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(path_prefix + "/trial-offer/welcome/ack", methods=["POST"])
-    def billing_trial_offer_welcome_ack_api():
+    def billing_trial_offer_welcome_ack_api() -> str:
         _require_billing_access(app)
         return make_common_response(
             acknowledge_trial_welcome_dialog(
@@ -192,7 +242,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(path_prefix + "/wallet-buckets", methods=["GET"])
-    def billing_wallet_buckets_api():
+    def billing_wallet_buckets_api() -> str:
         _require_billing_access(app)
         return make_common_response(
             build_billing_wallet_buckets(
@@ -202,7 +252,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(path_prefix + "/ledger", methods=["GET"])
-    def billing_ledger_api():
+    def billing_ledger_api() -> str:
         _require_billing_access(app)
         page_index, page_size = _get_page_args()
         return make_common_response(
@@ -215,7 +265,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(path_prefix + "/orders/<bill_order_bid>/sync", methods=["POST"])
-    def billing_order_sync_api(bill_order_bid: str):
+    def billing_order_sync_api(bill_order_bid: str) -> str:
         _require_billing_access(app)
         return make_common_response(
             sync_billing_order(
@@ -227,7 +277,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(path_prefix + "/orders/<bill_order_bid>/checkout", methods=["POST"])
-    def billing_order_checkout_api(bill_order_bid: str):
+    def billing_order_checkout_api(bill_order_bid: str) -> str:
         _require_billing_access(app)
         return make_common_response(
             create_billing_order_checkout(
@@ -239,7 +289,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(path_prefix + "/orders/<bill_order_bid>/refund", methods=["POST"])
-    def billing_order_refund_api(bill_order_bid: str):
+    def billing_order_refund_api(bill_order_bid: str) -> str:
         _require_billing_access(app)
         return make_common_response(
             refund_billing_order(
@@ -251,7 +301,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(path_prefix + "/subscriptions/checkout", methods=["POST"])
-    def billing_subscription_checkout_api():
+    def billing_subscription_checkout_api() -> str:
         _require_billing_access(app)
         return make_common_response(
             create_billing_subscription_checkout(
@@ -262,7 +312,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(path_prefix + "/subscriptions/cancel", methods=["POST"])
-    def billing_subscription_cancel_api():
+    def billing_subscription_cancel_api() -> str:
         _require_billing_access(app)
         return make_common_response(
             cancel_billing_subscription(
@@ -273,7 +323,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(path_prefix + "/subscriptions/resume", methods=["POST"])
-    def billing_subscription_resume_api():
+    def billing_subscription_resume_api() -> str:
         _require_billing_access(app)
         return make_common_response(
             resume_billing_subscription(
@@ -284,7 +334,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(path_prefix + "/topups/checkout", methods=["POST"])
-    def billing_topup_checkout_api():
+    def billing_topup_checkout_api() -> str:
         _require_billing_access(app)
         return make_common_response(
             create_billing_topup_checkout(
@@ -295,14 +345,14 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(path_prefix + "/customization", methods=["GET"])
-    def billing_customization_api():
+    def billing_customization_api() -> str:
         _require_billing_access(app)
         return make_common_response(
             build_creator_customization(app, _get_creator_bid())
         )
 
     @app.route(path_prefix + "/customization/branding", methods=["PUT"])
-    def billing_customization_branding_api():
+    def billing_customization_branding_api() -> str:
         _require_customization_access(app)
         return make_common_response(
             save_creator_branding(
@@ -311,7 +361,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(path_prefix + "/customization/branding/logo", methods=["POST"])
-    def billing_customization_branding_logo_api():
+    def billing_customization_branding_logo_api() -> str:
         _require_customization_access(app)
         file = request.files.get("file")
         if file is None:
@@ -326,7 +376,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(path_prefix + "/customization/domains", methods=["POST"])
-    def billing_customization_domain_create_api():
+    def billing_customization_domain_create_api() -> str:
         _require_customization_access(app)
         payload = dict(request.get_json(silent=True) or {})
         payload["action"] = "bind"
@@ -338,7 +388,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         path_prefix + "/customization/domains/<domain_binding_bid>/verify",
         methods=["POST"],
     )
-    def billing_customization_domain_verify_api(domain_binding_bid: str):
+    def billing_customization_domain_verify_api(domain_binding_bid: str) -> str:
         _require_customization_access(app)
         payload = dict(request.get_json(silent=True) or {})
         payload.update(action="verify", domain_binding_bid=domain_binding_bid)
@@ -350,7 +400,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         path_prefix + "/customization/domains/<domain_binding_bid>",
         methods=["DELETE"],
     )
-    def billing_customization_domain_disable_api(domain_binding_bid: str):
+    def billing_customization_domain_disable_api(domain_binding_bid: str) -> str:
         _require_customization_access(app)
         return make_common_response(
             manage_creator_domain_binding(
@@ -361,7 +411,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(path_prefix + "/customization/integrations/<provider>", methods=["PUT"])
-    def billing_customization_integration_save_api(provider: str):
+    def billing_customization_integration_save_api(provider: str) -> str:
         _require_customization_access(app)
         return make_common_response(
             save_creator_integration(
@@ -376,7 +426,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         path_prefix + "/customization/integrations/<provider>/verify",
         methods=["POST"],
     )
-    def billing_customization_integration_verify_api(provider: str):
+    def billing_customization_integration_verify_api(provider: str) -> str:
         _require_customization_access(app)
         payload = request.get_json(silent=True) or {}
         return make_common_response(
@@ -391,14 +441,14 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
     @app.route(
         path_prefix + "/customization/integrations/<provider>", methods=["DELETE"]
     )
-    def billing_customization_integration_disable_api(provider: str):
+    def billing_customization_integration_disable_api(provider: str) -> str:
         _require_customization_access(app)
         return make_common_response(
             disable_creator_integration(app, _get_creator_bid(), provider)
         )
 
     @app.route(admin_path_prefix + "/subscriptions", methods=["GET"])
-    def admin_bill_subscriptions_api():
+    def admin_bill_subscriptions_api() -> str:
         _require_billing_operator_access(app)
         page_index, page_size = _get_page_args()
         return make_common_response(
@@ -414,7 +464,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(admin_path_prefix + "/entitlements", methods=["GET"])
-    def admin_bill_entitlements_api():
+    def admin_bill_entitlements_api() -> str:
         _require_billing_operator_access(app)
         page_index, page_size = _get_page_args()
         return make_common_response(
@@ -428,7 +478,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(admin_path_prefix + "/entitlements/grants", methods=["POST"])
-    def admin_bill_entitlement_grant_api():
+    def admin_bill_entitlement_grant_api() -> str:
         _require_billing_operator_access(app)
         payload = request.get_json(silent=True) or {}
         allowed_fields = {
@@ -486,7 +536,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         return make_common_response(response_payload)
 
     @app.route(admin_path_prefix + "/entitlements/<creator_bid>", methods=["POST"])
-    def admin_bill_entitlement_grant_legacy_api(creator_bid: str):
+    def admin_bill_entitlement_grant_legacy_api(creator_bid: str) -> str:
         _require_billing_operator_access(app)
         payload = request.get_json(silent=True) or {}
         allowed_fields = {
@@ -509,12 +559,12 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         return make_common_response(serialize_creator_entitlements(state))
 
     @app.route(admin_path_prefix + "/ops-state", methods=["GET"])
-    def admin_billing_ops_state_api():
+    def admin_billing_ops_state_api() -> str:
         _require_billing_operator_access(app)
         return make_common_response(build_admin_billing_ops_state(app))
 
     @app.route(admin_path_prefix + "/ops-state/config-status", methods=["POST"])
-    def admin_billing_config_status_api():
+    def admin_billing_config_status_api() -> str:
         _require_billing_operator_access(app)
         payload = request.get_json(silent=True) or {}
         return make_common_response(
@@ -526,7 +576,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(admin_path_prefix + "/customization/<creator_bid>", methods=["GET"])
-    def admin_billing_customization_api(creator_bid: str):
+    def admin_billing_customization_api(creator_bid: str) -> str:
         _require_billing_customization_operator_access(app)
         return make_common_response(
             build_creator_customization(
@@ -540,7 +590,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(admin_path_prefix + "/customization-draft", methods=["GET"])
-    def admin_billing_customization_draft_api():
+    def admin_billing_customization_draft_api() -> str:
         _require_billing_customization_operator_access(app)
         creator_bid = str(request.args.get("creator_bid") or "").strip()
         creator_mobile = str(request.args.get("creator_mobile") or "").strip()
@@ -553,7 +603,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(admin_path_prefix + "/customization-draft", methods=["PUT"])
-    def admin_billing_customization_draft_save_api():
+    def admin_billing_customization_draft_save_api() -> str:
         _require_billing_customization_operator_access(app)
         payload = dict(request.get_json(silent=True) or {})
         return make_common_response(
@@ -566,7 +616,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(admin_path_prefix + "/customization-draft", methods=["DELETE"])
-    def admin_billing_customization_draft_delete_api():
+    def admin_billing_customization_draft_delete_api() -> str:
         _require_billing_customization_operator_access(app)
         creator_bid = str(request.args.get("creator_bid") or "").strip()
         creator_mobile = str(request.args.get("creator_mobile") or "").strip()
@@ -581,7 +631,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         admin_path_prefix + "/customization-draft/branding/logo",
         methods=["POST"],
     )
-    def admin_billing_customization_draft_logo_api():
+    def admin_billing_customization_draft_logo_api() -> str:
         _require_billing_customization_operator_access(app)
         file = request.files.get("file")
         if file is None:
@@ -600,7 +650,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         admin_path_prefix + "/customization/<creator_bid>/branding",
         methods=["PUT"],
     )
-    def admin_billing_customization_branding_api(creator_bid: str):
+    def admin_billing_customization_branding_api(creator_bid: str) -> str:
         _require_billing_customization_operator_access(app)
         return make_common_response(
             save_creator_branding(
@@ -618,7 +668,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         admin_path_prefix + "/customization/<creator_bid>/branding/logo",
         methods=["POST"],
     )
-    def admin_billing_customization_branding_logo_api(creator_bid: str):
+    def admin_billing_customization_branding_logo_api(creator_bid: str) -> str:
         _require_billing_customization_operator_access(app)
         file = request.files.get("file")
         if file is None:
@@ -640,7 +690,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         admin_path_prefix + "/customization/<creator_bid>/domains",
         methods=["POST"],
     )
-    def admin_billing_customization_domain_create_api(creator_bid: str):
+    def admin_billing_customization_domain_create_api(creator_bid: str) -> str:
         _require_billing_customization_operator_access(app)
         payload = dict(request.get_json(silent=True) or {})
         payload["action"] = "bind"
@@ -662,7 +712,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
     )
     def admin_billing_customization_domain_verify_api(
         creator_bid: str, domain_binding_bid: str
-    ):
+    ) -> str:
         _require_billing_customization_operator_access(app)
         payload = dict(request.get_json(silent=True) or {})
         payload.update(action="verify", domain_binding_bid=domain_binding_bid)
@@ -683,7 +733,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
     )
     def admin_billing_customization_domain_disable_api(
         creator_bid: str, domain_binding_bid: str
-    ):
+    ) -> str:
         _require_billing_customization_operator_access(app)
         return make_common_response(
             manage_creator_domain_binding(
@@ -702,7 +752,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
     )
     def admin_billing_customization_integration_save_api(
         creator_bid: str, provider: str
-    ):
+    ) -> str:
         _require_billing_customization_operator_access(app)
         return make_common_response(
             save_creator_integration(
@@ -724,7 +774,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
     )
     def admin_billing_customization_integration_verify_api(
         creator_bid: str, provider: str
-    ):
+    ) -> str:
         _require_billing_customization_operator_access(app)
         payload = request.get_json(silent=True) or {}
         return make_common_response(
@@ -745,7 +795,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
     )
     def admin_billing_customization_integration_disable_api(
         creator_bid: str, provider: str
-    ):
+    ) -> str:
         _require_billing_customization_operator_access(app)
         return make_common_response(
             disable_creator_integration(
@@ -759,7 +809,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(admin_path_prefix + "/reports/usage-daily", methods=["GET"])
-    def admin_billing_daily_usage_reports_api():
+    def admin_billing_daily_usage_reports_api() -> str:
         _require_billing_operator_access(app)
         page_index, page_size = _get_page_args()
         return make_common_response(
@@ -774,7 +824,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(admin_path_prefix + "/reports/focus-teachers", methods=["GET"])
-    def admin_billing_focus_teachers_reports_api():
+    def admin_billing_focus_teachers_reports_api() -> str:
         _require_billing_operator_access(app)
         page_index, page_size = _get_page_args()
         return make_common_response(
@@ -786,7 +836,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(admin_path_prefix + "/reports/ledger-daily", methods=["GET"])
-    def admin_billing_daily_ledger_reports_api():
+    def admin_billing_daily_ledger_reports_api() -> str:
         _require_billing_operator_access(app)
         page_index, page_size = _get_page_args()
         return make_common_response(
@@ -801,7 +851,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(admin_path_prefix + "/ledger/adjust", methods=["POST"])
-    def admin_billing_ledger_adjust_api():
+    def admin_billing_ledger_adjust_api() -> str:
         _require_billing_operator_access(app)
         payload = request.get_json(silent=True) or {}
         target_creator_bid = _resolve_existing_admin_billing_target_user_bid(
@@ -816,13 +866,126 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
             )
         )
 
+    @app.route(admin_path_prefix + "/provider-prices", methods=["GET"])
+    def admin_billing_provider_prices_api() -> str:
+        _require_billing_operator_access(app)
+        return make_common_response(
+            build_admin_billing_provider_prices_page(
+                app,
+                product_bid=_get_optional_query_arg("product_bid"),
+                provider_account_id=_get_optional_query_arg(
+                    "provider_account_id", max_length=255
+                ),
+                livemode=_get_optional_bool_query_arg("livemode"),
+                status=_get_optional_query_arg("status"),
+            )
+        )
+
+    @app.route(admin_path_prefix + "/provider-prices", methods=["POST"])
+    def admin_billing_provider_price_create_api() -> str:
+        _require_billing_operator_access(app)
+        try:
+            with unit_of_work():
+                result = create_admin_billing_provider_price_mapping(
+                    app,
+                    payload=request.get_json(silent=True) or {},
+                )
+        except Exception as exc:
+            _raise_provider_price_mapping_route_error(exc)
+        return make_common_response(result)
+
+    @app.route(admin_path_prefix + "/provider-catalog", methods=["GET"])
+    def admin_billing_provider_catalog_api() -> str:
+        _require_billing_operator_access(app)
+        raw_limit = request.args.get("limit", "100")
+        try:
+            limit = int(raw_limit)
+        except ValueError:
+            raise_param_error("limit")
+        return make_common_response(
+            build_admin_provider_catalog_inbox_page(
+                object_type=_get_optional_query_arg("object_type", max_length=32),
+                provider_account_id=_get_optional_query_arg(
+                    "provider_account_id", max_length=255
+                ),
+                livemode=_get_optional_bool_query_arg("livemode"),
+                health_status=_get_optional_query_arg("health_status", max_length=64),
+                limit=limit,
+            )
+        )
+
+    @app.route(admin_path_prefix + "/provider-catalog/reconcile", methods=["POST"])
+    def admin_billing_provider_catalog_reconcile_api() -> str:
+        _require_billing_operator_access(app)
+        return make_common_response(run_admin_provider_catalog_reconcile(app))
+
+    @app.route(
+        admin_path_prefix + "/provider-prices/<provider_price_bid>/validate",
+        methods=["POST"],
+    )
+    def admin_billing_provider_price_validate_api(provider_price_bid: str) -> str:
+        _require_billing_operator_access(app)
+        try:
+            with unit_of_work():
+                result = validate_admin_billing_provider_price_mapping(
+                    app, provider_price_bid=provider_price_bid
+                )
+        except Exception as exc:
+            _raise_provider_price_mapping_route_error(exc)
+        return make_common_response(result)
+
+    @app.route(
+        admin_path_prefix + "/provider-prices/<provider_price_bid>/activate",
+        methods=["POST"],
+    )
+    def admin_billing_provider_price_activate_api(provider_price_bid: str) -> str:
+        _require_billing_operator_access(app)
+        try:
+            with unit_of_work():
+                result = activate_admin_billing_provider_price_mapping(
+                    app, provider_price_bid=provider_price_bid
+                )
+        except Exception as exc:
+            _raise_provider_price_mapping_route_error(exc)
+        return make_common_response(result)
+
+    @app.route(
+        admin_path_prefix + "/provider-prices/<provider_price_bid>/retire",
+        methods=["POST"],
+    )
+    def admin_billing_provider_price_retire_api(provider_price_bid: str) -> str:
+        _require_billing_operator_access(app)
+        try:
+            with unit_of_work():
+                result = retire_admin_billing_provider_price_mapping(
+                    app, provider_price_bid=provider_price_bid
+                )
+        except Exception as exc:
+            _raise_provider_price_mapping_route_error(exc)
+        return make_common_response(result)
+
+    @app.route(
+        admin_path_prefix + "/provider-prices/<provider_price_bid>/restore",
+        methods=["POST"],
+    )
+    def admin_billing_provider_price_restore_api(provider_price_bid: str) -> str:
+        _require_billing_operator_access(app)
+        try:
+            with unit_of_work():
+                result = restore_admin_billing_provider_price_mapping(
+                    app, provider_price_bid=provider_price_bid
+                )
+        except Exception as exc:
+            _raise_provider_price_mapping_route_error(exc)
+        return make_common_response(result)
+
     @app.route(admin_path_prefix + "/products/options", methods=["GET"])
-    def admin_billing_campaign_product_options_api():
+    def admin_billing_campaign_product_options_api() -> str:
         _require_billing_operator_access(app)
         return make_common_response(build_admin_billing_campaign_product_options(app))
 
     @app.route(admin_path_prefix + "/campaigns", methods=["GET"])
-    def admin_billing_campaigns_api():
+    def admin_billing_campaigns_api() -> str:
         _require_billing_operator_access(app)
         page_index, page_size = _get_page_args()
         return make_common_response(
@@ -840,7 +1003,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(admin_path_prefix + "/campaigns", methods=["POST"])
-    def admin_billing_campaign_create_api():
+    def admin_billing_campaign_create_api() -> str:
         _require_billing_operator_access(app)
         return make_common_response(
             create_admin_billing_campaign(
@@ -851,7 +1014,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(admin_path_prefix + "/campaigns/<campaign_bid>", methods=["GET"])
-    def admin_billing_campaign_detail_api(campaign_bid: str):
+    def admin_billing_campaign_detail_api(campaign_bid: str) -> str:
         _require_billing_operator_access(app)
         return make_common_response(
             build_admin_billing_campaign_detail(
@@ -861,7 +1024,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(admin_path_prefix + "/campaigns/<campaign_bid>", methods=["POST"])
-    def admin_billing_campaign_update_api(campaign_bid: str):
+    def admin_billing_campaign_update_api(campaign_bid: str) -> str:
         _require_billing_operator_access(app)
         return make_common_response(
             update_admin_billing_campaign(
@@ -873,7 +1036,7 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
         )
 
     @app.route(admin_path_prefix + "/campaigns/<campaign_bid>/status", methods=["POST"])
-    def admin_billing_campaign_status_api(campaign_bid: str):
+    def admin_billing_campaign_status_api(campaign_bid: str) -> str:
         _require_billing_operator_access(app)
         return make_common_response(
             update_admin_billing_campaign_status(
@@ -884,4 +1047,79 @@ def register_billing_routes(app: Flask, path_prefix: str = "/api/billing") -> No
             )
         )
 
-    return None
+    @app.route(
+        admin_path_prefix + "/campaigns/<campaign_bid>/provider-discounts",
+        methods=["GET"],
+    )
+    def admin_billing_campaign_provider_discounts_api(campaign_bid: str) -> str:
+        _require_billing_operator_access(app)
+        return make_common_response(
+            list_admin_campaign_provider_discounts(app, campaign_bid=campaign_bid)
+        )
+
+    @app.route(
+        admin_path_prefix + "/campaigns/<campaign_bid>/publish",
+        methods=["POST"],
+    )
+    def admin_billing_campaign_publish_api(campaign_bid: str) -> str:
+        _require_billing_operator_access(app)
+        try:
+            result = publish_admin_campaign_provider_discounts(
+                app,
+                campaign_bid=campaign_bid,
+                operator_user_bid=_get_creator_bid(),
+            )
+        except Exception as exc:
+            _raise_campaign_provider_discount_route_error(exc)
+        return make_common_response(result)
+
+    @app.route(
+        admin_path_prefix + "/campaigns/<campaign_bid>/publish/retry",
+        methods=["POST"],
+    )
+    def admin_billing_campaign_publish_retry_api(campaign_bid: str) -> str:
+        _require_billing_operator_access(app)
+        try:
+            result = publish_admin_campaign_provider_discounts(
+                app,
+                campaign_bid=campaign_bid,
+                operator_user_bid=_get_creator_bid(),
+            )
+        except Exception as exc:
+            _raise_campaign_provider_discount_route_error(exc)
+        return make_common_response(result)
+
+    @app.route(
+        admin_path_prefix + "/campaigns/<campaign_bid>/retire",
+        methods=["POST"],
+    )
+    def admin_billing_campaign_retire_api(campaign_bid: str) -> str:
+        _require_billing_operator_access(app)
+        try:
+            result = retire_admin_campaign_provider_discounts(
+                app,
+                campaign_bid=campaign_bid,
+                operator_user_bid=_get_creator_bid(),
+            )
+        except Exception as exc:
+            _raise_campaign_provider_discount_route_error(exc)
+        return make_common_response(result)
+
+    @app.route(
+        admin_path_prefix
+        + "/campaign-provider-discounts/<campaign_provider_discount_bid>/validate",
+        methods=["POST"],
+    )
+    def admin_billing_campaign_provider_discount_validate_api(
+        campaign_provider_discount_bid: str,
+    ) -> str:
+        _require_billing_operator_access(app)
+        try:
+            result = validate_admin_campaign_provider_discount(
+                app,
+                campaign_provider_discount_bid=campaign_provider_discount_bid,
+                operator_user_bid=_get_creator_bid(),
+            )
+        except Exception as exc:
+            _raise_campaign_provider_discount_route_error(exc)
+        return make_common_response(result)

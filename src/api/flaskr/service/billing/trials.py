@@ -2,20 +2,18 @@
 
 from __future__ import annotations
 
+import uuid
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from decimal import Decimal
-import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from flask import Flask, has_app_context
-from sqlalchemy.exc import IntegrityError
-
 from flaskr.dao import db
 from flaskr.service.user.models import UserInfo as UserEntity
 from flaskr.service.user.repository import get_user_entity_by_bid
 from flaskr.util.datetime import now_utc
+from sqlalchemy.exc import IntegrityError
 
 from .consts import (
     BILLING_LEGACY_NEW_CREATOR_TRIAL_PROGRAM_CODE,
@@ -33,11 +31,16 @@ from .consts import (
     BILLING_TRIAL_PRODUCT_METADATA_STARTS_ON_FIRST_GRANT,
     BILLING_TRIAL_PRODUCT_METADATA_VALID_DAYS,
 )
-from .dtos import BillingTrialOfferDTO, BillingTrialWelcomeAckDTO
 from .credit_notifications import (
     enqueue_credit_notification as _enqueue_credit_notification,
+)
+from .credit_notifications import (
+    pending_credit_notification_bids as _pending_credit_notification_bids,
+)
+from .credit_notifications import (
     stage_credit_granted_notification_for_order as _stage_credit_granted_notification_for_order,
 )
+from .dtos import BillingTrialOfferDTO, BillingTrialWelcomeAckDTO
 from .models import BillingOrder, BillingProduct, BillingSubscription, CreditLedgerEntry
 from .primitives import coerce_bool as _coerce_bool
 from .primitives import credit_decimal_to_number as _credit_decimal_to_number
@@ -49,6 +52,10 @@ from .primitives import quantize_credit_amount as _quantize_credit_amount
 from .primitives import safe_to_positive_int as _safe_to_positive_int
 from .subscriptions import grant_paid_order_credits as _grant_paid_order_credits
 
+if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+    from decimal import Decimal
+
 _ACTIVE_SUBSCRIPTION_STATUSES = (
     BILLING_SUBSCRIPTION_STATUS_ACTIVE,
     BILLING_SUBSCRIPTION_STATUS_PAST_DUE,
@@ -58,12 +65,14 @@ _ACTIVE_SUBSCRIPTION_STATUSES = (
 _TRIAL_WELCOME_ACK_KEY = "welcome_trial_dialog_acknowledged_at"
 
 
-def _maybe_app_context(app: Flask):
+def _maybe_app_context(app: Flask) -> AbstractContextManager[None]:
     return nullcontext() if has_app_context() else app.app_context()
 
 
 @dataclass(slots=True, frozen=True)
 class TrialOfferState:
+    """Track whether a teacher can claim a billing trial."""
+
     enabled: bool
     status: str
     product_bid: str
@@ -80,7 +89,8 @@ class TrialOfferState:
     expires_at: datetime | None = None
     welcome_dialog_acknowledged_at: datetime | None = None
 
-    def to_dto(self, app: Flask) -> BillingTrialOfferDTO:
+    def to_dto(self) -> BillingTrialOfferDTO:
+        """Convert this state into its transfer object."""
         return BillingTrialOfferDTO(
             enabled=bool(self.enabled),
             status=str(self.status),
@@ -100,7 +110,9 @@ class TrialOfferState:
         )
 
 
-def _trial_product_field(product_ref: Any, field: str, default: Any = "") -> Any:
+def _trial_product_field(
+    product_ref: object, field: str, default: object = ""
+) -> object:
     if isinstance(product_ref, BillingProduct):
         return getattr(product_ref, field, default)
     if isinstance(product_ref, dict):
@@ -108,7 +120,7 @@ def _trial_product_field(product_ref: Any, field: str, default: Any = "") -> Any
     return default
 
 
-def _trial_product_metadata(product_ref: Any) -> dict[str, Any]:
+def _trial_product_metadata(product_ref: object) -> dict[str, object]:
     if isinstance(product_ref, BillingProduct):
         payload = product_ref.metadata_json
     elif isinstance(product_ref, dict):
@@ -120,7 +132,7 @@ def _trial_product_metadata(product_ref: Any) -> dict[str, Any]:
     return dict(payload) if isinstance(payload, dict) else {}
 
 
-def _resolve_trial_valid_days(product_ref: Any) -> int:
+def _resolve_trial_valid_days(product_ref: object) -> int:
     metadata = _trial_product_metadata(product_ref)
     return _safe_to_positive_int(
         metadata.get(BILLING_TRIAL_PRODUCT_METADATA_VALID_DAYS),
@@ -128,7 +140,7 @@ def _resolve_trial_valid_days(product_ref: Any) -> int:
     )
 
 
-def _resolve_trial_highlights(product_ref: Any) -> tuple[str, ...]:
+def _resolve_trial_highlights(product_ref: object) -> tuple[str, ...]:
     metadata = _trial_product_metadata(product_ref)
     highlights = metadata.get("highlights")
     if not isinstance(highlights, list):
@@ -136,7 +148,7 @@ def _resolve_trial_highlights(product_ref: Any) -> tuple[str, ...]:
     return tuple(str(item) for item in highlights if str(item or "").strip())
 
 
-def _trial_product_public_enabled(product_ref: Any) -> bool:
+def _trial_product_public_enabled(product_ref: object) -> bool:
     metadata = _trial_product_metadata(product_ref)
     return _coerce_bool(
         metadata.get(BILLING_TRIAL_PRODUCT_METADATA_PUBLIC_FLAG),
@@ -144,7 +156,7 @@ def _trial_product_public_enabled(product_ref: Any) -> bool:
     )
 
 
-def _resolve_trial_product_reference() -> BillingProduct | dict[str, Any] | None:
+def _resolve_trial_product_reference() -> BillingProduct | dict[str, object] | None:
     return (
         BillingProduct.query.filter(
             BillingProduct.deleted == 0,
@@ -157,7 +169,7 @@ def _resolve_trial_product_reference() -> BillingProduct | dict[str, Any] | None
 
 
 def _build_trial_offer_state(
-    product_ref: BillingProduct | dict[str, Any] | None,
+    product_ref: BillingProduct | dict[str, object] | None,
     *,
     enabled: bool,
     status: str,
@@ -354,7 +366,7 @@ def _bootstrap_trial_subscription(
     app: Flask,
     *,
     creator_bid: str,
-    product_ref: BillingProduct | dict[str, Any],
+    product_ref: BillingProduct | dict[str, object],
     trigger: str,
 ) -> None:
     valid_days = _resolve_trial_valid_days(product_ref)
@@ -435,7 +447,8 @@ def _bootstrap_trial_subscription(
 
     granted = _grant_paid_order_credits(app, order)
     if not granted:
-        raise RuntimeError("trial_order_credit_grant_failed")
+        message = "trial_order_credit_grant_failed"
+        raise RuntimeError(message)
 
     grant_notification = _stage_credit_granted_notification_for_order(
         app,
@@ -444,13 +457,12 @@ def _bootstrap_trial_subscription(
         commit=False,
         enqueue=False,
     )
-    if grant_notification.get("status") == "pending":
+    notification_bids = _pending_credit_notification_bids(grant_notification)
+    if notification_bids:
         order_metadata = (
-            order.metadata_json if isinstance(order.metadata_json, dict) else {}
+            dict(order.metadata_json) if isinstance(order.metadata_json, dict) else {}
         )
-        order_metadata["credit_granted_notification_bid"] = str(
-            grant_notification.get("notification_bid") or ""
-        ).strip()
+        order_metadata["credit_granted_notification_bids"] = list(notification_bids)
         order.metadata_json = order_metadata
         db.session.add(order)
 
@@ -471,21 +483,35 @@ def _enqueue_trial_credit_notification(app: Flask, creator_bid: str) -> None:
             .first()
         )
         metadata = order.metadata_json if order is not None else {}
-        notification_bid = (
-            str((metadata or {}).get("credit_granted_notification_bid") or "").strip()
+        stored_notification_bids = (
+            metadata.get("credit_granted_notification_bids")
             if isinstance(metadata, dict)
-            else ""
+            else None
         )
-    if notification_bid:
-        _enqueue_credit_notification(app, notification_bid=notification_bid)
+        notification_bids = (
+            tuple(
+                str(item or "").strip()
+                for item in stored_notification_bids
+                if str(item or "").strip()
+            )
+            if isinstance(stored_notification_bids, list)
+            else ()
+        )
+        if not notification_bids and isinstance(metadata, dict):
+            notification_bids = (
+                str(metadata.get("credit_granted_notification_bid") or "").strip(),
+            )
+    for notification_bid in notification_bids:
+        if notification_bid:
+            _enqueue_credit_notification(app, notification_bid=notification_bid)
 
 
 def _resolve_trial_bootstrap_status(
     creator_bid: str,
     *,
     creator: UserEntity | None = None,
-    product_ref: BillingProduct | dict[str, Any] | None = None,
-) -> tuple[str, BillingProduct | dict[str, Any] | None]:
+    product_ref: BillingProduct | dict[str, object] | None = None,
+) -> tuple[str, BillingProduct | dict[str, object] | None]:
     normalized_creator_bid = _normalize_bid(creator_bid)
     if not normalized_creator_bid:
         return "invalid_creator_bid", None
@@ -521,7 +547,7 @@ def _backfill_missing_creator_trial_credits(
     *,
     creator_bid: str = "",
     limit: int | None = None,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     normalized_creator_bid = _normalize_bid(creator_bid)
     normalized_limit = int(limit) if limit is not None and int(limit) > 0 else None
 
@@ -683,7 +709,6 @@ def _backfill_missing_creator_trial_credits(
 
 
 def _resolve_new_creator_trial_offer(
-    app: Flask,
     creator_bid: str,
     *,
     trigger: str,
@@ -714,7 +739,6 @@ def _resolve_new_creator_trial_offer(
             legacy_entry=legacy_entry,
         )
         return _serialize_trial_offer(
-            app,
             _build_trial_offer_state(
                 product_ref,
                 enabled=enabled,
@@ -727,7 +751,6 @@ def _resolve_new_creator_trial_offer(
 
     if not enabled:
         return _serialize_trial_offer(
-            app,
             _build_trial_offer_state(
                 product_ref,
                 enabled=False,
@@ -738,7 +761,6 @@ def _resolve_new_creator_trial_offer(
     creator = get_user_entity_by_bid(normalized_creator_bid)
     if creator is None or not bool(creator.is_creator):
         return _serialize_trial_offer(
-            app,
             _build_trial_offer_state(
                 product_ref,
                 enabled=True,
@@ -749,7 +771,6 @@ def _resolve_new_creator_trial_offer(
     current_subscription = _load_active_creator_subscription(normalized_creator_bid)
     if current_subscription is not None:
         return _serialize_trial_offer(
-            app,
             _build_trial_offer_state(
                 product_ref,
                 enabled=True,
@@ -758,7 +779,6 @@ def _resolve_new_creator_trial_offer(
         )
 
     return _serialize_trial_offer(
-        app,
         _build_trial_offer_state(
             product_ref,
             enabled=True,
@@ -767,11 +787,8 @@ def _resolve_new_creator_trial_offer(
     )
 
 
-def _serialize_trial_offer(
-    app: Flask,
-    state: TrialOfferState,
-) -> BillingTrialOfferDTO:
-    return state.to_dto(app)
+def _serialize_trial_offer(state: TrialOfferState) -> BillingTrialOfferDTO:
+    return state.to_dto()
 
 
 def _acknowledge_trial_welcome_dialog(

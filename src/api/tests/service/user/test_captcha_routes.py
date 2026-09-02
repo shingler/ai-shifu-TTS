@@ -1,11 +1,14 @@
+"""Verify captcha HTTP route behavior."""
+
 import base64
 import json
 from io import BytesIO
 
+from flasgger.utils import parse_docstring
 from PIL import Image
 
 
-def _post_json(client, path: str, payload: dict):
+def _post_json(client: object, path: str, payload: dict) -> object:
     resp = client.post(
         path,
         data=json.dumps(payload),
@@ -14,7 +17,7 @@ def _post_json(client, path: str, payload: dict):
     return resp, resp.get_json(force=True)
 
 
-def _get_captcha(client, app):
+def _get_captcha(client: object, app: object) -> object:
     app.config["ENV"] = "development"
     app.config["CAPTCHA_CODE_OVERRIDE"] = "0000"
     response = client.get("/api/user/captcha")
@@ -24,7 +27,7 @@ def _get_captcha(client, app):
     return body["data"]
 
 
-def _get_ticket(client, app):
+def _get_ticket(client: object, app: object) -> object:
     captcha = _get_captcha(client, app)
     response, body = _post_json(
         client,
@@ -39,7 +42,7 @@ def _get_ticket(client, app):
     return body["data"]["captcha_ticket"]
 
 
-def test_get_captcha_returns_image_payload(test_client, app):
+def test_get_captcha_returns_image_payload(test_client: object, app: object) -> None:
     captcha = _get_captcha(test_client, app)
 
     assert captcha["captcha_id"]
@@ -51,7 +54,7 @@ def test_get_captcha_returns_image_payload(test_client, app):
     assert captcha["expires_in"] == app.config["CAPTCHA_EXPIRE_TIME"]
 
 
-def test_captcha_verify_rejects_wrong_code(test_client, app):
+def test_captcha_verify_rejects_wrong_code(test_client: object, app: object) -> None:
     captcha = _get_captcha(test_client, app)
 
     response, body = _post_json(
@@ -67,7 +70,9 @@ def test_captcha_verify_rejects_wrong_code(test_client, app):
     assert body["code"] == 1009
 
 
-def test_captcha_verify_localizes_wrong_code_message(test_client, app):
+def test_captcha_verify_localizes_wrong_code_message(
+    test_client: object, app: object
+) -> None:
     captcha = _get_captcha(test_client, app)
 
     response = test_client.post(
@@ -88,7 +93,9 @@ def test_captcha_verify_localizes_wrong_code_message(test_client, app):
     assert body["message"] == "图形验证码错误"
 
 
-def test_captcha_verify_deletes_after_attempt_limit(test_client, app):
+def test_captcha_verify_deletes_after_attempt_limit(
+    test_client: object, app: object
+) -> None:
     original_attempts = app.config.get("CAPTCHA_MAX_VERIFY_ATTEMPTS")
     app.config["CAPTCHA_MAX_VERIFY_ATTEMPTS"] = 1
     try:
@@ -119,7 +126,10 @@ def test_captcha_verify_deletes_after_attempt_limit(test_client, app):
         app.config["CAPTCHA_MAX_VERIFY_ATTEMPTS"] = original_attempts
 
 
-def test_send_sms_code_requires_captcha_ticket(test_client, app):
+def test_send_sms_code_requires_captcha_ticket(
+    test_client: object, app: object
+) -> None:
+    _ = app
     response, body = _post_json(
         test_client,
         "/api/user/send_sms_code",
@@ -130,7 +140,26 @@ def test_send_sms_code_requires_captcha_ticket(test_client, app):
     assert body["code"] == 1009
 
 
-def test_send_sms_code_localizes_missing_captcha_ticket_message(test_client, app):
+def test_send_sms_code_swagger_parameters_stay_valid_yaml(app: object) -> None:
+    view = app.view_functions["send_sms_code_api"]
+
+    _summary, _description, specification = parse_docstring(
+        view,
+        process_doc=lambda text: text,
+    )
+
+    assert specification["parameters"][0]["in"] == "body"
+    assert specification["parameters"][0]["required"] is True
+    assert specification["parameters"][0]["schema"]["required"] == [
+        "mobile",
+        "captcha_ticket",
+    ]
+
+
+def test_send_sms_code_localizes_missing_captcha_ticket_message(
+    test_client: object, app: object
+) -> None:
+    _ = app
     response, body = _post_json(
         test_client,
         "/api/user/send_sms_code",
@@ -142,7 +171,9 @@ def test_send_sms_code_localizes_missing_captcha_ticket_message(test_client, app
     assert body["message"] == "图形验证码错误"
 
 
-def test_send_sms_code_consumes_ticket_once(test_client, app, monkeypatch):
+def test_send_sms_code_consumes_ticket_once(
+    test_client: object, app: object, monkeypatch: object
+) -> None:
     import flaskr.service.user.utils as user_utils
 
     monkeypatch.setattr(
@@ -177,8 +208,8 @@ def test_send_sms_code_consumes_ticket_once(test_client, app, monkeypatch):
 
 
 def test_console_send_sms_code_does_not_require_captcha_ticket(
-    test_client, monkeypatch
-):
+    test_client: object, monkeypatch: object
+) -> None:
     import flaskr.service.user.utils as user_utils
 
     monkeypatch.setattr(
@@ -198,7 +229,9 @@ def test_console_send_sms_code_does_not_require_captcha_ticket(
     assert body["data"]["expire_in"] > 0
 
 
-def test_console_send_sms_code_normalizes_cn_prefix(test_client, app, monkeypatch):
+def test_console_send_sms_code_normalizes_cn_prefix(
+    test_client: object, app: object, monkeypatch: object
+) -> None:
     import flaskr.service.user.utils as user_utils
     from flaskr.service.user.models import UserVerifyCode
 

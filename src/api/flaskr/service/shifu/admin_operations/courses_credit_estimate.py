@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
 from dataclasses import dataclass
-from datetime import datetime
-from decimal import Decimal, ROUND_CEILING
-
-from flask import Flask
+from decimal import ROUND_CEILING, Decimal
+from typing import TYPE_CHECKING
 
 from flaskr.api.llm import get_current_models
 from flaskr.api.tts import get_all_provider_configs
@@ -35,11 +34,15 @@ from flaskr.service.shifu.admin_dtos_courses import (
     AdminOperationEstimatedCreditCostDTO,
     AdminOperationEstimatedCreditModeDTO,
 )
-from flaskr.service.shifu.models import DraftOutlineItem, PublishedOutlineItem
 from flaskr.util.datetime import now_utc
 
+if TYPE_CHECKING:
+    from datetime import datetime
 
-_ZERO = Decimal("0")
+    from flask import Flask
+    from flaskr.service.shifu.models import DraftOutlineItem, PublishedOutlineItem
+
+_ZERO = Decimal(0)
 _MARKDOWN_CODE_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
 _MARKDOWN_INLINE_CODE_RE = re.compile(r"`([^`]*)`")
 _MARKDOWN_LINK_RE = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
@@ -117,7 +120,7 @@ def _resolve_llm_model_display(app: Flask, model: str) -> _LlmModelDisplay:
     normalized = str(model or "").strip()
     if not normalized:
         return _LlmModelDisplay(label="", multiplier=None)
-    try:
+    with contextlib.suppress(Exception):
         for option in get_current_models(app):
             if str(option.get("model", "") or "").strip() == normalized:
                 label = str(option.get("display_name", "") or "").strip()
@@ -128,8 +131,6 @@ def _resolve_llm_model_display(app: Flask, model: str) -> _LlmModelDisplay:
                     label=label or _format_model_label_fallback(normalized),
                     multiplier=multiplier or None,
                 )
-    except Exception:
-        pass
     return _LlmModelDisplay(
         label=_format_model_label_fallback(normalized),
         multiplier=None,
@@ -141,7 +142,7 @@ def _resolve_tts_model_label(provider: str, model: str) -> str:
     normalized_model = str(model or "").strip()
     if not normalized_provider and not normalized_model:
         return ""
-    try:
+    with contextlib.suppress(Exception):
         options = get_all_provider_configs().get("model_options") or []
         for option in options:
             option_provider = str(option.get("provider", "") or "").strip().lower()
@@ -168,8 +169,6 @@ def _resolve_tts_model_label(provider: str, model: str) -> str:
                     label = str(option.get("label", "") or "").strip()
                     if label:
                         return label
-    except Exception:
-        pass
     return _format_model_label_fallback(normalized_model or normalized_provider)
 
 
@@ -181,7 +180,7 @@ def _resolve_tts_model_multiplier_label(
 ) -> str | None:
     normalized_provider = str(provider or "").strip().lower()
     normalized_model = str(model or "").strip()
-    try:
+    with contextlib.suppress(Exception):
         options = get_all_provider_configs().get("model_options") or []
         provider_fallback: str | None = None
         for option in options:
@@ -196,8 +195,6 @@ def _resolve_tts_model_multiplier_label(
                 provider_fallback = credit_label
         if provider_fallback:
             return provider_fallback
-    except Exception:
-        pass
     return resolve_credit_multiplier_label(
         usage_type=BILL_USAGE_TYPE_TTS,
         provider=normalized_provider,
@@ -279,7 +276,7 @@ def _estimate_llm_cost(
         app, normalized_model
     )
     input_tokens = _ceil_decimal(
-        Decimal(str(prompt_char_count + content_char_count)) / Decimal("2")
+        Decimal(str(prompt_char_count + content_char_count)) / Decimal(2)
     )
     output_low = _ceil_decimal(Decimal(str(input_tokens)) * Decimal("0.6"))
     output_high = _ceil_decimal(Decimal(str(input_tokens)) * Decimal("1.5"))
@@ -507,10 +504,11 @@ def _build_mode(
 def build_operator_course_estimated_credit_cost(
     app: Flask,
     *,
-    course,
+    course: object,
     outline_items: list[DraftOutlineItem | PublishedOutlineItem],
     visible_leaf_outline_bids: list[str] | set[str],
 ) -> AdminOperationEstimatedCreditCostDTO:
+    """Build operator course estimated credit cost."""
     calculated_at = now_utc()
     rate_cache: dict = {}
     item_map = {

@@ -1,14 +1,18 @@
+"""Verify translation loading, fallback, and locale selection."""
+
 from pathlib import Path
 
 import pytest
 from flask import Flask
-
+from flaskr.i18n import (
+    _ as t,
+)
 from flaskr.i18n import (
     _translations,
     clear_language,
+    get_locale_labels,
     load_translations,
     set_language,
-    _ as t,
 )
 
 
@@ -18,7 +22,7 @@ def _shared_i18n_root() -> Path:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_i18n_state(monkeypatch):
+def _isolate_i18n_state(monkeypatch: object) -> object:
     # SHARED_I18N_ROOT is restored by monkeypatch; the thread-local language
     # set via set_language() must be cleared so later tests (e.g. ask provider
     # adapters asserting en-US messages) are not affected by test order.
@@ -27,7 +31,7 @@ def _isolate_i18n_state(monkeypatch):
     clear_language()
 
 
-def test_load_and_translate_basic():
+def test_load_and_translate_basic() -> None:
     app = Flask(__name__)
 
     # Load translations from shared JSON
@@ -42,7 +46,7 @@ def test_load_and_translate_basic():
     assert t("module.chat.ask") == "追问"
 
 
-def test_french_language_loads_shared_translations():
+def test_french_language_loads_shared_translations() -> None:
     app = Flask(__name__)
 
     load_translations(app)
@@ -52,7 +56,33 @@ def test_french_language_loads_shared_translations():
     assert t("module.chat.ask") == "Demander"
 
 
-def test_language_fallback_to_default():
+def test_arabic_and_thai_languages_load_shared_translations() -> None:
+    app = Flask(__name__)
+
+    load_translations(app)
+
+    set_language("ar-SA")
+    assert t("module.chat.ask") == "سؤال متابعة"
+
+    set_language("th-TH")
+    assert t("module.chat.ask") == "ถามต่อ"
+
+
+def test_locale_labels_follow_shared_metadata_order() -> None:
+    app = Flask(__name__)
+
+    load_translations(app)
+
+    assert get_locale_labels() == {
+        "ar-SA": "العربية",
+        "en-US": "English",
+        "fr-FR": "Français",
+        "th-TH": "ไทย",
+        "zh-CN": "中文",
+    }
+
+
+def test_language_fallback_to_default() -> None:
     app = Flask(__name__)
 
     load_translations(app)
@@ -62,7 +92,7 @@ def test_language_fallback_to_default():
     assert t("module.chat.ask") == "Ask"
 
 
-def test_existing_language_missing_key_falls_back_to_default():
+def test_existing_language_missing_key_falls_back_to_default() -> None:
     app = Flask(__name__)
 
     load_translations(app)
@@ -79,7 +109,7 @@ def test_existing_language_missing_key_falls_back_to_default():
         fr_translations["MODULE.CHAT.ASK"] = removed_upper
 
 
-def test_flat_section_namespace_loading():
+def test_flat_section_namespace_loading() -> None:
     app = Flask(__name__)
 
     load_translations(app)

@@ -1,12 +1,11 @@
+"""Verify coupon redemption applies valid legacy discounts."""
+
 from datetime import timedelta
 from decimal import Decimal
 
 import pytest
-
-from flaskr.util.datetime import now_utc
-from flaskr.service.common.models import AppException
-
 from flaskr.dao import db
+from flaskr.service.common.models import AppError
 from flaskr.service.order.coupon_funcs import use_coupon_code
 from flaskr.service.order.models import Order
 from flaskr.service.promo.consts import (
@@ -15,9 +14,10 @@ from flaskr.service.promo.consts import (
     COUPON_TYPE_FIXED,
 )
 from flaskr.service.promo.models import Coupon, CouponUsage
+from flaskr.util.datetime import now_utc
 
 
-def test_use_coupon_code_applies_discount(app, monkeypatch):
+def test_use_coupon_code_applies_discount(app: object, monkeypatch: object) -> None:
     order_bid = "order-fix-discount-1"
     course_bid = "course-fix-discount-1"
     user_bid = "user-fix-discount-1"
@@ -53,7 +53,9 @@ def test_use_coupon_code_applies_discount(app, monkeypatch):
 
     sent = {}
 
-    def fake_send_feishu_coupon_code(_app, user_id, code, _name, _value):
+    def fake_send_feishu_coupon_code(
+        _app: object, user_id: object, code: object, _name: object, _value: object
+    ) -> None:
         sent["user_id"] = user_id
         sent["code"] = code
 
@@ -76,7 +78,9 @@ def test_use_coupon_code_applies_discount(app, monkeypatch):
     assert sent["code"] == coupon_code
 
 
-def test_use_specific_all_courses_coupon_keeps_unbound_usage_course(app, monkeypatch):
+def test_use_specific_all_courses_coupon_keeps_unbound_usage_course(
+    app: object, monkeypatch: object
+) -> None:
     order_bid = "order-fix-discount-2"
     course_bid = "course-fix-discount-2"
     user_bid = "user-fix-discount-2"
@@ -146,7 +150,9 @@ def test_use_specific_all_courses_coupon_keeps_unbound_usage_course(app, monkeyp
         assert updated_coupon.used_count == 1
 
 
-def test_use_coupon_code_accepts_legacy_coupon_status(app, monkeypatch):
+def test_use_coupon_code_accepts_legacy_coupon_status(
+    app: object, monkeypatch: object
+) -> None:
     order_bid = "order-fix-discount-legacy"
     course_bid = "course-fix-discount-legacy"
     user_bid = "user-fix-discount-legacy"
@@ -201,7 +207,9 @@ def test_use_coupon_code_accepts_legacy_coupon_status(app, monkeypatch):
         assert updated_coupon.used_count == 1
 
 
-def test_use_coupon_code_accepts_coupon_expiring_soon_in_utc(app, monkeypatch):
+def test_use_coupon_code_accepts_coupon_expiring_soon_in_utc(
+    app: object, monkeypatch: object
+) -> None:
     # Regression: the validity window is stored and compared as naive UTC.
     # A localized (UTC+8) reading of `end` used to reject coupons that expire
     # within the next eight hours as already expired.
@@ -247,7 +255,9 @@ def test_use_coupon_code_accepts_coupon_expiring_soon_in_utc(app, monkeypatch):
     assert result.order_id == order_bid
 
 
-def test_use_coupon_code_rejects_coupon_not_yet_started_in_utc(app, monkeypatch):
+def test_use_coupon_code_rejects_coupon_not_yet_started_in_utc(
+    app: object, monkeypatch: object
+) -> None:
     # Regression: a localized (UTC+8) reading of `start` used to open the
     # redemption window eight hours before the stored UTC start time.
     order_bid = "order-fix-discount-utc-2"
@@ -288,5 +298,5 @@ def test_use_coupon_code_rejects_coupon_not_yet_started_in_utc(app, monkeypatch)
         lambda *_args: None,
     )
 
-    with pytest.raises(AppException):
+    with pytest.raises(AppError):
         use_coupon_code(app, user_bid, coupon_code, order_bid)

@@ -3,11 +3,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
-from pathlib import Path
 import re
-
+from dataclasses import dataclass
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS_ROOT = ROOT / "docs"
@@ -32,7 +31,7 @@ REQUIRED_HARNESS_WORKFLOWS = (
 REQUIRED_RUNTIME_ASSETS = (
     ROOT / "scripts" / "check_architecture_boundaries.py",
     ROOT / "src" / "api" / "scripts" / "harness_diagnostics.py",
-    ROOT / "src" / "cook-web" / "e2e" / "smoke.spec.ts",
+    ROOT / "src" / "web" / "e2e" / "smoke.spec.ts",
     ROOT / "docker" / "docker-compose.dev.yml",
     ROOT / "docker" / "observability" / "loki-config.yml",
     ROOT / "docker" / "observability" / "tempo-config.yml",
@@ -44,6 +43,8 @@ REQUIRED_RUNTIME_ASSETS = (
 
 @dataclass(frozen=True)
 class DocRecord:
+    """Record doc details."""
+
     path: Path
     title: str
     category: str
@@ -58,6 +59,7 @@ HEADING_PATTERN = re.compile(r"^#{1,6}\s+(.*)$", re.MULTILINE)
 
 
 def parse_frontmatter(path: Path) -> dict[str, str]:
+    """Return trimmed leading-frontmatter metadata, skipping missing or malformed entries."""
     text = path.read_text(encoding="utf-8")
     match = FRONTMATTER_PATTERN.match(text)
     if not match:
@@ -73,6 +75,7 @@ def parse_frontmatter(path: Path) -> dict[str, str]:
 
 
 def extract_title(path: Path) -> str:
+    """Return a Markdown file's first heading or a title derived from its filename."""
     text = path.read_text(encoding="utf-8")
     match = HEADING_PATTERN.search(text)
     if match:
@@ -81,6 +84,7 @@ def extract_title(path: Path) -> str:
 
 
 def build_frontmatter_records(category_dir: Path, category: str) -> list[DocRecord]:
+    """Build category-tagged records for non-index Markdown files in one metadata directory."""
     records: list[DocRecord] = []
     for path in sorted(category_dir.glob("*.md")):
         if path.name == "index.md":
@@ -102,6 +106,7 @@ def build_frontmatter_records(category_dir: Path, category: str) -> list[DocReco
 
 
 def build_reference_records() -> list[DocRecord]:
+    """Build canonical reference records for Markdown files under docs/references."""
     records: list[DocRecord] = []
     for path in sorted((DOCS_ROOT / "references").glob("*.md")):
         if path.name == "index.md":
@@ -121,28 +126,30 @@ def build_reference_records() -> list[DocRecord]:
 
 
 def build_execplan_records(subdir: str, status: str) -> list[DocRecord]:
+    """Build status-tagged records for every Markdown ExecPlan in one plan directory."""
     plan_dir = DOCS_ROOT / "exec-plans" / subdir
-    records: list[DocRecord] = []
-    for path in sorted(plan_dir.glob("*.md")):
-        records.append(
-            DocRecord(
-                path=path,
-                title=extract_title(path),
-                category=f"exec-plan-{subdir}",
-                status=status,
-                owner_surface="repo",
-                last_reviewed="",
-                canonical="true",
-            )
+    records: list[DocRecord] = [
+        DocRecord(
+            path=path,
+            title=extract_title(path),
+            category=f"exec-plan-{subdir}",
+            status=status,
+            owner_surface="repo",
+            last_reviewed="",
+            canonical="true",
         )
+        for path in sorted(plan_dir.glob("*.md"))
+    ]
     return records
 
 
 def rel_doc(path: Path) -> str:
+    """Return a document path relative to the repository root."""
     return path.relative_to(ROOT).as_posix()
 
 
 def render_section_index(title: str, intro: str, records: list[DocRecord]) -> str:
+    """Render a generated category index that links each supplied document record."""
     lines = [GENERATED_COMMENT, "", f"# {title}", "", intro, ""]
     if not records:
         lines.extend(["No documents are currently indexed here.", ""])
@@ -164,6 +171,7 @@ def render_section_index(title: str, intro: str, records: list[DocRecord]) -> st
 def render_execplan_index(
     active: list[DocRecord], completed: list[DocRecord], tracker: Path
 ) -> str:
+    """Render links for active and completed ExecPlans plus their supporting tracker."""
     lines = [
         GENERATED_COMMENT,
         "",
@@ -176,14 +184,17 @@ def render_execplan_index(
         "",
     ]
     if active:
-        for record in active:
-            lines.append(f"- [{record.title}](./active/{record.path.name})")
+        lines.extend(
+            f"- [{record.title}](./active/{record.path.name})" for record in active
+        )
     else:
         lines.append("- No active ExecPlans.")
     lines.extend(["", "## Completed", ""])
     if completed:
-        for record in completed:
-            lines.append(f"- [{record.title}](./completed/{record.path.name})")
+        lines.extend(
+            f"- [{record.title}](./completed/{record.path.name})"
+            for record in completed
+        )
     else:
         lines.append("- No completed ExecPlans.")
     lines.extend(
@@ -199,6 +210,7 @@ def render_execplan_index(
 
 
 def render_inventory(records: list[DocRecord]) -> str:
+    """Render a Markdown table that inventories the supplied repository document records."""
     lines = [
         GENERATED_COMMENT,
         "",
@@ -207,27 +219,28 @@ def render_inventory(records: list[DocRecord]) -> str:
         "| Path | Title | Category | Status | Owner | Last Reviewed | Canonical |",
         "| --- | --- | --- | --- | --- | --- | --- |",
     ]
-    for record in records:
-        lines.append(
-            "| "
-            + " | ".join(
-                [
-                    f"`{rel_doc(record.path)}`",
-                    record.title.replace("|", "\\|"),
-                    f"`{record.category}`",
-                    f"`{record.status or '-'}`",
-                    f"`{record.owner_surface or '-'}`",
-                    f"`{record.last_reviewed or '-'}`",
-                    f"`{record.canonical or '-'}`",
-                ]
-            )
-            + " |"
+    lines.extend(
+        "| "
+        + " | ".join(
+            [
+                f"`{rel_doc(record.path)}`",
+                record.title.replace("|", "\\|"),
+                f"`{record.category}`",
+                f"`{record.status or '-'}`",
+                f"`{record.owner_surface or '-'}`",
+                f"`{record.last_reviewed or '-'}`",
+                f"`{record.canonical or '-'}`",
+            ]
         )
+        + " |"
+        for record in records
+    )
     lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
 def load_boundary_baseline() -> tuple[int, dict[str, int]]:
+    """Return boundary-baseline totals and per-rule counts, or empty defaults when absent."""
     if not BOUNDARY_BASELINE_PATH.exists():
         return 0, {}
     payload = json.loads(BOUNDARY_BASELINE_PATH.read_text(encoding="utf-8"))
@@ -249,6 +262,7 @@ def render_harness_health_report(
     active_plans: list[DocRecord],
     completed_plans: list[DocRecord],
 ) -> str:
+    """Render health metrics for document inventories, boundaries, and required runtime assets."""
     baseline_count, baseline_breakdown = load_boundary_baseline()
     lines = [
         GENERATED_COMMENT,
@@ -284,6 +298,7 @@ def render_harness_health_report(
 
 
 def build_knowledge_docs() -> dict[Path, str]:
+    """Build generated repository knowledge documents as a path-to-Markdown-content mapping."""
     design_records = build_frontmatter_records(DOCS_ROOT / "design-docs", "design-doc")
     product_records = build_frontmatter_records(
         DOCS_ROOT / "product-specs", "product-spec"
@@ -418,6 +433,7 @@ def build_knowledge_docs() -> dict[Path, str]:
 
 
 def write_documents() -> int:
+    """Write generated knowledge documents to their owned paths and return their count."""
     docs = build_knowledge_docs()
     for path, content in sorted(docs.items()):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -427,6 +443,7 @@ def write_documents() -> int:
 
 
 def main() -> int:
+    """Regenerate repository knowledge indexes and inventories."""
     return write_documents()
 
 

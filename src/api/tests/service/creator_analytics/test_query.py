@@ -8,7 +8,6 @@ SQL build → SQLite engine. The token middleware is bypassed by mocking
 from __future__ import annotations
 
 import pytest
-
 from flaskr.service.creator_analytics import engine as analytics_engine
 
 from .conftest import (
@@ -21,20 +20,18 @@ from .conftest import (
     seed_user_info,
 )
 
-
 ENDPOINT = "/api/creator-analytics/query"
 
 
 @pytest.fixture(autouse=True)
-def _reset_analytics_engine_singleton():
+def _reset_analytics_engine_singleton() -> object:
     """Ensure each test starts with the cached fallback engine cleared."""
-
     analytics_engine.reset_for_tests()
     yield
     analytics_engine.reset_for_tests()
 
 
-def _post(test_client, body):
+def _post(test_client: object, body: object) -> object:
     return test_client.post(ENDPOINT, json=body)
 
 
@@ -43,7 +40,9 @@ def _post(test_client, body):
 # ---------------------------------------------------------------------------
 
 
-def test_progress_count_returns_expected_rows(mock_request_user, test_client, app):
+def test_progress_count_returns_expected_rows(
+    mock_request_user: object, test_client: object, app: object
+) -> None:
     mock_request_user()
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a")
@@ -75,8 +74,8 @@ def test_progress_count_returns_expected_rows(mock_request_user, test_client, ap
 
 
 def test_shifu_user_archives_query_runs_without_deleted_column(
-    mock_request_user, test_client, app
-):
+    mock_request_user: object, test_client: object, app: object
+) -> None:
     mock_request_user()
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a")
@@ -107,7 +106,9 @@ def test_shifu_user_archives_query_runs_without_deleted_column(
 # ---------------------------------------------------------------------------
 
 
-def test_user_cannot_query_a_shifu_they_do_not_own(mock_request_user, test_client, app):
+def test_user_cannot_query_a_shifu_they_do_not_own(
+    mock_request_user: object, test_client: object, app: object
+) -> None:
     mock_request_user(user_id="teacher-1")
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-mine", user_id="teacher-1")
@@ -124,16 +125,15 @@ def test_user_cannot_query_a_shifu_they_do_not_own(mock_request_user, test_clien
         },
     )
 
-    # The error envelope is wrapped by AppException → make_common_response.
+    # The error envelope is wrapped by AppError → make_common_response.
     payload = response.get_json(force=True)
     assert payload["code"] == 11001  # server.creatorAnalytics.noPermission
 
 
 def test_query_results_are_scoped_to_the_requested_shifu(
-    mock_request_user, test_client, app
-):
+    mock_request_user: object, test_client: object, app: object
+) -> None:
     """Even if rows exist for another shifu, only the requested one is counted."""
-
     mock_request_user(user_id="teacher-1")
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a", user_id="teacher-1")
@@ -159,7 +159,9 @@ def test_query_results_are_scoped_to_the_requested_shifu(
 # ---------------------------------------------------------------------------
 
 
-def test_unknown_table_yields_invalid_table_error(mock_request_user, test_client, app):
+def test_unknown_table_yields_invalid_table_error(
+    mock_request_user: object, test_client: object, app: object
+) -> None:
     mock_request_user()
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a")
@@ -172,8 +174,8 @@ def test_unknown_table_yields_invalid_table_error(mock_request_user, test_client
 
 
 def test_unknown_column_yields_invalid_column_error(
-    mock_request_user, test_client, app
-):
+    mock_request_user: object, test_client: object, app: object
+) -> None:
     mock_request_user()
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a")
@@ -190,7 +192,9 @@ def test_unknown_column_yields_invalid_column_error(
     assert response.get_json(force=True)["code"] == 11004
 
 
-def test_select_shifu_bid_directly_is_rejected(mock_request_user, test_client, app):
+def test_select_shifu_bid_directly_is_rejected(
+    mock_request_user: object, test_client: object, app: object
+) -> None:
     mock_request_user()
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a")
@@ -207,7 +211,9 @@ def test_select_shifu_bid_directly_is_rejected(mock_request_user, test_client, a
     assert response.get_json(force=True)["code"] == 11004
 
 
-def test_like_leading_wildcard_is_rejected(mock_request_user, test_client, app):
+def test_like_leading_wildcard_is_rejected(
+    mock_request_user: object, test_client: object, app: object
+) -> None:
     mock_request_user()
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a")
@@ -225,7 +231,9 @@ def test_like_leading_wildcard_is_rejected(mock_request_user, test_client, app):
     assert response.get_json(force=True)["code"] == 11002
 
 
-def test_limit_above_configured_max_is_rejected(mock_request_user, test_client, app):
+def test_limit_above_configured_max_is_rejected(
+    mock_request_user: object, test_client: object, app: object
+) -> None:
     mock_request_user()
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a")
@@ -247,14 +255,15 @@ def test_limit_above_configured_max_is_rejected(mock_request_user, test_client, 
 # ---------------------------------------------------------------------------
 
 
-def test_bill_usage_table_is_rejected(mock_request_user, test_client, app):
+def test_bill_usage_table_is_rejected(
+    mock_request_user: object, test_client: object, app: object
+) -> None:
     """`bill_usage` is removed from the whitelist; queries return 11003.
 
     Creators may only query credit consumption via `bill_daily_usage_metrics`;
     raw token columns (`input` / `input_cache` / `output` / `total`) are no
     longer exposed.
     """
-
     mock_request_user(user_id="teacher-1")
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a")
@@ -277,18 +286,16 @@ def test_bill_usage_table_is_rejected(mock_request_user, test_client, app):
 
 
 def test_conversation_replay_returns_ordered_qa_pairs(
-    mock_request_user, test_client, app, monkeypatch
-):
-    """End-to-end: select user_bid + generated_content for a lesson's Q&A,
-    verify the rows come back chronologically and an audit log is emitted."""
-
+    mock_request_user: object, test_client: object, app: object, monkeypatch: object
+) -> None:
+    """End-to-end: select user_bid + generated_content for a lesson's Q&A, verify the rows come back chronologically and an audit log is emitted."""
     mock_request_user(user_id="teacher-1")
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a")
         seed_generated_block(
             shifu_bid="shifu-a",
             user_bid="learner-1",
-            type=321,
+            block_type=321,
             role=2,
             content="什么是 SOLID 原则?",
             progress_record_bid="pr-1",
@@ -296,7 +303,7 @@ def test_conversation_replay_returns_ordered_qa_pairs(
         seed_generated_block(
             shifu_bid="shifu-a",
             user_bid="learner-1",
-            type=322,
+            block_type=322,
             role=1,
             content="SOLID 是五条 OOP 设计原则的缩写...",
             progress_record_bid="pr-1",
@@ -350,8 +357,8 @@ def test_conversation_replay_returns_ordered_qa_pairs(
 
 
 def test_conversation_replay_rejects_disallowed_type(
-    mock_request_user, test_client, app
-):
+    mock_request_user: object, test_client: object, app: object
+) -> None:
     mock_request_user()
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a")
@@ -375,8 +382,8 @@ def test_conversation_replay_rejects_disallowed_type(
 
 
 def test_user_users_lookup_returns_nicknames_for_known_user_bids(
-    mock_request_user, test_client, app, monkeypatch
-):
+    mock_request_user: object, test_client: object, app: object, monkeypatch: object
+) -> None:
     mock_request_user(user_id="teacher-1")
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a")
@@ -419,8 +426,8 @@ def test_user_users_lookup_returns_nicknames_for_known_user_bids(
 
 
 def test_user_users_lookup_redacts_phone_in_nickname(
-    mock_request_user, test_client, app
-):
+    mock_request_user: object, test_client: object, app: object
+) -> None:
     mock_request_user()
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a")
@@ -447,8 +454,8 @@ def test_user_users_lookup_redacts_phone_in_nickname(
 
 
 def test_user_users_lookup_without_view_permission_is_rejected(
-    mock_request_user, test_client, app
-):
+    mock_request_user: object, test_client: object, app: object
+) -> None:
     mock_request_user(user_id="teacher-1")
     with app.app_context():
         # teacher-2 owns shifu-other, teacher-1 has no access
@@ -470,10 +477,9 @@ def test_user_users_lookup_without_view_permission_is_rejected(
 
 
 def test_user_users_lookup_without_where_user_bid_is_rejected(
-    mock_request_user, test_client, app
-):
+    mock_request_user: object, test_client: object, app: object
+) -> None:
     """Cannot list every learner's nickname — must supply user_bid candidates."""
-
     mock_request_user()
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a")
@@ -496,8 +502,8 @@ def test_user_users_lookup_without_where_user_bid_is_rejected(
 
 
 def test_user_users_lookup_by_phone_returns_masked_user_identify(
-    mock_request_user, test_client, app
-):
+    mock_request_user: object, test_client: object, app: object
+) -> None:
     mock_request_user()
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a")
@@ -525,8 +531,8 @@ def test_user_users_lookup_by_phone_returns_masked_user_identify(
 
 
 def test_user_users_lookup_by_email_returns_masked_user_identify(
-    mock_request_user, test_client, app
-):
+    mock_request_user: object, test_client: object, app: object
+) -> None:
     mock_request_user()
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a")
@@ -555,9 +561,9 @@ def test_user_users_lookup_by_email_returns_masked_user_identify(
 
 
 def test_user_users_nickname_redacted_and_user_identify_masked_independently(
-    mock_request_user, test_client, app
-):
-    """nickname PII fully redacted; user_identify column partially masked — independent."""
+    mock_request_user: object, test_client: object, app: object
+) -> None:
+    """Nickname PII fully redacted; user_identify column partially masked — independent."""
     mock_request_user()
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a")
@@ -588,8 +594,8 @@ def test_user_users_nickname_redacted_and_user_identify_masked_independently(
 
 
 def test_user_users_user_identify_in_filter_rejected(
-    mock_request_user, test_client, app
-):
+    mock_request_user: object, test_client: object, app: object
+) -> None:
     mock_request_user()
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a")
@@ -614,8 +620,8 @@ def test_user_users_user_identify_in_filter_rejected(
 
 
 def test_user_users_lookup_by_phone_audit_log_emitted(
-    mock_request_user, test_client, app, monkeypatch
-):
+    mock_request_user: object, test_client: object, app: object, monkeypatch: object
+) -> None:
     mock_request_user()
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a")
@@ -659,10 +665,9 @@ def test_user_users_lookup_by_phone_audit_log_emitted(
 
 
 def test_fallback_engine_uses_primary_db_with_warning(
-    mock_request_user, test_client, app, caplog
-):
+    mock_request_user: object, test_client: object, app: object, caplog: object
+) -> None:
     """Leaving ANALYTICS_DATABASE_URI empty should fall back to the primary engine."""
-
     mock_request_user()
     app.config["ANALYTICS_DATABASE_URI"] = ""
     with app.app_context():
@@ -689,14 +694,54 @@ def test_fallback_engine_uses_primary_db_with_warning(
         assert engine is db.engine
 
 
+def test_dedicated_engine_replacement_disposes_previous_owner(
+    app: object, monkeypatch: object
+) -> None:
+    class _FakeEngine:
+        def __init__(self, uri: str) -> None:
+            self.uri = uri
+            self.disposed = False
+
+        def dispose(self) -> None:
+            self.disposed = True
+
+    created: list[_FakeEngine] = []
+
+    def fake_create_engine(uri: object, **_kwargs: object) -> object:
+        engine = _FakeEngine(uri)
+        created.append(engine)
+        return engine
+
+    monkeypatch.setattr(analytics_engine, "create_engine", fake_create_engine)
+    monkeypatch.setitem(
+        app.config, "ANALYTICS_DATABASE_URI", "sqlite:///analytics-one.db"
+    )
+
+    first = analytics_engine.get_analytics_engine(app)
+    same = analytics_engine.get_analytics_engine(app)
+    monkeypatch.setitem(
+        app.config, "ANALYTICS_DATABASE_URI", "sqlite:///analytics-two.db"
+    )
+    second = analytics_engine.get_analytics_engine(app)
+
+    assert first is same
+    assert second is not first
+    assert first.disposed is True
+    assert second.disposed is False
+    assert [engine.uri for engine in created] == [
+        "sqlite:///analytics-one.db",
+        "sqlite:///analytics-two.db",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # bill_daily_usage_metrics — credit-cost queries (v3)
 # ---------------------------------------------------------------------------
 
 
 def test_bill_daily_sum_credits_for_production_usage(
-    mock_request_user, test_client, app
-):
+    mock_request_user: object, test_client: object, app: object
+) -> None:
     mock_request_user()
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a")
@@ -743,7 +788,9 @@ def test_bill_daily_sum_credits_for_production_usage(
     assert total == pytest.approx(30.0)
 
 
-def test_bill_daily_split_by_usage_type(mock_request_user, test_client, app):
+def test_bill_daily_split_by_usage_type(
+    mock_request_user: object, test_client: object, app: object
+) -> None:
     mock_request_user()
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a")
@@ -784,12 +831,9 @@ def test_bill_daily_split_by_usage_type(mock_request_user, test_client, app):
 
 
 def test_bill_daily_creator_bid_grouping_shows_callers_own_wallet(
-    mock_request_user, test_client, app
-):
-    """The author can now group by creator_bid to confirm which wallet is
-    being deducted for the course; shifu_bid isolation guarantees the
-    grouping only returns the caller's own bid."""
-
+    mock_request_user: object, test_client: object, app: object
+) -> None:
+    """The author can now group by creator_bid to confirm which wallet is being deducted for the course; shifu_bid isolation guarantees the grouping only returns the caller's own bid."""
     mock_request_user(user_id="teacher-1")
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a", user_id="teacher-1")
@@ -840,12 +884,15 @@ def test_bill_daily_creator_bid_grouping_shows_callers_own_wallet(
 # ---------------------------------------------------------------------------
 
 
-def test_followup_count_excludes_rerolled_history(mock_request_user, test_client, app):
-    """A learner can re-roll a follow-up question; the old block flips to
-    status=0. The PDF §6 trap is "status=0 history rows must not be
-    counted as live follow-ups". sql_builder auto-injects status=1, so
-    the count should stay at 2 even with a status=0 row present."""
+def test_followup_count_excludes_rerolled_history(
+    mock_request_user: object, test_client: object, app: object
+) -> None:
+    """A learner can re-roll a follow-up question; the old block flips to status=0.
 
+    The PDF §6 trap is "status=0 history rows must not be counted as live follow-ups".
+    sql_builder auto-injects status=1, so the count should stay at 2 even with a status=0
+    row present.
+    """
     mock_request_user(user_id="teacher-1")
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a", user_id="teacher-1")
@@ -853,7 +900,7 @@ def test_followup_count_excludes_rerolled_history(mock_request_user, test_client
         seed_generated_block(
             shifu_bid="shifu-a",
             user_bid="u1",
-            type=321,
+            block_type=321,
             role=2,
             content="question 1",
             generated_block_bid="gb-live-1",
@@ -862,7 +909,7 @@ def test_followup_count_excludes_rerolled_history(mock_request_user, test_client
         seed_generated_block(
             shifu_bid="shifu-a",
             user_bid="u2",
-            type=321,
+            block_type=321,
             role=2,
             content="question 2",
             generated_block_bid="gb-live-2",
@@ -872,7 +919,7 @@ def test_followup_count_excludes_rerolled_history(mock_request_user, test_client
         seed_generated_block(
             shifu_bid="shifu-a",
             user_bid="u1",
-            type=321,
+            block_type=321,
             role=2,
             content="rerolled",
             generated_block_bid="gb-history-1",
@@ -895,18 +942,21 @@ def test_followup_count_excludes_rerolled_history(mock_request_user, test_client
     assert data["rows"] == [[2]]
 
 
-def test_followup_count_per_lesson_by_outline(mock_request_user, test_client, app):
+def test_followup_count_per_lesson_by_outline(
+    mock_request_user: object, test_client: object, app: object
+) -> None:
     """Group by outline_item_bid answers "follow-up questions per lesson".
-    Requires both `outline_item_bid` selectable / filterable / groupable
-    AND aggregate count_distinct support — added in this round."""
 
+    Requires both `outline_item_bid` selectable / filterable / groupable AND aggregate
+    count_distinct support — added in this round.
+    """
     mock_request_user(user_id="teacher-1")
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a", user_id="teacher-1")
         seed_generated_block(
             shifu_bid="shifu-a",
             user_bid="u1",
-            type=321,
+            block_type=321,
             role=2,
             content="q for lesson 1",
             generated_block_bid="gb-l1-u1",
@@ -915,7 +965,7 @@ def test_followup_count_per_lesson_by_outline(mock_request_user, test_client, ap
         seed_generated_block(
             shifu_bid="shifu-a",
             user_bid="u2",
-            type=321,
+            block_type=321,
             role=2,
             content="q2 for lesson 1",
             generated_block_bid="gb-l1-u2",
@@ -924,7 +974,7 @@ def test_followup_count_per_lesson_by_outline(mock_request_user, test_client, ap
         seed_generated_block(
             shifu_bid="shifu-a",
             user_bid="u1",
-            type=321,
+            block_type=321,
             role=2,
             content="q for lesson 2",
             generated_block_bid="gb-l2-u1",
@@ -961,13 +1011,13 @@ def test_followup_count_per_lesson_by_outline(mock_request_user, test_client, ap
 
 
 def test_shifu_published_returns_current_title_excluding_history(
-    mock_request_user, test_client, app
-):
-    """Rename scenario: the same shifu_bid has historical PublishedShifu
-    rows (deleted=1) plus the current row (deleted=0). The query must
-    return only the current row — historical titles must not be presented
-    as the course's "current name" (PDF §1 + §7 rules)."""
+    mock_request_user: object, test_client: object, app: object
+) -> None:
+    """Rename scenario: the same shifu_bid has historical PublishedShifu rows (deleted=1) plus the current row (deleted=0).
 
+    The query must return only the current row — historical titles must not be presented as
+    the course's "current name" (PDF §1 + §7 rules).
+    """
     mock_request_user(user_id="teacher-1")
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a", user_id="teacher-1")
@@ -1007,14 +1057,16 @@ def test_shifu_published_returns_current_title_excluding_history(
 
 
 def test_shifu_published_excludes_other_creators_rows(
-    mock_request_user, test_client, app
-):
-    """Even if a co-author / shared user had view permission on the same
-    shifu_bid, the creator_scoped_column injection (created_user_bid =
-    :caller) ensures only the caller's own rows surface. Here we model
-    the simpler "two creators with the same shifu_bid title prefix" case
-    — caller can see their own row and never the other creator's."""
+    mock_request_user: object, test_client: object, app: object
+) -> None:
+    """Creator scoping excludes other creators' rows.
 
+    Even if a co-author or shared user had view permission on the same shifu_bid, the
+    creator_scoped_column injection (created_user_bid = :caller) ensures only the caller's own
+    rows surface. Here we model
+    the simpler "two creators with the same shifu_bid title prefix" case
+    — caller can see their own row and never the other creator's.
+    """
     mock_request_user(user_id="teacher-1")
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-mine", user_id="teacher-1")
@@ -1049,11 +1101,12 @@ def test_shifu_published_excludes_other_creators_rows(
 
 
 def test_shifu_meta_aggregate_rejected_at_http_layer(
-    mock_request_user, test_client, app
-):
-    """The DSL validator must reject aggregate on metadata tables before
-    SQL is built. Verifies the HTTP error code is the standard invalidDsl."""
+    mock_request_user: object, test_client: object, app: object
+) -> None:
+    """The DSL validator must reject aggregate on metadata tables before SQL is built.
 
+    Verifies the HTTP error code is the standard invalidDsl.
+    """
     mock_request_user(user_id="teacher-1")
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a", user_id="teacher-1")
@@ -1073,12 +1126,12 @@ def test_shifu_meta_aggregate_rejected_at_http_layer(
 
 
 def test_shifu_meta_title_like_searches_callers_courses(
-    mock_request_user, test_client, app
-):
-    """title `like` with trailing-% is the canonical "find my course by
-    name" path. Combined with creator_scoped filtering, the caller only
-    sees their own matches."""
+    mock_request_user: object, test_client: object, app: object
+) -> None:
+    """Title `like` with trailing-% is the canonical "find my course by name" path.
 
+    Combined with creator_scoped filtering, the caller only sees their own matches.
+    """
     mock_request_user(user_id="teacher-1")
     with app.app_context():
         seed_owned_course(shifu_bid="shifu-a", user_id="teacher-1")

@@ -3,17 +3,20 @@
 
 from __future__ import annotations
 
+import argparse
+import contextlib
 import json
 import re
 import sys
 from pathlib import Path
-from typing import Dict, Iterable, Set
-import argparse
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 I18N_DIR = ROOT / "src" / "i18n"
 BACKEND_DIR = ROOT / "src" / "api"
-COOK_WEB_DIR = ROOT / "src" / "cook-web" / "src"
 WEB_DIR = ROOT / "src" / "web" / "src"
 
 STRING_LITERAL = re.compile(r"['\"][^'\"]+['\"]")
@@ -52,9 +55,10 @@ USE_TRANSLATION_ALIAS_PATTERN = re.compile(
 )
 
 
-def collect_frontend_namespaced_keys(text: str) -> Set[str]:
-    used: Set[str] = set()
-    alias_declarations: Dict[str, list[tuple[int, str]]] = {}
+def collect_frontend_namespaced_keys(text: str) -> set[str]:
+    """Collect frontend namespaced keys."""
+    used: set[str] = set()
+    alias_declarations: dict[str, list[tuple[int, str]]] = {}
 
     for match in USE_TRANSLATION_ALIAS_PATTERN.finditer(text):
         alias = match.group(1) or "t"
@@ -83,8 +87,9 @@ def collect_frontend_namespaced_keys(text: str) -> Set[str]:
     return used
 
 
-def collect_frontend_trans_keys(text: str) -> Set[str]:
-    used: Set[str] = set()
+def collect_frontend_trans_keys(text: str) -> set[str]:
+    """Collect frontend trans keys."""
+    used: set[str] = set()
     direct_key_pattern = re.compile(
         r"i18nKey\s*=\s*['\"]([A-Za-z0-9_.-]+)['\"]",
         re.DOTALL,
@@ -112,21 +117,25 @@ def collect_frontend_trans_keys(text: str) -> Set[str]:
 
 
 def iter_locale_dirs() -> Iterable[Path]:
+    """Yield locale dirs."""
     if not I18N_DIR.exists():
-        raise RuntimeError(f"Translation directory not found: {I18N_DIR}")
+        message = f"Translation directory not found: {I18N_DIR}"
+        raise RuntimeError(message)
     for entry in sorted(I18N_DIR.iterdir()):
         if entry.is_dir() and not entry.name.startswith("."):
             yield entry
 
 
-def flatten_translation(data, namespace: str) -> Dict[str, str]:
+def flatten_translation(data: object, namespace: str) -> dict[str, str]:
+    """Flatten translation."""
     if isinstance(data, dict):
-        items: Dict[str, str] = {}
+        items: dict[str, str] = {}
         flat_section = data.get("__flat__")
         if isinstance(flat_section, dict):
             for key, value in flat_section.items():
                 if not isinstance(value, str):
-                    raise ValueError(f"Translation value for '{key}' must be a string")
+                    message = f"Translation value for '{key}' must be a string"
+                    raise TypeError(message)
                 composite_key = f"{namespace}.{key}" if namespace else key
                 items[composite_key] = value
         for key, value in data.items():
@@ -136,16 +145,18 @@ def flatten_translation(data, namespace: str) -> Dict[str, str]:
             items.update(flatten_translation(value, next_namespace))
         return items
     if not isinstance(data, str):
-        raise ValueError(f"Translation value for '{namespace}' must be a string")
+        message = f"Translation value for '{namespace}' must be a string"
+        raise TypeError(message)
     return {namespace: data}
 
 
-def collect_defined_keys() -> Set[str]:
+def collect_defined_keys() -> set[str]:
+    """Collect defined keys."""
     locale_dirs = list(iter_locale_dirs())
     if not locale_dirs:
         return set()
     reference_locale = locale_dirs[0]
-    defined: Set[str] = set()
+    defined: set[str] = set()
     for file_path in reference_locale.rglob("*.json"):
         rel = file_path.relative_to(reference_locale)
         namespace = str(rel.with_suffix("")).replace("/", ".")
@@ -160,8 +171,9 @@ def collect_defined_keys() -> Set[str]:
     return defined
 
 
-def load_metadata_namespaces() -> Set[str]:
-    namespaces: Set[str] = set()
+def load_metadata_namespaces() -> set[str]:
+    """Load metadata namespaces."""
+    namespaces: set[str] = set()
     meta = I18N_DIR / "locales.json"
     if not meta.exists():
         return namespaces
@@ -170,14 +182,15 @@ def load_metadata_namespaces() -> Set[str]:
         for ns in data.get("namespaces", []) or []:
             if isinstance(ns, str) and ns:
                 namespaces.add(ns)
-    except Exception:
+    except (OSError, ValueError):
         pass
     return namespaces
 
 
-def collect_backend_keys() -> Set[str]:
+def collect_backend_keys() -> set[str]:
+    """Collect backend keys."""
     patterns = BACKEND_PATTERNS
-    used: Set[str] = set()
+    used: set[str] = set()
     for file_path in BACKEND_DIR.rglob("*.py"):
         if file_path.suffix != ".py":
             continue
@@ -187,7 +200,7 @@ def collect_backend_keys() -> Set[str]:
                 if "." not in match:
                     continue
                 # Only consider backend namespaces we intentionally allow in Python.
-                if match.startswith("server.") or match.startswith("module."):
+                if match.startswith(("server.", "module.")):
                     used.add(match)
                     # Add alias (with domain remap where needed)
                     if match.startswith("server."):
@@ -226,38 +239,41 @@ def collect_backend_keys() -> Set[str]:
     return used
 
 
-def collect_frontend_keys() -> Set[str]:
+def collect_frontend_keys() -> set[str]:
+    """Collect frontend keys."""
+    if not WEB_DIR.is_dir():
+        message = f"Web frontend source directory not found: {WEB_DIR}"
+        raise RuntimeError(message)
+
     patterns = FRONTEND_PATTERNS
-    used: Set[str] = set()
+    used: set[str] = set()
     extensions = (".ts", ".tsx", ".js", ".jsx")
-    for root in (COOK_WEB_DIR, WEB_DIR):
-        if not root.exists():
+    for file_path in WEB_DIR.rglob("*"):
+        if file_path.suffix not in extensions:
             continue
-        for file_path in root.rglob("*"):
-            if file_path.suffix not in extensions:
-                continue
-            if (
-                ".test." in file_path.name
-                or ".spec." in file_path.name
-                or "__tests__" in file_path.parts
-            ):
-                continue
-            text = file_path.read_text(encoding="utf-8", errors="ignore")
-            for pattern in patterns:
-                for match in pattern.findall(text):
-                    used.add(match)
-            used.update(collect_frontend_namespaced_keys(text))
-            used.update(collect_frontend_trans_keys(text))
-            # Catch translation keys referenced as bare string literals
-            # (e.g. in arrays or maps) that are later passed to t().
-            for match in STRING_LITERAL.findall(text):
-                candidate = match[1:-1]
-                if TRANSLATION_KEY_LITERAL.fullmatch(candidate):
-                    used.add(candidate)
+        if (
+            ".test." in file_path.name
+            or ".spec." in file_path.name
+            or "__tests__" in file_path.parts
+        ):
+            continue
+        text = file_path.read_text(encoding="utf-8", errors="ignore")
+        for pattern in patterns:
+            for match in pattern.findall(text):
+                used.add(match)
+        used.update(collect_frontend_namespaced_keys(text))
+        used.update(collect_frontend_trans_keys(text))
+        # Catch translation keys referenced as bare string literals
+        # (e.g. in arrays or maps) that are later passed to t().
+        for match in STRING_LITERAL.findall(text):
+            candidate = match[1:-1]
+            if TRANSLATION_KEY_LITERAL.fullmatch(candidate):
+                used.add(candidate)
     return used
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse arguments for the translation-usage check."""
     parser = argparse.ArgumentParser(
         description="Validate translation key usage across backend and frontend."
     )
@@ -282,20 +298,19 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_allowlist(path: Path | None) -> Set[str]:
+def load_allowlist(path: Path | None) -> set[str]:
+    """Load allowlist."""
     if not path:
         return set()
 
     # Be resilient if legacy CI passes an allowlist path that no longer exists.
     # Treat missing file as empty allowlist instead of failing hard.
     if not path.exists():
-        try:
+        with contextlib.suppress(Exception):
             print(f"Allowlist file not found, treating as empty: {path}")
-        except Exception:
-            pass
         return set()
 
-    allowed: Set[str] = set()
+    allowed: set[str] = set()
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
@@ -305,10 +320,11 @@ def load_allowlist(path: Path | None) -> Set[str]:
 
 
 def main() -> int:
+    """Compare defined translation keys with backend and frontend usage."""
     args = parse_args()
     defined_primary = collect_defined_keys()
     # Aliases for missing-key comparison only
-    aliases: Set[str] = set()
+    aliases: set[str] = set()
     for key in list(defined_primary):
         if key.startswith("module.backend."):
             aliases.add("server." + key[len("module.backend.") :])
@@ -364,7 +380,7 @@ def main() -> int:
     allowed_unused = [key for key in unused_keys_all if key in allowlist]
     missing_allow = load_allowlist(args.missing_allowlist)
     # Expand allowlist with alias keys to stabilize migration (server.* <-> module.backend.*)
-    missing_allow_expanded: Set[str] = set(missing_allow)
+    missing_allow_expanded: set[str] = set(missing_allow)
     for key in list(missing_allow):
         if key.startswith("module.backend."):
             missing_allow_expanded.add("server." + key[len("module.backend.") :])
@@ -398,23 +414,21 @@ def main() -> int:
         print("Missing translation keys detected:")
         for key in missing_keys:
             print(f" - {key}")
+    elif allowed_missing:
+        print("No new missing keys; allowed baseline present.")
     else:
-        if allowed_missing:
-            print("No new missing keys; allowed baseline present.")
-        else:
-            print("No missing translation keys detected.")
+        print("No missing translation keys detected.")
 
     if unused_keys:
         print("\nUnused translation keys detected (consider cleanup):")
         for key in unused_keys:
             print(f" - {key}")
+    elif allowed_unused:
+        print("\nOnly allowlisted unused translation keys detected:")
+        for key in allowed_unused:
+            print(f" - {key}")
     else:
-        if allowed_unused:
-            print("\nOnly allowlisted unused translation keys detected:")
-            for key in allowed_unused:
-                print(f" - {key}")
-        else:
-            print("\nNo unused translation keys detected.")
+        print("\nNo unused translation keys detected.")
 
     if missing_keys:
         return 1

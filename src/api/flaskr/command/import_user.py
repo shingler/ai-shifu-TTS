@@ -1,5 +1,10 @@
+"""Implement the import user CLI command."""
+
 from flask import Flask
 
+from flaskr.dao import db
+from flaskr.service.common.dtos import USER_STATE_REGISTERED, USER_STATE_UNREGISTERED
+from flaskr.service.common.phone_numbers import normalize_phone_identifier
 from flaskr.service.order import init_buy_record
 from flaskr.service.order.coupon_funcs import use_coupon_code
 from flaskr.service.user.repository import (
@@ -8,20 +13,22 @@ from flaskr.service.user.repository import (
     update_user_entity_fields,
     upsert_credential,
 )
-from flaskr.service.common.phone_numbers import normalize_phone_identifier
-from flaskr.service.common.dtos import USER_STATE_REGISTERED, USER_STATE_UNREGISTERED
-from flaskr.dao import db
 
 
 def import_user(
-    app: Flask, mobile, course_id, discount_code="web", user_nick_name=None
-):
-    """Import user and enable course"""
-    app.logger.info(f"import_user: {mobile}, {course_id}")
+    app: Flask,
+    mobile: object,
+    course_id: object,
+    discount_code: object = "web",
+    user_nick_name: object = None,
+) -> None:
+    """Import user and enable course."""
+    app.logger.info("import_user: %s, %s", mobile, course_id)
     with app.app_context():
         normalized_mobile = normalize_phone_identifier(mobile)
         if not normalized_mobile:
-            raise RuntimeError("Mobile must not be empty for import_user")
+            message = "Mobile must not be empty for import_user"
+            raise RuntimeError(message)
 
         # Ensure there is a canonical user bound to this phone number, and that
         # the canonical record tracks the phone in ``user_identify`` together
@@ -40,7 +47,8 @@ def import_user(
         )
 
         if not aggregate:
-            raise RuntimeError("Failed to resolve user aggregate during import")
+            message = "Failed to resolve user aggregate during import"
+            raise RuntimeError(message)
 
         user_id = aggregate.user_bid
 

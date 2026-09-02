@@ -14,6 +14,8 @@ from .dtos import (
 
 @dataclass(frozen=True, slots=True)
 class BillingCapabilityDefinition:
+    """Define billing capability."""
+
     key: str
     status: str
     audience: str
@@ -243,10 +245,12 @@ _CAPABILITIES: tuple[BillingCapabilityDefinition, ...] = (
 
 
 def get_billing_capability_definitions() -> tuple[BillingCapabilityDefinition, ...]:
+    """Return billing capability definitions."""
     return _CAPABILITIES
 
 
 def iter_billing_capabilities() -> list[BillingCapabilityDTO]:
+    """Yield billing capabilities."""
     payload: list[BillingCapabilityDTO] = []
     for capability in _CAPABILITIES:
         entry_points = [
@@ -281,7 +285,6 @@ def iter_billing_capabilities() -> list[BillingCapabilityDTO]:
 
 def build_billing_route_bootstrap(path_prefix: str) -> BillingRouteBootstrapDTO:
     """Return the billing route manifest and capability registry."""
-
     creator_routes: list[BillingRouteItemDTO] = []
     admin_routes: list[BillingRouteItemDTO] = []
     for capability in _CAPABILITIES:

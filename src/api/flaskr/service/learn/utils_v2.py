@@ -1,7 +1,10 @@
+"""Build prompts, variables, follow-up metadata, and generated blocks."""
+
 import re
 
 from flask import Flask
 from flaskr.service.learn.models import LearnGeneratedBlock
+from flaskr.service.profile.funcs import get_user_profiles
 from flaskr.service.shifu.consts import ASK_MODE_DEFAULT, ASK_MODE_DISABLE
 from flaskr.service.shifu.models import (
     DraftOutlineItem,
@@ -14,13 +17,9 @@ from flaskr.service.shifu.shifu_struct_manager import HistoryItem, get_shifu_str
 from flaskr.service.shifu.struct_utils import find_node_with_parents
 from flaskr.util.uuid import generate_id
 
-from ...service.profile.funcs import get_user_profiles
-
 
 class FollowUpInfo:
-    """
-    Follow up info
-    """
+    """Follow up info."""
 
     ask_model: str
     ask_prompt: str
@@ -32,14 +31,15 @@ class FollowUpInfo:
 
     def __init__(
         self,
-        ask_model,
-        ask_prompt,
-        ask_history_count,
-        ask_limit_count,
-        model_args,
-        ask_mode,
-        ask_provider_config=None,
-    ):
+        ask_model: object,
+        ask_prompt: object,
+        ask_history_count: object,
+        ask_limit_count: object,
+        model_args: object,
+        ask_mode: object,
+        ask_provider_config: object = None,
+    ) -> None:
+        """Capture follow-up model, prompt, and limit settings."""
         self.ask_model = ask_model
         self.ask_prompt = ask_prompt
         self.ask_history_count = ask_history_count
@@ -48,7 +48,8 @@ class FollowUpInfo:
         self.ask_mode = ask_mode
         self.ask_provider_config = ask_provider_config or {}
 
-    def __json__(self):
+    def __json__(self) -> dict:
+        """Return the follow-up info as JSON-compatible data."""
         return {
             "ask_model": self.ask_model,
             "ask_prompt": self.ask_prompt,
@@ -62,6 +63,7 @@ class FollowUpInfo:
 
 def extract_variables(template: str) -> list:
     # Match all {xxx} or {{xxx}} in the template
+    """Extract variables."""
     pattern = r"\{{1,2}([^{}]+)\}{1,2}"
     matches = re.findall(pattern, template)
     # Only keep valid variable names (letters, digits, underscore, hyphen), no dots, commas, colons, quotes, or spaces
@@ -74,13 +76,11 @@ def extract_variables(template: str) -> list:
 
 
 def safe_format_template(template: str, variables: dict) -> str:
-    """
-    Safe format template
-    """
+    """Safe format template."""
     # Replace {xxx} or {{xxx}} with values from variables dict, keep original if not found
     pattern = re.compile(r"(\{{1,2})([^{}]+)(\}{1,2})")
 
-    def replacer(match):
+    def replacer(match: re.Match[str]) -> str:
         _, var, _ = match.groups()
         var_name = var.strip()
         # Only process variable names with letters, digits, underscore, hyphen
@@ -102,6 +102,7 @@ def init_generated_block(
     mdflow: str,
     block_index: int,
 ) -> LearnGeneratedBlock:
+    """Initialize generated block."""
     generated_block: LearnGeneratedBlock = LearnGeneratedBlock()
     generated_block.progress_record_bid = progress_record_bid
     generated_block.user_bid = user_bid
@@ -122,32 +123,39 @@ def get_fmt_prompt(
     user_id: str,
     course_id: str,
     profile_tmplate: str,
-    input: str | None = None,
+    user_input: str | None = None,
     *,
     profile_overrides: dict | None = None,
+    resolved_profiles: dict | None = None,
 ) -> str:
-    """
-    Get fmt prompt
+    """Get fmt prompt.
+
     Args:
         app: Flask application instance
         user_id: User id
         course_id: Course id
         profile_tmplate: Profile template
-        input: Input
+        user_input: Input
         profile_overrides: Request-local profile values that take precedence
+        resolved_profiles: Already-resolved profile values for this request
     Returns:
-        str: Fmt prompt
+        str: Fmt prompt.
+
     """
-    app.logger.info("raw prompt:" + profile_tmplate)
+    app.logger.info("raw prompt: %s", profile_tmplate)
     propmpt_keys = []
     profiles = {}
 
-    profiles = dict(get_user_profiles(app, user_id, course_id) or {})
+    profiles = (
+        dict(resolved_profiles)
+        if resolved_profiles is not None
+        else dict(get_user_profiles(app, user_id, course_id) or {})
+    )
     if profile_overrides:
         profiles.update(profile_overrides)
     propmpt_keys = list(profiles.keys())
-    if input:
-        profiles["sys_user_input"] = input
+    if user_input:
+        profiles["sys_user_input"] = user_input
         propmpt_keys.append("sys_user_input")
     app.logger.info(propmpt_keys)
     app.logger.info(profiles)
@@ -157,13 +165,13 @@ def get_fmt_prompt(
         if key in profiles:
             fmt_keys[key] = profiles[key]
         else:
-            app.logger.info("key not found:" + key + " ,user_id:" + user_id)
+            app.logger.info("key not found: %s ,user_id: %s", key, user_id)
     app.logger.info(fmt_keys)
     if not keys:
-        prompt = input if not profile_tmplate else profile_tmplate
+        prompt = profile_tmplate or user_input
     else:
         prompt = safe_format_template(profile_tmplate, fmt_keys)
-    app.logger.info(f"fomat input:{prompt}")
+    app.logger.info("fomat input:%s", prompt)
     return prompt
 
 
@@ -174,8 +182,7 @@ def get_follow_up_info_v2(
     attend_id: str,
     is_preview: bool = False,
 ) -> FollowUpInfo:
-    """
-    Get follow up info.
+    """Get follow up info.
 
     Args:
         app (Flask): The Flask application instance.
@@ -188,7 +195,9 @@ def get_follow_up_info_v2(
 
     Returns:
         FollowUpInfo: The follow up information for the given parameters.
+
     """
+    _ = attend_id
     struct_info = get_shifu_struct(app, shifu_bid, is_preview)
     path = find_node_with_parents(struct_info, outline_item_bid)
     if not path:
@@ -225,16 +234,14 @@ def get_follow_up_info_v2(
     shifu_ask_provider_config = normalize_ask_provider_config(
         getattr(shifu_info, "ask_provider_config", "{}")
     )
-    ask_model = shifu_info.ask_llm if shifu_info.ask_llm else shifu_info.llm
+    ask_model = shifu_info.ask_llm or shifu_info.llm
 
     for p in path:
         if p.type == "outline":
-            outline_info = outline_infos_map.get(p.bid, None)
+            outline_info = outline_infos_map.get(p.bid)
             if outline_info.ask_enabled_status != ASK_MODE_DEFAULT:
                 return FollowUpInfo(
-                    ask_model=outline_info.ask_llm
-                    if outline_info.ask_llm
-                    else ask_model,
+                    ask_model=outline_info.ask_llm or ask_model,
                     ask_prompt=outline_info.ask_llm_system_prompt,
                     ask_history_count=10,
                     ask_limit_count=10,

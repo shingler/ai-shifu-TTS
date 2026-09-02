@@ -1,20 +1,21 @@
+"""Verify shifu draft info behavior."""
+
 import json
 from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-
-import flaskr.dao as dao
+from flaskr import dao
 
 
 def _seed_shifu(
-    app,
+    app: object,
     shifu_bid: str,
     owner_bid: str,
     price: Decimal,
     ask_provider_config: str = "{}",
-):
+) -> None:
     from flaskr.service.shifu.models import DraftShifu
 
     with app.app_context():
@@ -42,7 +43,7 @@ def _seed_shifu(
         dao.db.session.commit()
 
 
-def _mock_shifu_permissions(monkeypatch):
+def _mock_shifu_permissions(monkeypatch: object) -> None:
     from flaskr.service.shifu import shifu_draft_funcs
 
     monkeypatch.setattr(
@@ -59,7 +60,7 @@ def _mock_shifu_permissions(monkeypatch):
     )
 
 
-def _mock_route_user(monkeypatch, user_id: str):
+def _mock_route_user(monkeypatch: object, user_id: str) -> object:
     from types import SimpleNamespace
 
     dummy_user = SimpleNamespace(
@@ -75,10 +76,14 @@ def _mock_route_user(monkeypatch, user_id: str):
     return dummy_user
 
 
-def _mock_route_permission(monkeypatch, permission_map: dict[str, bool]):
+def _mock_route_permission(
+    monkeypatch: object, permission_map: dict[str, bool]
+) -> None:
     from flaskr.service.shifu import route
 
-    def _has_permission(_app, _user_id, _shifu_bid, permission: str):
+    def _has_permission(
+        _app: object, _user_id: object, _shifu_bid: object, permission: str
+    ) -> object:
         return permission_map.get(permission, False)
 
     monkeypatch.setattr(
@@ -90,8 +95,8 @@ def _mock_route_permission(monkeypatch, permission_map: dict[str, bool]):
 
 
 def test_save_shifu_draft_info_keeps_existing_price_when_input_is_none(
-    app, monkeypatch
-):
+    app: object, monkeypatch: object
+) -> None:
     from flaskr.service.shifu import shifu_draft_funcs
     from flaskr.service.shifu.models import DraftShifu
 
@@ -129,7 +134,9 @@ def test_save_shifu_draft_info_keeps_existing_price_when_input_is_none(
         assert DraftShifu.query.filter_by(shifu_bid=shifu_bid, deleted=0).count() == 1
 
 
-def test_save_and_get_shifu_draft_info_roundtrip_ask_provider_config(app, monkeypatch):
+def test_save_and_get_shifu_draft_info_roundtrip_ask_provider_config(
+    app: object, monkeypatch: object
+) -> None:
     from flaskr.service.shifu import shifu_draft_funcs
     from flaskr.service.shifu.models import DraftShifu
 
@@ -200,7 +207,9 @@ def test_save_and_get_shifu_draft_info_roundtrip_ask_provider_config(app, monkey
     assert detail.ask_provider_config == ask_provider_config
 
 
-def test_save_shifu_draft_info_normalizes_removed_tts_fields(app, monkeypatch):
+def test_save_shifu_draft_info_normalizes_removed_tts_fields(
+    app: object, monkeypatch: object
+) -> None:
     from flaskr.service.shifu import shifu_draft_funcs
     from flaskr.service.shifu.models import DraftShifu
 
@@ -211,7 +220,7 @@ def test_save_shifu_draft_info_normalizes_removed_tts_fields(app, monkeypatch):
 
     captured: dict[str, object] = {}
 
-    def _fake_validate_tts_settings_strict(**kwargs):
+    def _fake_validate_tts_settings_strict(**kwargs: object) -> object:
         captured.update(kwargs)
         return SimpleNamespace(
             provider="minimax",
@@ -266,8 +275,8 @@ def test_save_shifu_draft_info_normalizes_removed_tts_fields(app, monkeypatch):
 
 
 def test_save_shifu_draft_info_normalizes_legacy_tts_fields_when_omitted(
-    app, monkeypatch
-):
+    app: object, monkeypatch: object
+) -> None:
     from flaskr.service.shifu import shifu_draft_funcs
     from flaskr.service.shifu.models import DraftShifu
 
@@ -292,7 +301,7 @@ def test_save_shifu_draft_info_normalizes_legacy_tts_fields_when_omitted(
         legacy.tts_emotion = "happy"
         dao.db.session.commit()
 
-    def _fake_validate_tts_settings_strict(**kwargs):
+    def _fake_validate_tts_settings_strict(**kwargs: object) -> object:
         return SimpleNamespace(
             provider=kwargs["provider"],
             model=kwargs["model"],
@@ -341,7 +350,141 @@ def test_save_shifu_draft_info_normalizes_legacy_tts_fields_when_omitted(
         assert latest.tts_emotion == ""
 
 
-def test_get_draft_meta_route_serializes_utc_timestamp(app, test_client, monkeypatch):
+def test_save_shifu_draft_info_persists_default_listen_mode_setting(
+    app: object, monkeypatch: object
+) -> None:
+    from flaskr.service.shifu import shifu_draft_funcs
+    from flaskr.service.shifu.models import DraftShifu
+
+    shifu_bid = "test-save-shifu-default-listen"
+    owner_bid = "owner-default-listen"
+    _seed_shifu(app, shifu_bid, owner_bid, Decimal("1.23"))
+    _mock_shifu_permissions(monkeypatch)
+
+    monkeypatch.setattr(
+        shifu_draft_funcs,
+        "validate_tts_settings_strict",
+        lambda **kwargs: SimpleNamespace(
+            provider=kwargs["provider"],
+            model=kwargs["model"],
+            voice_id=kwargs["voice_id"],
+            speed=kwargs["speed"],
+            pitch=kwargs["pitch"],
+            emotion=kwargs["emotion"],
+        ),
+        raising=False,
+    )
+
+    result = shifu_draft_funcs.save_shifu_draft_info(
+        app=app,
+        user_id=owner_bid,
+        shifu_id=shifu_bid,
+        shifu_name="Test Shifu",
+        shifu_description="desc",
+        shifu_avatar="res",
+        shifu_keywords=["test"],
+        shifu_model="gpt-test",
+        shifu_temperature=0.3,
+        shifu_price=1.23,
+        shifu_system_prompt="",
+        base_url="http://localhost:5000",
+        tts_enabled=True,
+        tts_provider="minimax",
+        tts_model="speech-01-turbo",
+        tts_voice_id="voice-1",
+        tts_speed=1.2,
+        default_listen_mode_enabled=True,
+    )
+
+    assert result.default_listen_mode_enabled is True
+
+    with app.app_context():
+        latest = (
+            DraftShifu.query.filter_by(shifu_bid=shifu_bid, deleted=0)
+            .order_by(DraftShifu.id.desc())
+            .first()
+        )
+        assert latest is not None
+        assert latest.default_listen_mode_enabled == 1
+
+
+def test_save_shifu_draft_info_clears_default_listen_mode_when_tts_is_disabled(
+    app: object, monkeypatch: object
+) -> None:
+    from flaskr.service.shifu import shifu_draft_funcs
+    from flaskr.service.shifu.models import DraftShifu
+
+    shifu_bid = "test-save-shifu-default-listen-disabled"
+    owner_bid = "owner-default-listen-disabled"
+    _seed_shifu(app, shifu_bid, owner_bid, Decimal("1.23"))
+    _mock_shifu_permissions(monkeypatch)
+
+    with app.app_context():
+        draft = (
+            DraftShifu.query.filter_by(shifu_bid=shifu_bid, deleted=0)
+            .order_by(DraftShifu.id.desc())
+            .first()
+        )
+        draft.tts_enabled = 1
+        draft.default_listen_mode_enabled = 1
+        dao.db.session.commit()
+
+    result = shifu_draft_funcs.save_shifu_draft_info(
+        app=app,
+        user_id=owner_bid,
+        shifu_id=shifu_bid,
+        shifu_name="Test Shifu",
+        shifu_description="desc",
+        shifu_avatar="res",
+        shifu_keywords=["test"],
+        shifu_model="gpt-test",
+        shifu_temperature=0.3,
+        shifu_price=1.23,
+        shifu_system_prompt="",
+        base_url="http://localhost:5000",
+        tts_enabled=False,
+    )
+
+    assert result.default_listen_mode_enabled is False
+
+    with app.app_context():
+        latest = (
+            DraftShifu.query.filter_by(shifu_bid=shifu_bid, deleted=0)
+            .order_by(DraftShifu.id.desc())
+            .first()
+        )
+        assert latest is not None
+        assert latest.tts_enabled == 0
+        assert latest.default_listen_mode_enabled == 0
+
+
+@pytest.mark.parametrize(
+    "invalid_value",
+    ["yes", "", " true ", "TRUE", 1, 0, [], {}],
+)
+def test_save_shifu_detail_route_rejects_invalid_default_listen_mode_enabled(
+    app: object, test_client: object, monkeypatch: object, invalid_value: object
+) -> None:
+    shifu_bid = "test-save-shifu-default-listen-invalid"
+    owner_bid = "owner-default-listen-invalid"
+    _seed_shifu(app, shifu_bid, owner_bid, Decimal("1.23"))
+    _mock_route_user(monkeypatch, owner_bid)
+    _mock_route_permission(monkeypatch, {"edit": True})
+
+    response = test_client.post(
+        f"/api/shifu/shifus/{shifu_bid}/detail",
+        json={"default_listen_mode_enabled": invalid_value},
+        headers={"Token": "test-token"},
+    )
+    payload = response.get_json(force=True)
+
+    assert response.status_code == 200
+    assert payload["code"] != 0
+
+
+def test_get_draft_meta_route_serializes_utc_timestamp(
+    app: object, test_client: object, monkeypatch: object
+) -> None:
     from flaskr.service.shifu.models import DraftOutlineItem
 
     shifu_bid = "test-draft-meta-timezone"
@@ -381,8 +524,8 @@ def test_get_draft_meta_route_serializes_utc_timestamp(app, test_client, monkeyp
 
 
 def test_get_draft_meta_route_allows_view_only_permission(
-    app, test_client, monkeypatch
-):
+    app: object, test_client: object, monkeypatch: object
+) -> None:
     from flaskr.service.shifu.models import DraftOutlineItem
 
     shifu_bid = "test-draft-meta-view-only"

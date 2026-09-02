@@ -9,11 +9,11 @@ AI-Shifu consists of two main components:
 ```bash
 src/
 ├── api/          # Backend API service (Flask/Python)
-└── cook-web/     # Script editor frontend (Next.js)
+└── web/          # Cook Web frontend (Next.js)
 ```
 
 - **api**: Backend API service built with Flask
-- **cook-web**: Script editor for creating and managing courses, built with Next.js
+- **web**: Cook Web frontend for creating, managing, and learning courses, built with Next.js
 
 ### Required Tools and Services
 
@@ -101,7 +101,7 @@ These variables are essential for the application to run:
 
 ```bash
 docker build -t aishifu/ai-shifu-api:latest -f src/api/Dockerfile .
-docker build -t aishifu/ai-shifu-cook-web:latest -f src/cook-web/Dockerfile .
+docker build -t aishifu/ai-shifu-cook-web:latest -f src/web/Dockerfile .
 ```
 
 3. Start the containers with the compose bundle that tracks the `:latest` tags:
@@ -156,13 +156,10 @@ flask db upgrade
 gunicorn -w 4 -b 0.0.0.0:5800 'app:app' --timeout 300 --log-level debug
 ```
 
-#### Step 5.4: Start Cook Web Frontend & CMS
+#### Step 5.4: Start Web Frontend & CMS
 
 ```bash
-cd src/cook-web
-# Copy the environment configuration from docker directory
-cp ../../docker/.env .env
-
+cd src/web
 # Install Node.js dependencies
 npm install  # or use pnpm install
 
@@ -178,11 +175,26 @@ If you plan to commit changes, install the lefthook git hooks so the same
 pre-commit checks that run in CI also run locally. **Without this step the
 checks are silently skipped on commit.**
 
+Install lefthook for your platform.
+
+macOS (Homebrew):
+
+```bash
+brew install lefthook
+```
+
+Linux or Windows (npm):
+
+```bash
+npm install -g @evilmartians/lefthook
+```
+
+Then install the remaining development tools from the repository root:
+
 ```bash
 # From the repository root
-brew install lefthook   # or see https://lefthook.dev for non-macOS installs
-pip install ruff==0.16.3 commitizen==4.16.2 pre-commit-hooks==6.0.0
-(cd src/cook-web && npm ci)   # provides prettier + eslint
+pip install ruff==0.16.5 commitizen==4.16.2 pre-commit-hooks==6.0.0
+(cd src/web && npm ci)   # provides prettier + eslint
 lefthook install
 
 # Verify the toolchain (reports anything missing and how to install it)
@@ -224,10 +236,12 @@ python scripts/check_dev_tools.py
 ## Access the Application
 
 ### Manual Installation
+
 - User Interface: `http://localhost:3000` (or configured PORT)
 - Script Editor: `http://localhost:3001`
 - API: `http://localhost:5800`
 
 ### Default Login
+
 - Use any phone number for registration/login
 - Default verification code: `1024`

@@ -1,16 +1,18 @@
+"""Verify rate references behavior."""
+
 from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
 
 from flaskr.dao import db
+from flaskr.service.billing import rate_references
 from flaskr.service.billing.consts import (
     BILLING_METRIC_LLM_OUTPUT_TOKENS,
     CREDIT_ROUNDING_MODE_CEIL,
     CREDIT_USAGE_RATE_STATUS_ACTIVE,
 )
 from flaskr.service.billing.models import CreditUsageRate
-from flaskr.service.billing import rate_references
 from flaskr.service.common import credit_rate_references
 from flaskr.service.metering.consts import BILL_USAGE_SCENE_PROD, BILL_USAGE_TYPE_LLM
 
@@ -34,7 +36,9 @@ def _rate(
     )
 
 
-def test_llm_credit_1x_unit_cost_uses_fixed_config(monkeypatch, app):
+def test_llm_credit_1x_unit_cost_uses_fixed_config(
+    monkeypatch: object, app: object
+) -> None:
     values = {
         "LLM_CREDIT_1X_PER_1000_OUTPUT_TOKENS": "0.066667",
         "DEFAULT_LLM_MODEL": "qwen/deepseek-v4-flash",
@@ -65,7 +69,9 @@ def test_llm_credit_1x_unit_cost_uses_fixed_config(monkeypatch, app):
         assert rate_references.load_llm_credit_1x_unit_cost() == Decimal("0.000066667")
 
 
-def test_llm_credit_1x_unit_cost_rejects_missing_or_invalid_config(monkeypatch):
+def test_llm_credit_1x_unit_cost_rejects_missing_or_invalid_config(
+    monkeypatch: object,
+) -> None:
     for raw_value in [None, "", "bad", "0", "-1"]:
         monkeypatch.setattr(
             credit_rate_references,

@@ -1,10 +1,11 @@
-from __future__ import annotations
+"""Query persisted listen-mode element state."""
 
-from sqlalchemy import or_
+from __future__ import annotations
 
 from flaskr.service.learn.learn_dtos import ElementType
 from flaskr.service.learn.listen_element_payloads import _deserialize_payload
 from flaskr.service.learn.models import LearnGeneratedBlock, LearnGeneratedElement
+from sqlalchemy import or_
 
 
 def _load_latest_active_element_row(
@@ -35,6 +36,7 @@ def find_follow_up_element_rows(
     progress_record_bid: str,
     anchor_element_bid: str,
 ) -> list[LearnGeneratedElement]:
+    """Find follow up element rows."""
     if not progress_record_bid or not anchor_element_bid:
         return []
     rows = (

@@ -1,13 +1,15 @@
-from flask import Flask, has_app_context
-
-from typing import Optional
+"""Provide shared helpers for user accounts."""
 
 import jwt
-
+from flask import Flask, has_app_context
+from flaskr.dao import db
 from flaskr.i18n import get_i18n_list
-from ..common.dtos import UserInfo, UserToken
-from ..common.models import raise_error
-from ...dao import db
+from flaskr.service.common.dtos import UserInfo, UserToken
+from flaskr.service.common.models import raise_error
+from flaskr.service.common.phone_numbers import normalize_phone_identifier
+from flaskr.service.profile.dtos import ProfileToSave
+from flaskr.service.profile.funcs import save_user_profiles
+
 from .auth import get_provider
 from .auth.base import VerificationRequest
 from .repository import (
@@ -17,9 +19,6 @@ from .repository import (
     update_user_entity_fields,
     upsert_credential,
 )
-from flaskr.service.common.phone_numbers import normalize_phone_identifier
-from ..profile.funcs import save_user_profiles
-from ..profile.dtos import ProfileToSave
 from .token_store import token_store
 
 
@@ -31,19 +30,18 @@ def _load_user_info(user_bid: str) -> UserInfo:
 
 
 def validate_user(app: Flask, token: str) -> UserInfo:
+    """Validate user."""
+
     def _validate() -> UserInfo:
         if not token:
             raise_error("server.user.userNotLogin")
         try:
             if app.config.get("ENVERIMENT", "prod") == "dev":
                 return _load_user_info(token)
-            else:
-                user_id = jwt.decode(
-                    token, app.config["SECRET_KEY"], algorithms=["HS256"]
-                )["user_id"]
-                app.logger.info("user_id:" + user_id)
-
-            app.logger.info("user_id:" + user_id)
+            user_id = jwt.decode(token, app.config["SECRET_KEY"], algorithms=["HS256"])[
+                "user_id"
+            ]
+            app.logger.info("user_id: %s", user_id)
             ttl_seconds = app.config.get("TOKEN_EXPIRE_TIME", 60 * 60 * 24 * 7)
             lookup = token_store.get_and_refresh(
                 app,
@@ -68,12 +66,13 @@ def validate_user(app: Flask, token: str) -> UserInfo:
 def update_user_info(
     app: Flask,
     user: UserInfo,
-    name,
-    email=None,
-    mobile=None,
-    language=None,
-    avatar=None,
+    name: object,
+    email: object = None,
+    mobile: object = None,
+    language: object = None,
+    avatar: object = None,
 ) -> UserInfo:
+    """Update user info."""
     with app.app_context():
         if not user:
             raise_error("server.user.userNotFound")
@@ -91,7 +90,7 @@ def update_user_info(
             updates_profile["sys_user_nickname"] = name
             update_profile = True
         if language is not None:
-            if language in get_i18n_list(app):
+            if language in get_i18n_list():
                 updates["language"] = language
                 updates_profile["sys_user_language"] = language
                 update_profile = True
@@ -151,13 +150,14 @@ def update_user_info(
 
 def verify_sms_code(
     app: Flask,
-    user_id,
+    user_id: object,
     phone: str,
     chekcode: str,
-    course_id: str = None,
-    language: str = None,
-    login_context: Optional[str] = None,
+    course_id: str | None = None,
+    language: str | None = None,
+    login_context: str | None = None,
 ) -> UserToken:
+    """Verify SMS code."""
     provider = get_provider("phone")
     request = VerificationRequest(
         identifier=phone,

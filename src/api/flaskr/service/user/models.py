@@ -1,21 +1,26 @@
+"""Define persistence models for user accounts."""
+
+from flaskr.dao import db
+from flaskr.util.datetime import now_utc
 from sqlalchemy import (
-    Column,
-    String,
-    Integer,
     TIMESTAMP,
+    Column,
     Date,
-    Text,
-    SmallInteger,
     DateTime,
+    Integer,
+    SmallInteger,
+    String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.dialects.mysql import BIGINT
-from flaskr.util.datetime import now_utc
-from ...dao import db
-from .consts import USER_STATE_UNREGISTERED, CREDENTIAL_STATE_UNVERIFIED
+
+from .consts import CREDENTIAL_STATE_UNVERIFIED, USER_STATE_UNREGISTERED
 
 
 class UserConversion(db.Model):
+    """Persist user conversion records."""
+
     __tablename__ = "user_conversion"
 
     id = Column(BIGINT, primary_key=True, autoincrement=True, comment="Unique ID")
@@ -48,13 +53,14 @@ class UserConversion(db.Model):
 
     def __init__(
         self,
-        user_id,
-        conversion_id,
-        conversion_source,
-        conversion_status,
-        conversion_uuid="",
-        conversion_third_platform="",
-    ):
+        user_id: object,
+        conversion_id: object,
+        conversion_source: object,
+        conversion_status: object,
+        conversion_uuid: object = "",
+        conversion_third_platform: object = "",
+    ) -> None:
+        """Initialize a user conversion record."""
         self.user_id = user_id
         self.conversion_id = conversion_id
         self.conversion_source = conversion_source
@@ -64,13 +70,34 @@ class UserConversion(db.Model):
 
 
 class UserToken(db.Model):
+    """Persist user token records."""
+
     __tablename__ = "user_token"
     id = Column(BIGINT, primary_key=True, comment="Unique ID", autoincrement=True)
-    user_id = Column(String(36), nullable=False, default="", comment="User UUID")
+    user_id = Column(
+        String(36), nullable=False, default="", index=True, comment="User UUID"
+    )
     token = Column(String(255), nullable=False, default="", comment="Token")
     token_type = Column(Integer, nullable=False, default=0, comment="Token type")
     token_expired_at = Column(
         TIMESTAMP, nullable=True, default=now_utc, comment="Token expired time"
+    )
+    # Public identifier for this session. The token itself is a credential and
+    # must never be handed to a client that only needs to name a session.
+    session_bid = Column(
+        String(36), nullable=False, default="", index=True, comment="Session UUID"
+    )
+    source = Column(
+        String(32), nullable=False, default="", comment="How the session began"
+    )
+    device_name = Column(
+        String(64), nullable=False, default="", comment="Device name, display only"
+    )
+    device_os = Column(
+        String(64), nullable=False, default="", comment="Device OS, display only"
+    )
+    created_ip = Column(
+        String(64), nullable=False, default="", comment="Sign-in address"
     )
     created = Column(
         TIMESTAMP, nullable=False, default=now_utc, comment="Creation time"
@@ -85,6 +112,8 @@ class UserToken(db.Model):
 
 
 class UserVerifyCode(db.Model):
+    """Persist user verify code records."""
+
     __tablename__ = "user_verify_code"
     id = Column(BIGINT, primary_key=True, comment="Unique ID", autoincrement=True)
     phone = Column(String(36), nullable=False, default="", comment="User phone")
@@ -120,6 +149,8 @@ class UserVerifyCode(db.Model):
 
 
 class UserInfo(db.Model):
+    """Persist user info records."""
+
     __tablename__ = "user_users"
 
     id = Column(BIGINT, primary_key=True, comment="Unique ID", autoincrement=True)
@@ -207,6 +238,8 @@ class UserInfo(db.Model):
 
 
 class UserOnboardingState(db.Model):
+    """Persist user onboarding state records."""
+
     __tablename__ = "user_onboarding_states"
     __table_args__ = (
         UniqueConstraint(
@@ -268,6 +301,8 @@ class UserOnboardingState(db.Model):
 
 
 class AuthCredential(db.Model):
+    """Persist auth credential records."""
+
     __tablename__ = "user_auth_credentials"
     id = Column(BIGINT, primary_key=True, comment="Unique ID", autoincrement=True)
     credential_bid = Column(

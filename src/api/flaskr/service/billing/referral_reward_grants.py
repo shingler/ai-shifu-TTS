@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any
-
-from flask import Flask
-from sqlalchemy.exc import IntegrityError
+from typing import TYPE_CHECKING
 
 from flaskr.dao import db
 from flaskr.service.common.models import raise_param_error
-from flaskr.util.uuid import generate_id
 from flaskr.util.datetime import now_utc
+from flaskr.util.uuid import generate_id
+from sqlalchemy.exc import IntegrityError
 
 from .bucket_categories import resolve_credit_bucket_priority
 from .consts import (
@@ -29,8 +26,14 @@ from .grant_results import ManualCreditGrantResult, ReferralRewardSummary
 from .models import CreditLedgerEntry, CreditWalletBucket
 from .primitives import (
     credit_decimal_to_number as _credit_decimal_to_number,
+)
+from .primitives import (
     normalize_bid as _normalize_bid,
+)
+from .primitives import (
     quantize_credit_amount as _quantize_credit_amount,
+)
+from .primitives import (
     to_decimal as _to_decimal,
 )
 from .queries import add_months as _add_months
@@ -42,6 +45,11 @@ from .wallets import (
     sync_credit_bucket_status,
 )
 
+if TYPE_CHECKING:
+    from datetime import datetime
+
+    from flask import Flask
+
 REFERRAL_REWARD_GRANT_TYPE = "referral_reward"
 REFERRAL_REWARD_SCENE = "referral"
 REFERRAL_REWARD_PROGRAM = "referral_reward"
@@ -51,7 +59,7 @@ REFERRAL_REWARD_GRANT_SOURCE = "reward"
 REFERRAL_REWARD_VALIDITY_PRESET = "1m"
 
 
-def _normalize_referral_reward_amount(value: Any) -> Decimal:
+def _normalize_referral_reward_amount(value: object) -> Decimal:
     normalized = str(value or "").strip()
     if not normalized or not normalized.isdigit():
         raise_param_error("amount")
@@ -59,7 +67,7 @@ def _normalize_referral_reward_amount(value: Any) -> Decimal:
         parsed = _quantize_credit_amount(Decimal(normalized))
     except (InvalidOperation, TypeError, ValueError, ArithmeticError):
         raise_param_error("amount")
-    if not parsed.is_finite() or parsed <= Decimal("0"):
+    if not parsed.is_finite() or parsed <= Decimal(0):
         raise_param_error("amount")
     return parsed
 
@@ -68,7 +76,7 @@ def _serialize_metadata_datetime(value: datetime | None) -> str:
     return value.isoformat() if value is not None else ""
 
 
-def _is_referral_reward_metadata(metadata: Any) -> bool:
+def _is_referral_reward_metadata(metadata: object) -> bool:
     if not isinstance(metadata, dict):
         return False
     return str(metadata.get("grant_type") or "").strip() == REFERRAL_REWARD_GRANT_TYPE
@@ -128,6 +136,7 @@ def load_referral_reward_summary(
     creator_bid: str,
     as_of: datetime | None = None,
 ) -> ReferralRewardSummary:
+    """Load referral reward summary."""
     with app.app_context():
         scan_at = as_of or now_utc()
         buckets = _load_active_referral_reward_buckets(
@@ -136,7 +145,7 @@ def load_referral_reward_summary(
         )
         available = sum(
             (_to_decimal(bucket.available_credits) for bucket in buckets),
-            start=Decimal("0"),
+            start=Decimal(0),
         )
         expires_at = buckets[0].effective_to if buckets else None
         wallet_bucket_bid = str(buckets[0].wallet_bucket_bid or "") if buckets else ""
@@ -192,7 +201,6 @@ def grant_referral_reward_credits_to_user(
     grant_channel: str = "operator_user_management",
 ) -> ManualCreditGrantResult:
     """Grant referral reward credits and extend the referral reward pool."""
-
     with app.app_context():
         normalized_user_bid = _normalize_bid(user_bid)
         normalized_operator_user_bid = _normalize_bid(operator_user_bid)
@@ -256,9 +264,9 @@ def grant_referral_reward_credits_to_user(
                 ),
                 original_credits=granted_amount,
                 available_credits=granted_amount,
-                reserved_credits=Decimal("0"),
-                consumed_credits=Decimal("0"),
-                expired_credits=Decimal("0"),
+                reserved_credits=Decimal(0),
+                consumed_credits=Decimal(0),
+                expired_credits=Decimal(0),
                 effective_from=granted_at,
                 effective_to=new_effective_to,
                 status=CREDIT_BUCKET_STATUS_ACTIVE,

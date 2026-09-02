@@ -1,12 +1,20 @@
 {
   "default": "en-US",
   "locales": {
+    "ar-SA": {
+      "label": "العربية",
+      "rtl": true
+    },
     "en-US": {
       "label": "English",
       "rtl": false
     },
     "fr-FR": {
       "label": "Français",
+      "rtl": false
+    },
+    "th-TH": {
+      "label": "ไทย",
       "rtl": false
     },
     "zh-CN": {
@@ -19,13 +27,10 @@
     "common.errors",
     "common.language",
     "component.createShifuDialog",
-    "component.fileUploader",
     "component.header",
     "component.menus",
     "component.navigation",
-    "component.outlineSelector",
     "component.outlineTree",
-    "component.profileSelectModal",
     "module.auth",
     "module.billing",
     "module.chapterSetting",
@@ -50,11 +55,9 @@
     "module.profiles",
     "module.profilesManage",
     "module.referral",
-    "module.renderUi.inlineInput",
     "module.settings",
     "module.shifu",
     "module.shifuSetting",
-    "module.social",
     "module.user",
     "server.api",
     "server.banner",

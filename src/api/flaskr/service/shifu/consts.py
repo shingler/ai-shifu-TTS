@@ -1,5 +1,4 @@
-"""
-Shifu consts
+"""Shifu consts.
 
 This module contains constants for shifu.
 
@@ -84,5 +83,5 @@ STATUS_PUBLISHED = 1
 
 # Validation constraints
 # Maximum length for shifu name/title
-# Must match TITLE_MAX_LENGTH constant in frontend (src/cook-web/src/c-constants/uiConstants.ts)
+# Must match TITLE_MAX_LENGTH constant in frontend (src/web/src/c-constants/uiConstants.ts)
 SHIFU_NAME_MAX_LENGTH = 100

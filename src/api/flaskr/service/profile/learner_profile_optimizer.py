@@ -1,9 +1,13 @@
+"""Optimize learner profiles through the shared LLM wrapper."""
+
 from __future__ import annotations
 
 import json
-from typing import Any
+from collections.abc import (
+    Iterator,  # noqa: TC003 - private annotation is inspected at runtime
+)
+from typing import TYPE_CHECKING, Any
 
-from flask import Flask
 from flaskr.api.langfuse import (
     create_trace_with_root_span,
     finalize_langfuse_trace,
@@ -11,7 +15,7 @@ from flaskr.api.langfuse import (
 )
 from flaskr.api.llm import invoke_llm
 from flaskr.common.i18n_utils import resolve_markdownflow_output_language
-from flaskr.service.common.models import AppException, raise_error, raise_param_error
+from flaskr.service.common.models import AppError, raise_error, raise_param_error
 from flaskr.service.metering.api import UsageContext
 from flaskr.service.metering.consts import BILL_USAGE_SCENE_PROD
 from flaskr.service.profile.learner_profile import (
@@ -20,22 +24,25 @@ from flaskr.service.profile.learner_profile import (
 )
 from flaskr.util.prompt_loader import load_prompt_template
 
+if TYPE_CHECKING:
+    from flask import Flask
+
 LEARNER_PROFILE_OPTIMIZATION_TIMEOUT_SECONDS = 15
 LEARNER_PROFILE_OPTIMIZATION_MAX_TOKENS = 1200
 LEARNER_PROFILE_OPTIMIZATION_GENERATION_NAME = "learner_profile_optimize"
 
 
-class _EmptyOptimizationOutput(ValueError):
+class _EmptyOptimizationOutputError(ValueError):
     pass
 
 
 def _parse_optimized_profile(raw_response: str) -> str:
     if not raw_response.strip():
-        raise _EmptyOptimizationOutput
+        raise _EmptyOptimizationOutputError
     return raw_response
 
 
-def _exception_chain(exc: BaseException):
+def _exception_chain(exc: BaseException) -> Iterator[BaseException]:
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
@@ -52,8 +59,7 @@ def _optimization_runtime_error_reason(exc: Exception) -> str:
     ):
         return "timeout"
     if any(
-        isinstance(item, AppException) and item.code in {8001, 8002, 8003}
-        for item in chain
+        isinstance(item, AppError) and item.code in {8001, 8002, 8003} for item in chain
     ):
         return "not_configured"
     return "failed"
@@ -67,7 +73,6 @@ def optimize_learner_profile(
     output_language: str | None = None,
 ) -> dict[str, str]:
     """Return a reviewable optimization without changing learner profile state."""
-
     normalized = normalize_learner_profile(learner_profile)
     if not normalized:
         raise_param_error("learner_profile")
@@ -147,7 +152,7 @@ def optimize_learner_profile(
         )
         raw_response = "".join(chunk.result for chunk in response)
         optimized_profile = _parse_optimized_profile(raw_response)
-    except _EmptyOptimizationOutput:
+    except _EmptyOptimizationOutputError:
         app.logger.warning(
             "Learner profile optimization returned an empty response | "
             "user_id=%s | input_chars=%s | output_chars=%s",

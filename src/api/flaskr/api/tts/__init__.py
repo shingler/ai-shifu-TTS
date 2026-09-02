@@ -1,5 +1,4 @@
-"""
-TTS API Client.
+"""TTS API Client.
 
 This module provides integration with multiple Text-to-Speech providers:
 - Minimax (t2a_v2 API)
@@ -8,45 +7,55 @@ This module provides integration with multiple Text-to-Speech providers:
 - Aliyun (NLS RESTful TTS API)
 - Tencent (TRTC conversational SSE API)
 - Tencent TextToVoice (standard Tencent Cloud TTS API)
+- ElevenLabs (create-speech REST API)
 
 The provider can be selected per-Shifu configuration.
 """
 
-import logging
+import contextlib
 import json
+import logging
+from collections.abc import Iterator
 from decimal import Decimal, InvalidOperation
-from typing import Optional
 
 from flask import has_request_context, request
 
+from flaskr.api.tts.aliyun_nls_token import is_aliyun_nls_token_configured
+from flaskr.api.tts.aliyun_provider import AliyunTTSProvider
+from flaskr.api.tts.baidu_provider import BaiduTTSProvider
+from flaskr.api.tts.base import (
+    AudioSettings as AudioSettings,
+)
+from flaskr.api.tts.base import (
+    BaseTTSProvider as BaseTTSProvider,
+)
+
+# Re-export base classes for backward compatibility
+from flaskr.api.tts.base import (
+    TTSProvider as TTSProvider,
+)
+from flaskr.api.tts.base import (
+    TTSResult as TTSResult,
+)
+from flaskr.api.tts.base import (
+    VoiceSettings as VoiceSettings,
+)
+from flaskr.api.tts.elevenlabs_provider import ElevenLabsTTSProvider
+from flaskr.api.tts.minimax_provider import MinimaxTTSProvider
+from flaskr.api.tts.tencent_provider import TencentTTSProvider
+from flaskr.api.tts.tencent_texttovoice_provider import TencentTextToVoiceProvider
+from flaskr.api.tts.volcengine_http_provider import VolcengineHttpTTSProvider
+from flaskr.api.tts.volcengine_provider import VolcengineTTSProvider
 from flaskr.common.config import get_config
-from flaskr.util.datetime import now_utc
 from flaskr.common.log import AppLoggerProxy
 from flaskr.i18n import get_current_language
 from flaskr.service.billing.consts import BILLING_METRIC_TTS_OUTPUT_CHARS
 from flaskr.service.billing.rate_references import load_llm_credit_1x_unit_cost
 from flaskr.service.metering.consts import BILL_USAGE_SCENE_PROD, BILL_USAGE_TYPE_TTS
-
-# Re-export base classes for backward compatibility
-from flaskr.api.tts.base import (
-    TTSProvider as TTSProvider,
-    TTSResult as TTSResult,
-    VoiceSettings as VoiceSettings,
-    AudioSettings as AudioSettings,
-    BaseTTSProvider as BaseTTSProvider,
-)
-from flaskr.api.tts.minimax_provider import MinimaxTTSProvider
-from flaskr.api.tts.volcengine_provider import VolcengineTTSProvider
-from flaskr.api.tts.volcengine_http_provider import VolcengineHttpTTSProvider
-from flaskr.api.tts.baidu_provider import BaiduTTSProvider
-from flaskr.api.tts.aliyun_provider import AliyunTTSProvider
-from flaskr.api.tts.aliyun_nls_token import is_aliyun_nls_token_configured
-from flaskr.api.tts.tencent_provider import TencentTTSProvider
-from flaskr.api.tts.tencent_texttovoice_provider import TencentTextToVoiceProvider
-
+from flaskr.util.datetime import now_utc
 
 logger = AppLoggerProxy(logging.getLogger(__name__))
-TTS_DEFAULT_MODEL_TOKEN = "default"
+TTS_DEFAULT_MODEL_TOKEN = "default"  # noqa: S105 - placeholder model id, not a secret
 
 # Provider registry (ordered by default selection priority)
 _PROVIDER_REGISTRY = {
@@ -57,6 +66,7 @@ _PROVIDER_REGISTRY = {
     "aliyun": AliyunTTSProvider,
     "tencent": TencentTTSProvider,
     "tencent_texttovoice": TencentTextToVoiceProvider,
+    "elevenlabs": ElevenLabsTTSProvider,
 }
 _PROVIDER_PRIORITY = (
     "minimax",
@@ -66,6 +76,7 @@ _PROVIDER_PRIORITY = (
     "aliyun",
     "tencent",
     "tencent_texttovoice",
+    "elevenlabs",
 )
 _AUTO_DETECT_PROVIDER_PRIORITY = (
     "minimax",
@@ -74,6 +85,8 @@ _AUTO_DETECT_PROVIDER_PRIORITY = (
     "baidu",
     "aliyun",
 )
+_CONFIG_REQUIRES_CONFIGURED_PROVIDER = {"elevenlabs"}
+_CONFIG_REQUIRES_ALLOWED_MODEL = {"elevenlabs"}
 
 # Provider instances (lazy initialized)
 _provider_instances: dict = {}
@@ -113,7 +126,9 @@ def _resolve_provider_name(provider_name: str = "") -> str:
     return normalized or _auto_detect_provider_name()
 
 
-def _iter_provider_classes(*, include_explicit_only: bool = True):
+def _iter_provider_classes(
+    *, include_explicit_only: bool = True
+) -> Iterator[tuple[str, type[BaseTTSProvider]]]:
     provider_priority = (
         _PROVIDER_PRIORITY if include_explicit_only else _AUTO_DETECT_PROVIDER_PRIORITY
     )
@@ -124,8 +139,7 @@ def _iter_provider_classes(*, include_explicit_only: bool = True):
 
 
 def get_tts_provider(provider_name: str = "") -> BaseTTSProvider:
-    """
-    Get a TTS provider instance.
+    """Get a TTS provider instance.
 
     Args:
         provider_name: Provider name ("minimax", "volcengine", "volcengine_http", "baidu", "aliyun", "tencent").
@@ -136,16 +150,16 @@ def get_tts_provider(provider_name: str = "") -> BaseTTSProvider:
 
     Raises:
         ValueError: If no configured provider is available
-    """
-    global _provider_instances
 
+    """
     provider_name = _resolve_provider_name(provider_name)
 
     # Get or create provider instance
     if provider_name not in _provider_instances:
         provider_cls = _PROVIDER_REGISTRY.get(provider_name)
         if not provider_cls:
-            raise ValueError(f"Unknown TTS provider: {provider_name}")
+            message = f"Unknown TTS provider: {provider_name}"
+            raise ValueError(message)
         _provider_instances[provider_name] = provider_cls()
 
     return _provider_instances[provider_name]
@@ -165,13 +179,12 @@ def get_default_audio_settings(provider_name: str = "") -> AudioSettings:
 
 def synthesize_text(
     text: str,
-    voice_settings: Optional[VoiceSettings] = None,
-    audio_settings: Optional[AudioSettings] = None,
-    model: Optional[str] = None,
+    voice_settings: VoiceSettings | None = None,
+    audio_settings: AudioSettings | None = None,
+    model: str | None = None,
     provider_name: str = "",
 ) -> TTSResult:
-    """
-    Synthesize text to speech.
+    """Synthesize text to speech.
 
     Args:
         text: Text to synthesize
@@ -185,6 +198,7 @@ def synthesize_text(
 
     Raises:
         ValueError: If synthesis fails
+
     """
     provider = get_tts_provider(provider_name)
     return provider.synthesize(
@@ -196,14 +210,14 @@ def synthesize_text(
 
 
 def is_tts_configured(provider_name: str = "") -> bool:
-    """
-    Check if TTS is properly configured.
+    """Check if TTS is properly configured.
 
     Args:
         provider_name: Provider name (optional, checks all if empty)
 
     Returns:
         True if at least one provider is configured
+
     """
     if provider_name:
         try:
@@ -214,11 +228,11 @@ def is_tts_configured(provider_name: str = "") -> bool:
     else:
         # Check if any provider is configured
         for _name, provider_cls in _iter_provider_classes(include_explicit_only=False):
-            try:
+            # A provider whose construction or config check blows up counts as
+            # not configured.
+            with contextlib.suppress(Exception):
                 if provider_cls().is_configured():
                     return True
-            except Exception:
-                continue
         return False
 
 
@@ -292,7 +306,7 @@ def _parse_tts_display_names() -> dict:
     return normalized
 
 
-def _iter_tts_display_language_candidates():
+def _iter_tts_display_language_candidates() -> Iterator[str]:
     if has_request_context():
         for value in (
             request.args.get("language"),
@@ -514,20 +528,37 @@ def _build_tts_model_options(provider_payloads: list[tuple[str, dict]]) -> list[
 
 
 def get_all_provider_configs() -> dict:
-    """
-    Get configuration for all TTS providers.
+    """Get configuration for all TTS providers.
 
     Returns:
         Dictionary with provider configurations for frontend
+
     """
     providers = []
     provider_payloads: list[tuple[str, dict]] = []
+    allowed_model_keys = set(_parse_allowed_tts_model_keys())
 
     # Get config from each provider
     for name, provider_cls in _iter_provider_classes():
         try:
             provider = provider_cls()
+            if (
+                name in _CONFIG_REQUIRES_CONFIGURED_PROVIDER
+                and not provider.is_configured()
+            ):
+                continue
             payload = provider.get_provider_config().to_dict()
+            if name in _CONFIG_REQUIRES_ALLOWED_MODEL and allowed_model_keys:
+                allowed_models = [
+                    item
+                    for item in payload.get("models") or []
+                    if isinstance(item, dict)
+                    and _normalize_tts_model_key(name, str(item.get("value") or ""))
+                    in allowed_model_keys
+                ]
+                if not allowed_models:
+                    continue
+                payload["models"] = allowed_models
             providers.append(payload)
             provider_payloads.append((name, payload))
         except Exception as e:

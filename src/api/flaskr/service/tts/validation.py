@@ -1,9 +1,10 @@
+"""Validate requests and settings for TTS."""
+
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import Any
-
-from flask import Flask
+from typing import TYPE_CHECKING
 
 from flaskr.api.tts import get_tts_provider
 from flaskr.service.common.models import raise_error_with_args
@@ -12,6 +13,8 @@ from flaskr.service.tts.cloned_voice_registry import (
     get_clone_provider_spec,
 )
 
+if TYPE_CHECKING:
+    from flask import Flask
 
 SUPPORTED_TTS_PROVIDERS = {
     "minimax",
@@ -21,12 +24,21 @@ SUPPORTED_TTS_PROVIDERS = {
     "aliyun",
     "tencent",
     "tencent_texttovoice",
+    "elevenlabs",
 }
-PROVIDERS_REQUIRING_MODEL = {"minimax", "volcengine", "tencent_texttovoice"}
+PROVIDERS_REQUIRING_MODEL = {
+    "minimax",
+    "volcengine",
+    "tencent_texttovoice",
+    "elevenlabs",
+}
+PROVIDERS_REQUIRING_LISTED_VOICE = {"elevenlabs"}
 
 
 @dataclass(frozen=True)
 class StrictTTSSettings:
+    """Validate the complete settings required for speech synthesis."""
+
     provider: str
     model: str
     voice_id: str
@@ -39,14 +51,14 @@ def _raise_param_error(message: str) -> None:
     raise_error_with_args("server.common.paramsError", param_message=message)
 
 
-def _to_float(value: Any, field_name: str) -> float:
+def _to_float(value: object, field_name: str) -> float:
     try:
         return float(value)
     except (TypeError, ValueError):
         _raise_param_error(f"Invalid {field_name}: {value!r}")
 
 
-def _to_int(value: Any, field_name: str) -> int:
+def _to_int(value: object, field_name: str) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -58,16 +70,16 @@ def validate_tts_settings_strict(
     provider: str,
     model: str,
     voice_id: str,
-    speed: Any,
-    pitch: Any,
+    speed: object,
+    pitch: object,
     emotion: str,
 ) -> StrictTTSSettings:
-    """
-    Validate strict, DB-driven TTS settings.
+    """Validate strict, DB-driven TTS settings.
 
     Notes:
     - Provider, voice_id, speed, and pitch must be explicit (no "system default").
     - `model` is required for providers that expose model/resource selection.
+
     """
     normalized_provider = (provider or "").strip().lower()
     if not normalized_provider:
@@ -86,6 +98,8 @@ def validate_tts_settings_strict(
         )
 
     speed_value = _to_float(speed, "tts_speed")
+    if not math.isfinite(speed_value):
+        _raise_param_error(f"Invalid tts_speed: {speed!r}")
     pitch_value = _to_int(pitch, "tts_pitch")
     emotion_value = (emotion or "").strip()
 
@@ -110,6 +124,13 @@ def validate_tts_settings_strict(
         for v in (cfg.voices or [])
         if (v.get("value") or "").strip()
     }
+    if (
+        normalized_provider in PROVIDERS_REQUIRING_LISTED_VOICE
+        and normalized_voice_id not in allowed_voices
+    ):
+        _raise_param_error(
+            f"Invalid TTS voice_id for provider '{normalized_provider}': {normalized_voice_id}"
+        )
     if allowed_voices and normalized_voice_id not in allowed_voices:
         # Custom (cloned) voice ids are not in the provider's static voice
         # list. Dispatch on the provider's clone spec: MiniMax keeps its

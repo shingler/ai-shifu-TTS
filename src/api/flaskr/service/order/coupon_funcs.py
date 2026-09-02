@@ -1,31 +1,38 @@
+"""Implement coupon operations for legacy orders."""
+
+import decimal
+import json
+
 from flask import Flask
-from flaskr.service.promo.models import Coupon, CouponUsage as CouponUsageModel
-from flaskr.service.order.models import Order
-from flaskr.service.order.funs import success_buy_record, query_buy_record
-from flaskr.service.promo.consts import (
-    COUPON_APPLY_TYPE_SPECIFIC,
-    COUPON_STATUS_USED,
-    COUPON_STATUS_ACTIVE,
-    COUPON_TYPE_FIXED,
-    COUPON_TYPE_PERCENT,
+from flaskr.api.doc.feishu import send_notify
+from flaskr.dao import db
+from flaskr.service.common import raise_error
+from flaskr.service.order.funs import (
+    AICourseBuyRecordDTO,
+    query_buy_record,
+    success_buy_record,
 )
+from flaskr.service.order.models import Order
 from flaskr.service.promo.api import (
     build_coupon_enabled_expression,
     is_coupon_enabled_for_runtime,
 )
-from flaskr.service.common import raise_error
-from flaskr.util import generate_id
-from flaskr.util.datetime import now_utc
-from flaskr.api.doc.feishu import send_notify
+from flaskr.service.promo.consts import (
+    COUPON_APPLY_TYPE_SPECIFIC,
+    COUPON_STATUS_ACTIVE,
+    COUPON_STATUS_USED,
+    COUPON_TYPE_FIXED,
+    COUPON_TYPE_PERCENT,
+)
+from flaskr.service.promo.models import Coupon
+from flaskr.service.promo.models import CouponUsage as CouponUsageModel
 from flaskr.service.user.models import UserConversion
 from flaskr.service.user.repository import load_user_aggregate
-import json
-from flaskr.dao import db
-import decimal
-from typing import List, Tuple, Optional
+from flaskr.util import generate_id
+from flaskr.util.datetime import now_utc
 
 
-def _get_course_id_from_filter(coupon: Coupon) -> Optional[str]:
+def _get_course_id_from_filter(coupon: Coupon) -> str | None:
     """Extract course_id from coupon.filter; return None if missing/invalid/empty."""
     if not coupon or not coupon.filter:
         return None
@@ -56,22 +63,21 @@ def _coupon_matches_course(coupon: Coupon, shifu_bid: str) -> bool:
 
 
 def _pick_coupon_candidate(
-    active_usages: List[CouponUsageModel],
+    active_usages: list[CouponUsageModel],
     coupons_by_bid: dict[str, Coupon],
-    coupons_by_code: List[Coupon],
+    coupons_by_code: list[Coupon],
     shifu_bid: str,
     user_id: str,
-) -> Tuple[Optional[CouponUsageModel], Optional[Coupon], bool]:
-    """
-    Pick a coupon_usage/coupon pair that matches the current course.
+) -> tuple[CouponUsageModel | None, Coupon | None, bool]:
+    """Pick a coupon_usage/coupon pair that matches the current course.
+
     Returns (usage, coupon, has_candidate_with_same_code).
     """
-
     has_candidate_with_same_code = bool(active_usages or coupons_by_code)
 
     def select(
-        usages: List[CouponUsageModel],
-    ) -> Tuple[Optional[CouponUsageModel], Optional[Coupon]]:
+        usages: list[CouponUsageModel],
+    ) -> tuple[CouponUsageModel | None, Coupon | None]:
         for usage in usages:
             coupon = coupons_by_bid.get(getattr(usage, "coupon_bid", None))
             if coupon and _coupon_matches_course(coupon, shifu_bid):
@@ -110,8 +116,13 @@ def _should_bind_usage_course(coupon: Coupon, coupon_usage: CouponUsageModel) ->
 
 
 def send_feishu_coupon_code(
-    app: Flask, user_id, discount_code, discount_name, discount_value
-):
+    app: Flask,
+    user_id: object,
+    discount_code: object,
+    discount_name: object,
+    discount_value: object,
+) -> None:
+    """Send feishu coupon code."""
     with app.app_context():
         user_info = load_user_aggregate(user_id)
         title = "优惠码通知"
@@ -121,24 +132,26 @@ def send_feishu_coupon_code(
                 "feishu coupon notify skipped: user aggregate missing for %s", user_id
             )
             return
-        msgs.append("手机号：{}".format(user_info.mobile))
-        msgs.append("昵称：{}".format(user_info.name))
-        msgs.append("优惠码：{}".format(discount_code))
-        msgs.append("优惠名称：{}".format(discount_name))
-        msgs.append("优惠额度：{}".format(discount_value))
+        msgs.append(f"手机号：{user_info.mobile}")  # noqa: RUF001 - intentional fullwidth Chinese punctuation
+        msgs.append(f"昵称：{user_info.name}")  # noqa: RUF001 - intentional fullwidth Chinese punctuation
+        msgs.append(f"优惠码：{discount_code}")  # noqa: RUF001 - intentional fullwidth Chinese punctuation
+        msgs.append(f"优惠名称：{discount_name}")  # noqa: RUF001 - intentional fullwidth Chinese punctuation
+        msgs.append(f"优惠额度：{discount_value}")  # noqa: RUF001 - intentional fullwidth Chinese punctuation
         user_convertion = UserConversion.query.filter(
             UserConversion.user_id == user_id
         ).first()
         channel = ""
         if user_convertion:
             channel = user_convertion.conversion_source
-        msgs.append("渠道：{}".format(channel))
+        msgs.append(f"渠道：{channel}")  # noqa: RUF001 - intentional fullwidth Chinese punctuation
         send_notify(app, title, msgs)
 
 
-def use_coupon_code(app: Flask, user_id, coupon_code, order_id):
-    """
-    Use coupon code
+def use_coupon_code(
+    app: Flask, user_id: object, coupon_code: object, order_id: object
+) -> AICourseBuyRecordDTO | None:
+    """Use coupon code.
+
     Args:
         app: Flask app
         user_id: User id
@@ -147,7 +160,8 @@ def use_coupon_code(app: Flask, user_id, coupon_code, order_id):
     Returns:
         Order object
     Raises:
-        raise_error: If the coupon code is not found or the coupon is already used
+        raise_error: If the coupon code is not found or the coupon is already used.
+
     """
     with app.app_context():
         now = now_utc()
@@ -161,7 +175,7 @@ def use_coupon_code(app: Flask, user_id, coupon_code, order_id):
         if order_coupon_useage:
             raise_error("server.discount.orderDiscountAlreadyUsed")
 
-        active_usages: List[CouponUsageModel] = (
+        active_usages: list[CouponUsageModel] = (
             CouponUsageModel.query.filter(
                 CouponUsageModel.code == coupon_code,
                 CouponUsageModel.status == COUPON_STATUS_ACTIVE,
@@ -178,7 +192,7 @@ def use_coupon_code(app: Flask, user_id, coupon_code, order_id):
                 Coupon.deleted == 0,
             ).all()
             coupons_by_bid = {coupon.coupon_bid: coupon for coupon in coupons}
-        coupons_by_code: List[Coupon] = (
+        coupons_by_code: list[Coupon] = (
             Coupon.query.filter(
                 Coupon.code == coupon_code,
                 Coupon.deleted == 0,
@@ -219,7 +233,7 @@ def use_coupon_code(app: Flask, user_id, coupon_code, order_id):
         if coupon.start > now:
             raise_error("server.discount.discountNotStart")
         if coupon.end < now:
-            app.logger.info("coupon expired: end={} now={}".format(coupon.end, now))
+            app.logger.info("coupon expired: end=%s now=%s", coupon.end, now)
             raise_error("server.discount.discountAlreadyExpired")
         if coupon.used_count + 1 > coupon.total_count:
             raise_error("server.discount.discountLimitExceeded")
@@ -231,7 +245,7 @@ def use_coupon_code(app: Flask, user_id, coupon_code, order_id):
                 coupon_filter = {}
             if "course_id" in coupon_filter:
                 course_id = coupon_filter["course_id"]
-                if course_id and course_id != "" and course_id != buy_record.shifu_bid:
+                if course_id and course_id not in ("", buy_record.shifu_bid):
                     raise_error("server.discount.discountNotApply")
 
         coupon_usage.status = COUPON_STATUS_USED
@@ -242,15 +256,14 @@ def use_coupon_code(app: Flask, user_id, coupon_code, order_id):
         if buy_record.shifu_bid and _should_bind_usage_course(coupon, coupon_usage):
             coupon_usage.shifu_bid = buy_record.shifu_bid
         if coupon.discount_type == COUPON_TYPE_FIXED:
-            buy_record.paid_price = (
-                decimal.Decimal(buy_record.paid_price)
-                - decimal.Decimal(coupon_usage.value)  # noqa W503
-            )
+            buy_record.paid_price = decimal.Decimal(
+                buy_record.paid_price
+            ) - decimal.Decimal(coupon_usage.value)
         elif coupon.discount_type == COUPON_TYPE_PERCENT:
-            buy_record.paid_price = (
-                decimal.Decimal(buy_record.paid_price)
-                - decimal.Decimal(buy_record.payable_price)
-                * decimal.Decimal(coupon_usage.value)  # noqa W503
+            buy_record.paid_price = decimal.Decimal(
+                buy_record.paid_price
+            ) - decimal.Decimal(buy_record.payable_price) * decimal.Decimal(
+                coupon_usage.value
             )
         if decimal.Decimal(buy_record.paid_price) < 0:
             buy_record.paid_price = decimal.Decimal(0)
@@ -262,12 +275,11 @@ def use_coupon_code(app: Flask, user_id, coupon_code, order_id):
 
         if buy_record.paid_price == 0:
             return success_buy_record(app, buy_record.order_bid)
-        else:
-            send_feishu_coupon_code(
-                app,
-                user_id,
-                coupon_code,
-                coupon.code,
-                coupon.value,
-            )
+        send_feishu_coupon_code(
+            app,
+            user_id,
+            coupon_code,
+            coupon.code,
+            coupon.value,
+        )
         return query_buy_record(app, buy_record.order_bid)

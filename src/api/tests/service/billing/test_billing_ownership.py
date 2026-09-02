@@ -1,9 +1,12 @@
+"""Verify billing ownership behavior."""
+
 from __future__ import annotations
 
-from flask import Flask
-import pytest
+from typing import TYPE_CHECKING
 
-import flaskr.dao as dao
+import pytest
+from flask import Flask
+from flaskr import dao
 from flaskr.service.billing.ownership import (
     resolve_shifu_creator_bid,
     resolve_usage_creator_bid,
@@ -16,9 +19,12 @@ from flaskr.service.metering.consts import (
 from flaskr.service.metering.models import BillUsageRecord
 from flaskr.service.shifu.models import DraftShifu, PublishedShifu
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 
 @pytest.fixture
-def billing_ownership_app():
+def billing_ownership_app() -> Iterator[Flask]:
     app = Flask(__name__)
     app.testing = True
     app.config.update(

@@ -1,5 +1,4 @@
-"""
-common shifu funcs
+"""common shifu funcs.
 
 This module contains functions for shifu.
 
@@ -7,27 +6,28 @@ Author: yfge
 Date: 2025-08-07
 """
 
-from flaskr.common.cache_provider import cache as redis
-from flaskr.common.config import get_redis_key_prefix
-from ...dao import db
-from .models import FavoriteScenario, AiCourseAuth
-from ..common.models import raise_error
-from flaskr.service.config import get_config
-import uuid
 import json
-import requests
+import re
+import uuid
 from io import BytesIO
 from urllib.parse import urlparse
-import re
-from ...service.resource.models import Resource
+
+import requests
+from flaskr.common.cache_provider import cache as redis
+from flaskr.common.config import get_redis_key_prefix
+from flaskr.dao import db
+from flaskr.service.common.models import raise_error
 from flaskr.service.common.oss_utils import OSS_PROFILE_COURSES, get_image_content_type
 from flaskr.service.common.storage import upload_to_storage
+from flaskr.service.config import get_config
+from flaskr.service.resource.models import Resource
+
+from .models import AiCourseAuth, FavoriteScenario
 from .utils import get_shifu_creator_bid
 
 
-def mark_favorite_shifu(app, user_id: str, shifu_id: str):
-    """
-    Mark a shifu as favorite for a user.
+def mark_favorite_shifu(app: object, user_id: str, shifu_id: str) -> bool:
+    """Mark a shifu as favorite for a user.
 
     Args:
         app: Flask application instance
@@ -36,6 +36,7 @@ def mark_favorite_shifu(app, user_id: str, shifu_id: str):
 
     Returns:
         bool: True if successful
+
     """
     with app.app_context():
         existing_favorite_shifu = FavoriteScenario.query.filter_by(
@@ -54,9 +55,8 @@ def mark_favorite_shifu(app, user_id: str, shifu_id: str):
 
 
 # unmark favorite shifu
-def unmark_favorite_shifu(app, user_id: str, shifu_id: str):
-    """
-    Unmark a shifu as favorite for a user.
+def unmark_favorite_shifu(app: object, user_id: str, shifu_id: str) -> bool:
+    """Unmark a shifu as favorite for a user.
 
     Args:
         app: Flask application instance
@@ -65,6 +65,7 @@ def unmark_favorite_shifu(app, user_id: str, shifu_id: str):
 
     Returns:
         bool: True if successful
+
     """
     with app.app_context():
         favorite_shifu = FavoriteScenario.query.filter_by(
@@ -77,9 +78,10 @@ def unmark_favorite_shifu(app, user_id: str, shifu_id: str):
         return False
 
 
-def mark_or_unmark_favorite_shifu(app, user_id: str, shifu_id: str, is_favorite: bool):
-    """
-    Mark or unmark a shifu as favorite for a user.
+def mark_or_unmark_favorite_shifu(
+    app: object, user_id: str, shifu_id: str, is_favorite: bool
+) -> bool:
+    """Mark or unmark a shifu as favorite for a user.
 
     Args:
         app: Flask application instance
@@ -89,16 +91,15 @@ def mark_or_unmark_favorite_shifu(app, user_id: str, shifu_id: str, is_favorite:
 
     Returns:
         bool: True if successful
+
     """
     if is_favorite:
         return mark_favorite_shifu(app, user_id, shifu_id)
-    else:
-        return unmark_favorite_shifu(app, user_id, shifu_id)
+    return unmark_favorite_shifu(app, user_id, shifu_id)
 
 
-def upload_file(app, user_id: str, resource_id: str, file) -> str:
-    """
-    Upload a file to OSS.
+def upload_file(app: object, user_id: str, resource_id: str, file: object) -> str:
+    """Upload a file to OSS.
 
     Args:
         app: Flask application instance
@@ -108,9 +109,10 @@ def upload_file(app, user_id: str, resource_id: str, file) -> str:
 
     Returns:
         str: The URL of the uploaded file
+
     """
     with app.app_context():
-        isUpdate = False
+        is_update = False
         if resource_id == "":
             file_id = str(uuid.uuid4()).replace("-", "")
             resource = None
@@ -118,7 +120,7 @@ def upload_file(app, user_id: str, resource_id: str, file) -> str:
             file_id = resource_id
             resource = Resource.query.filter_by(resource_id=file_id).first()
             if resource is not None:
-                isUpdate = True
+                is_update = True
             else:
                 app.logger.warning(
                     "upload_file received missing resource_id=%s; creating a new resource",
@@ -134,7 +136,7 @@ def upload_file(app, user_id: str, resource_id: str, file) -> str:
             profile=OSS_PROFILE_COURSES,
         )
 
-        if isUpdate:
+        if is_update:
             resource.name = file.filename
             resource.oss_bucket = result.bucket
             resource.oss_name = result.object_key
@@ -160,9 +162,8 @@ def upload_file(app, user_id: str, resource_id: str, file) -> str:
         return result.url
 
 
-def upload_url(app, user_id: str, url: str) -> str:
-    """
-    Upload a file from a URL to OSS.
+def upload_url(app: object, user_id: str, url: str) -> str:
+    """Upload a file from a URL to OSS.
 
     Args:
         app: Flask application instance
@@ -171,6 +172,7 @@ def upload_url(app, user_id: str, url: str) -> str:
 
     Returns:
         str: The URL of the uploaded file
+
     """
     with app.app_context():
         try:
@@ -193,13 +195,13 @@ def upload_url(app, user_id: str, url: str) -> str:
                 "Connection": "keep-alive",
             }
 
-            app.logger.info(f"Downloading image from URL: {clean_url}")
+            app.logger.info("Downloading image from URL: %s", clean_url)
             response = requests.get(clean_url, headers=headers, timeout=10)
             response.raise_for_status()
 
             content_type = response.headers.get("Content-Type", "")
             if not content_type.startswith("image/"):
-                app.logger.error(f"Invalid content type: {content_type}")
+                app.logger.error("Invalid content type: %s", content_type)
                 raise_error("server.file.fileTypeNotSupport")
 
             file_content = BytesIO(response.content)
@@ -238,26 +240,23 @@ def upload_url(app, user_id: str, url: str) -> str:
             db.session.add(resource)
             db.session.commit()
 
-            return result.url
-
-        except requests.RequestException as e:
-            app.logger.error(
-                f"Failed to download image from URL: {url}, error: {str(e)}"
-            )
+        except requests.RequestException:
+            app.logger.exception("Failed to download image from URL: %s", url)
             raise_error("server.file.fileDownloadFailed")
-        except Exception as e:
-            app.logger.error(f"Failed to upload image to OSS: {url}, error: {str(e)}")
+        except Exception:
+            app.logger.exception("Failed to upload image to OSS: %s", url)
             raise_error("server.file.fileUploadFailed")
+        else:
+            return result.url
 
 
 def shifu_permission_verification(
-    app,
+    app: object,
     user_id: str,
     shifu_id: str,
     auth_type: str,
-):
-    """
-    Verify the permission of a user to a shifu.
+) -> bool:
+    """Verify the permission of a user to a shifu.
 
     Args:
         app: Flask application instance
@@ -267,6 +266,7 @@ def shifu_permission_verification(
 
     Returns:
         bool: True if the user has the permission
+
     """
     with app.app_context():
         cache_key = f"{get_redis_key_prefix(app)}shifu_permission:{user_id}:{shifu_id}"
@@ -275,9 +275,10 @@ def shifu_permission_verification(
         if cache_result is not None:
             try:
                 cached_auth_types = json.loads(cache_result)
-                return auth_type in cached_auth_types
             except (json.JSONDecodeError, TypeError):
                 redis.delete(cache_key)
+            else:
+                return auth_type in cached_auth_types
         # If it is not in the cache, query the database
         creator_bid = get_shifu_creator_bid(app, shifu_id)
         if creator_bid and creator_bid == user_id:
@@ -286,46 +287,43 @@ def shifu_permission_verification(
             all_auth_types = ["view", "edit", "publish"]
             redis.set(cache_key, json.dumps(all_auth_types), cache_key_expire)
             return True
-        else:
-            # Collaborators need to verify specific permissions
-            auth = AiCourseAuth.query.filter(
-                AiCourseAuth.course_id == shifu_id,
-                AiCourseAuth.user_id == user_id,
-                AiCourseAuth.status == 1,
-            ).first()
-            if auth:
-                try:
-                    raw_auth_types = json.loads(auth.auth_type)
-                    normalized = []
-                    if isinstance(raw_auth_types, (list, tuple, set)):
-                        normalized = [str(item) for item in raw_auth_types]
-                    elif isinstance(raw_auth_types, str):
-                        normalized = [raw_auth_types]
-                    permissions = set()
-                    for item in normalized:
-                        lowered = item.lower()
-                        if lowered in {"view", "read", "readonly"} or lowered == "1":
-                            permissions.add("view")
-                        if lowered in {"edit", "write"} or lowered == "2":
-                            permissions.update({"view", "edit"})
-                        if lowered in {"publish"} or lowered == "4":
-                            permissions.add("publish")
-                    # Fallback to raw values if mapping failed
-                    permissions = permissions or set(normalized)
-                    result = auth_type in permissions
-                    redis.set(
-                        cache_key, json.dumps(list(permissions)), cache_key_expire
-                    )
-                    return result
-                except (json.JSONDecodeError, TypeError):
-                    return False
-            else:
+        # Collaborators need to verify specific permissions
+        auth = AiCourseAuth.query.filter(
+            AiCourseAuth.course_id == shifu_id,
+            AiCourseAuth.user_id == user_id,
+            AiCourseAuth.status == 1,
+        ).first()
+        if auth:
+            try:
+                raw_auth_types = json.loads(auth.auth_type)
+                normalized = []
+                if isinstance(raw_auth_types, (list, tuple, set)):
+                    normalized = [str(item) for item in raw_auth_types]
+                elif isinstance(raw_auth_types, str):
+                    normalized = [raw_auth_types]
+                permissions = set()
+                for item in normalized:
+                    lowered = item.lower()
+                    if lowered in {"view", "read", "readonly"} or lowered == "1":
+                        permissions.add("view")
+                    if lowered in {"edit", "write"} or lowered == "2":
+                        permissions.update({"view", "edit"})
+                    if lowered in {"publish", "4"}:
+                        permissions.add("publish")
+                # Fallback to raw values if mapping failed
+                permissions = permissions or set(normalized)
+                result = auth_type in permissions
+                redis.set(cache_key, json.dumps(list(permissions)), cache_key_expire)
+            except (json.JSONDecodeError, TypeError):
                 return False
+            else:
+                return result
+        else:
+            return False
 
 
-def get_video_info(app, user_id: str, url: str) -> dict:
-    """
-    Obtain video information from a URL.
+def get_video_info(app: object, user_id: str, url: str) -> dict:
+    """Obtain video information from a URL.
 
     Args:
         app: Flask application instance
@@ -334,7 +332,9 @@ def get_video_info(app, user_id: str, url: str) -> dict:
 
     Returns:
         dict: The video information
+
     """
+    _ = user_id
     with app.app_context():
         try:
             parsed_url = urlparse(url)
@@ -360,7 +360,7 @@ def get_video_info(app, user_id: str, url: str) -> dict:
                     "Connection": "keep-alive",
                 }
 
-                response = requests.get(api_url, headers=headers)
+                response = requests.get(api_url, headers=headers, timeout=10)
                 if response.status_code == 200:
                     data = response.json()
                     if data["code"] == 0:
@@ -373,19 +373,18 @@ def get_video_info(app, user_id: str, url: str) -> dict:
                             "author": video_data["owner"]["name"],
                             "duration": video_data["duration"],
                         }
-                    else:
-                        raise_error("server.file.videoBilibiliApiError")
+                    raise_error("server.file.videoBilibiliApiError")
                 else:
                     raise_error("server.file.videoBilibiliApiRequestFailed")
             else:
                 raise_error("server.file.videoUnsupportedVideoSite")
 
-        except requests.RequestException as e:
-            app.logger.error(f"Failed to fetch video info from {url}: {str(e)}")
+        except requests.RequestException:
+            app.logger.exception("Failed to fetch video info from %s", url)
             raise_error("server.file.videoNetworkError")
-        except KeyError as e:
-            app.logger.error(f"Missing expected field in API response: {str(e)}")
+        except KeyError:
+            app.logger.exception("Missing expected field in API response")
             raise_error("server.file.videoParseError")
-        except Exception as e:
-            app.logger.error(f"Unexpected error getting video info: {str(e)}")
+        except Exception:
+            app.logger.exception("Unexpected error getting video info")
             raise_error("server.file.videoGetInfoError")

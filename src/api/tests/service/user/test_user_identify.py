@@ -1,24 +1,30 @@
+"""Verify user identify behavior."""
+
 import uuid
 
 
 class _FakeRedis:
-    def __init__(self, values=None):
+    def __init__(self, values: object = None) -> None:
         self.values = dict(values or {})
         self.deleted = []
 
-    def get(self, key):
+    def get(self, key: object) -> object:
         return self.values.get(key)
 
-    def delete(self, *keys):
+    def delete(self, *keys: str) -> object:
         self.deleted.extend(keys)
         return len(keys)
 
 
-def _reset_user_auth_tables():
+def _reset_user_auth_tables() -> None:
     from flaskr.dao import db
     from flaskr.service.user.models import (
         AuthCredential,
+    )
+    from flaskr.service.user.models import (
         UserInfo as UserEntity,
+    )
+    from flaskr.service.user.models import (
         UserToken as UserTokenModel,
     )
 
@@ -46,17 +52,18 @@ def _reset_shifu_tables() -> None:
     db.session.commit()
 
 
-def test_phone_flow_marks_temp_phone_claim_as_created_new_user(tmp_path, monkeypatch):
+def test_phone_flow_marks_temp_phone_claim_as_created_new_user(
+    tmp_path: object, monkeypatch: object
+) -> None:
     from flask import Flask
-    from flask_sqlalchemy import SQLAlchemy
-
     from flaskr import dao
-    import flaskr.service.user.phone_flow as phone_flow
+    from flaskr.service.user import phone_flow
     from flaskr.service.user.consts import (
         USER_STATE_REGISTERED,
         USER_STATE_UNREGISTERED,
     )
-    from flaskr.service.user.models import AuthCredential, UserInfo as UserEntity
+    from flaskr.service.user.models import AuthCredential
+    from flaskr.service.user.models import UserInfo as UserEntity
 
     app = Flask(__name__)
     db_uri = f"sqlite:///{tmp_path / 'phone-claim.db'}"
@@ -75,8 +82,6 @@ def test_phone_flow_marks_temp_phone_claim_as_created_new_user(tmp_path, monkeyp
         ADMIN_LOGIN_GRANT_CREATOR_WITH_DEMO=False,
     )
 
-    if dao.db is None:
-        dao.db = SQLAlchemy()
     dao.db.init_app(app)
 
     fake_redis = _FakeRedis()
@@ -123,8 +128,8 @@ def test_phone_flow_marks_temp_phone_claim_as_created_new_user(tmp_path, monkeyp
         assert credential is not None
 
 
-def test_phone_flow_sets_user_identify(app):
-    import flaskr.service.user.phone_flow as phone_flow
+def test_phone_flow_sets_user_identify(app: object) -> None:
+    from flaskr.service.user import phone_flow
     from flaskr.service.user.models import UserInfo as UserEntity
 
     # Bypass code storage by using universal code
@@ -152,8 +157,8 @@ def test_phone_flow_sets_user_identify(app):
             _reset_user_auth_tables()
 
 
-def test_email_flow_sets_user_identify(app):
-    import flaskr.service.user.email_flow as email_flow
+def test_email_flow_sets_user_identify(app: object) -> None:
+    from flaskr.service.user import email_flow
     from flaskr.service.user.models import UserInfo as UserEntity
 
     with app.app_context():
@@ -175,33 +180,42 @@ def test_email_flow_sets_user_identify(app):
             _reset_user_auth_tables()
 
 
-def test_send_email_code_stores_lowercase_identifier(app, monkeypatch):
+def test_send_email_code_stores_lowercase_identifier(
+    app: object, monkeypatch: object
+) -> None:
+    from email import message_from_string
+
     import flaskr.service.user.utils as user_utils
     from flaskr.dao import db
     from flaskr.service.user.models import UserVerifyCode
+
     from tests.common.fixtures.fake_redis import FakeRedis
 
     class _FakeSMTP:
-        def __init__(self, *_args, **_kwargs):
-            self.sent_to = None
+        sent_message = ""
+        sent_to = ""
 
-        def starttls(self):
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def starttls(self) -> None:
             return None
 
-        def login(self, *_args):
+        def login(self, *_args: object) -> None:
             return None
 
-        def sendmail(self, _sender, recipient, _message):
-            self.sent_to = recipient
-            return None
+        def sendmail(self, _sender: object, recipient: object, message: object) -> None:
+            type(self).sent_to = recipient
+            type(self).sent_message = message
 
-        def quit(self):
+        def quit(self) -> None:
             return None
 
     fake_redis = FakeRedis()
     monkeypatch.setattr(user_utils, "redis", fake_redis, raising=False)
     monkeypatch.setattr(user_utils.smtplib, "SMTP", _FakeSMTP, raising=False)
-    monkeypatch.setattr(user_utils.random, "choices", lambda _chars, k: list("1234"))
+    fixed_digits = iter("1234")
+    monkeypatch.setattr(user_utils.secrets, "choice", lambda _chars: next(fixed_digits))
 
     with app.app_context():
         app.config.update(
@@ -236,6 +250,20 @@ def test_send_email_code_stores_lowercase_identifier(app, monkeypatch):
             assert record is not None
             assert record.verify_code == "1234"
             assert record.verify_code_send == 1
+
+            message = message_from_string(_FakeSMTP.sent_message)
+            assert _FakeSMTP.sent_to == normalized_email
+            assert message["Subject"] == "AI-Shifu verification code"
+            parts = {part.get_content_type(): part for part in message.walk()}
+            assert "text/plain" in parts
+            assert "text/html" in parts
+            plain_body = parts["text/plain"].get_payload(decode=True).decode()
+            html_body = parts["text/html"].get_payload(decode=True).decode()
+            assert "Verification code: 1234" in plain_body
+            assert "It expires in 5 minutes" in plain_body
+            assert "Verify your AI-Shifu account" in html_body
+            assert "1234" in html_body
+            assert "Please do not reply" in html_body
         finally:
             UserVerifyCode.query.filter(
                 UserVerifyCode.mail.in_([raw_email, normalized_email])
@@ -243,9 +271,119 @@ def test_send_email_code_stores_lowercase_identifier(app, monkeypatch):
             db.session.commit()
 
 
-def test_phone_flow_verifies_code_from_db_when_cache_missing(app):
-    import flaskr.service.user.phone_flow as phone_flow
+def test_send_email_code_uses_requested_language_and_singular_expiry(
+    app: object, monkeypatch: object
+) -> None:
+    from email import message_from_string
+    from email.header import decode_header, make_header
+
+    import flaskr.service.user.utils as user_utils
     from flaskr.dao import db
+    from flaskr.service.user.models import UserVerifyCode
+
+    from tests.common.fixtures.fake_redis import FakeRedis
+
+    class _FakeSMTP:
+        sent_message = ""
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def starttls(self) -> None:
+            return None
+
+        def login(self, *_args: object) -> None:
+            return None
+
+        def sendmail(
+            self, _sender: object, _recipient: object, message: object
+        ) -> None:
+            type(self).sent_message = message
+
+        def quit(self) -> None:
+            return None
+
+    fake_redis = FakeRedis()
+    monkeypatch.setattr(user_utils, "redis", fake_redis, raising=False)
+    monkeypatch.setattr(user_utils.smtplib, "SMTP", _FakeSMTP, raising=False)
+    fixed_digits = iter("5678")
+    monkeypatch.setattr(user_utils.secrets, "choice", lambda _chars: next(fixed_digits))
+
+    with app.app_context():
+        app.config.update(
+            REDIS_KEY_PREFIX_MAIL_CODE="test:mail:",
+            REDIS_KEY_PREFIX_MAIL_LIMIT="test:mail-limit:",
+            MAIL_CODE_INTERVAL=60,
+            SMTP_SENDER="sender@example.com",
+            SMTP_SERVER="smtp.example.com",
+            SMTP_PORT=587,
+            SMTP_USERNAME="sender@example.com",
+            SMTP_PASSWORD="secret",
+        )
+        original_expire_time = app.config["MAIL_CODE_EXPIRE_TIME"]
+        app.config["MAIL_CODE_EXPIRE_TIME"] = 60
+        user_utils.set_language("en-US")
+        email = "french@example.com"
+        try:
+            user_utils.send_email_code(app, email, language="fr-FR")
+
+            message = message_from_string(_FakeSMTP.sent_message)
+            subject = str(make_header(decode_header(message["Subject"])))
+            assert subject == "Code de vérification AI-Shifu"
+            parts = {part.get_content_type(): part for part in message.walk()}
+            plain_body = parts["text/plain"].get_payload(decode=True).decode()
+            html_body = parts["text/html"].get_payload(decode=True).decode()
+            assert "Code de vérification : 5678" in plain_body
+            assert "Il expire dans une minute." in plain_body
+            assert "1 minutes" not in plain_body
+            assert "Ce code expire dans une minute." in html_body
+            assert "1 minutes" not in html_body
+            assert '<html lang="fr-FR" dir="ltr">' in html_body
+
+            _subject, _plain_body, arabic_html_body = (
+                user_utils._format_email_verification_message(
+                    "5678", 60, language="ar-SA"
+                )
+            )
+            assert '<html lang="ar-SA" dir="rtl">' in arabic_html_body
+
+            arabic_subject, _plain_body, arabic_variant_html_body = (
+                user_utils._format_email_verification_message(
+                    "5678", 60, language="ar-AE"
+                )
+            )
+            assert arabic_subject == "رمز التحقق من AI-Shifu"
+            assert '<html lang="ar-SA" dir="rtl">' in arabic_variant_html_body
+
+            for expire_seconds, expected_duration in (
+                (120, "دقيقتين"),
+                (300, "5 دقائق"),
+                (660, "11 دقيقةً"),
+                (6000, "100 دقيقة"),
+            ):
+                _subject, arabic_plain_body, arabic_plural_html_body = (
+                    user_utils._format_email_verification_message(
+                        "5678", expire_seconds, language="ar-SA"
+                    )
+                )
+                assert expected_duration in arabic_plain_body
+                assert expected_duration in arabic_plural_html_body
+
+            thai_subject, _plain_body, thai_html_body = (
+                user_utils._format_email_verification_message("5678", 60, language="th")
+            )
+            assert thai_subject == "รหัสยืนยัน AI-Shifu"
+            assert '<html lang="th-TH" dir="ltr">' in thai_html_body
+            assert user_utils.get_current_language() == "en-US"
+        finally:
+            app.config["MAIL_CODE_EXPIRE_TIME"] = original_expire_time
+            UserVerifyCode.query.filter_by(mail=email).delete(synchronize_session=False)
+            db.session.commit()
+
+
+def test_phone_flow_verifies_code_from_db_when_cache_missing(app: object) -> None:
+    from flaskr.dao import db
+    from flaskr.service.user import phone_flow
     from flaskr.service.user.models import UserVerifyCode
 
     with app.app_context():
@@ -277,11 +415,11 @@ def test_phone_flow_verifies_code_from_db_when_cache_missing(app):
         assert updated.verify_code_used == 1
 
 
-def test_phone_flow_normalizes_cn_prefix_when_verifying_db_code(app):
-    import flaskr.service.user.phone_flow as phone_flow
+def test_phone_flow_normalizes_cn_prefix_when_verifying_db_code(app: object) -> None:
     from flaskr.dao import db
-    from flaskr.service.user.models import AuthCredential, UserInfo as UserEntity
-    from flaskr.service.user.models import UserVerifyCode
+    from flaskr.service.user import phone_flow
+    from flaskr.service.user.models import AuthCredential, UserVerifyCode
+    from flaskr.service.user.models import UserInfo as UserEntity
 
     with app.app_context():
         app.config["UNIVERSAL_VERIFICATION_CODE"] = "9999"
@@ -325,11 +463,11 @@ def test_phone_flow_normalizes_cn_prefix_when_verifying_db_code(app):
             _reset_user_auth_tables()
 
 
-def test_phone_flow_accepts_prefixed_pending_db_code(app):
-    import flaskr.service.user.phone_flow as phone_flow
+def test_phone_flow_accepts_prefixed_pending_db_code(app: object) -> None:
     from flaskr.dao import db
-    from flaskr.service.user.models import AuthCredential, UserInfo as UserEntity
-    from flaskr.service.user.models import UserVerifyCode
+    from flaskr.service.user import phone_flow
+    from flaskr.service.user.models import AuthCredential, UserVerifyCode
+    from flaskr.service.user.models import UserInfo as UserEntity
 
     with app.app_context():
         app.config["UNIVERSAL_VERIFICATION_CODE"] = "9999"
@@ -373,9 +511,11 @@ def test_phone_flow_accepts_prefixed_pending_db_code(app):
             _reset_user_auth_tables()
 
 
-def test_consume_verification_code_accepts_prefixed_pending_cache_key(app):
-    import flaskr.service.user.verification_codes as verification_codes
+def test_consume_verification_code_accepts_prefixed_pending_cache_key(
+    app: object,
+) -> None:
     from flaskr.dao import db
+    from flaskr.service.user import verification_codes
     from flaskr.service.user.models import UserVerifyCode
 
     with app.app_context():
@@ -411,10 +551,10 @@ def test_consume_verification_code_accepts_prefixed_pending_cache_key(app):
             db.session.commit()
 
 
-def test_phone_flow_bootstrap_sets_draft_owner_for_published_demo(app):
-    import flaskr.service.user.phone_flow as phone_flow
+def test_phone_flow_bootstrap_sets_draft_owner_for_published_demo(app: object) -> None:
     from flaskr.dao import db
     from flaskr.service.shifu.models import DraftShifu, PublishedShifu
+    from flaskr.service.user import phone_flow
     from flaskr.service.user.models import UserInfo as UserEntity
 
     shifu_bid = uuid.uuid4().hex[:32]
@@ -462,9 +602,9 @@ def test_phone_flow_bootstrap_sets_draft_owner_for_published_demo(app):
             _reset_user_auth_tables()
 
 
-def test_email_flow_verifies_code_from_db_when_cache_missing(app):
-    import flaskr.service.user.email_flow as email_flow
+def test_email_flow_verifies_code_from_db_when_cache_missing(app: object) -> None:
     from flaskr.dao import db
+    from flaskr.service.user import email_flow
     from flaskr.service.user.models import UserVerifyCode
 
     with app.app_context():

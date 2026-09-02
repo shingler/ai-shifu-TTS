@@ -33,9 +33,15 @@
     "description": "Feel the learner’s experience and see how prompts personalize courses",
     "disabled": "Select a unit before debugging.",
     "empty": "Enter teaching prompts on the left, then click \"Debug\" to experience learning simulation",
-    "goToBilling": "Buy credits",
     "loading": "Generating learning simulation...",
     "open": "Expand learning simulation",
+    "systemVariableLabels": {
+      "accessibleName": "{label} ({name})",
+      "background": "Student background and preferences",
+      "input": "Latest input",
+      "language": "Teaching language",
+      "nickname": "Student nickname"
+    },
     "title": "Learning Simulation",
     "variablesCollapse": "Collapse",
     "variablesDescription": "Different learners set different variables to get different courses",

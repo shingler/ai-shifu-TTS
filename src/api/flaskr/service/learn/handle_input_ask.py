@@ -1,3 +1,5 @@
+"""Handle learner follow-up questions and streamed answers."""
+
 from collections.abc import Generator
 from typing import Any
 
@@ -28,6 +30,10 @@ from flaskr.service.learn.learn_dtos import (
     GeneratedType,
     RunMarkdownFlowDTO,
 )
+from flaskr.service.learn.learner_profile_prompt import (
+    build_course_prompt,
+    render_course_prompt_identity_variables,
+)
 from flaskr.service.learn.listen_element_payloads import _deserialize_payload
 from flaskr.service.learn.listen_element_queries import (
     _load_latest_active_element_row,
@@ -53,6 +59,7 @@ from flaskr.service.shifu.consts import (
 )
 from flaskr.service.shifu.shifu_struct_manager import ShifuOutlineItemDto
 from flaskr.service.user.repository import UserAggregate
+from markdown_flow import replace_variables_in_text
 
 check_text_with_llm_response = None
 LLMSettings = None
@@ -63,7 +70,7 @@ stream_ask_provider_response = None
 chat_llm = None
 
 
-def _is_valid_asks(asks):
+def _is_valid_asks(asks: object) -> bool:
     """Check if asks list has at least one complete student+teacher pair."""
     if not asks or not isinstance(asks, list):
         return False
@@ -72,7 +79,9 @@ def _is_valid_asks(asks):
     return has_student and has_teacher
 
 
-def _load_legacy_ask_context(anchor_element, ask_element, ask_max_history_len):
+def _load_legacy_ask_context(
+    anchor_element: object, ask_element: object, ask_max_history_len: object
+) -> list[dict[str, object]] | None:
     if anchor_element is None or ask_element is None:
         return None
 
@@ -102,7 +111,9 @@ def _load_legacy_ask_context(anchor_element, ask_element, ask_max_history_len):
     return messages
 
 
-def _load_ask_context(anchor_element, follow_up_elements, ask_max_history_len):
+def _load_ask_context(
+    anchor_element: object, follow_up_elements: object, ask_max_history_len: object
+) -> list[dict[str, object]] | None:
     """Load ask context from ask/answer sidecar elements first."""
     if anchor_element is None or not follow_up_elements:
         return None
@@ -149,13 +160,13 @@ def _load_ask_context(anchor_element, follow_up_elements, ask_max_history_len):
 
 
 def _create_ask_block(
-    app,
-    outline_item_info,
-    attend_id,
-    user_bid,
-    input_text,
-    last_position,
-):
+    app: object,
+    outline_item_info: object,
+    attend_id: object,
+    user_bid: object,
+    input_text: object,
+    last_position: object,
+) -> LearnGeneratedBlock:
     ask_block = init_generated_block(
         app,
         shifu_bid=outline_item_info.shifu_bid,
@@ -175,13 +186,13 @@ def _create_ask_block(
 
 
 def _create_answer_block(
-    app,
-    outline_item_info,
-    attend_id,
-    user_bid,
-    response_text,
-    last_position,
-):
+    app: object,
+    outline_item_info: object,
+    attend_id: object,
+    user_bid: object,
+    response_text: object,
+    last_position: object,
+) -> LearnGeneratedBlock:
     answer_block = init_generated_block(
         app,
         shifu_bid=outline_item_info.shifu_bid,
@@ -200,33 +211,37 @@ def _create_answer_block(
 
 
 def _run_guardrail(
-    app,
-    user_info,
-    ask_block,
-    input_text,
-    span,
-    outline_item_info,
-    last_position,
-    follow_up_model,
-    follow_up_info,
-    attend_id,
-    usage_context,
-    chapter_title,
-    ask_scene,
-):
+    app: object,
+    user_info: object,
+    ask_block: object,
+    input_text: object,
+    span: object,
+    outline_item_info: object,
+    last_position: object,
+    follow_up_model: object,
+    follow_up_info: object,
+    attend_id: object,
+    usage_context: object,
+    chapter_title: object,
+    ask_scene: object,
+) -> list[str]:
     check_text_func = globals().get("check_text_with_llm_response")
     llm_settings_cls = globals().get("LLMSettings")
     if check_text_func is None or llm_settings_cls is None:
+        # Lowercase aliases keep the lazily imported names consistent with the
+        # module-level lookups above.
         from flaskr.service.learn.check_text import (
             check_text_with_llm_response as check_text_func,
         )
-        from flaskr.service.learn.llmsetting import LLMSettings as llm_settings_cls
+        from flaskr.service.learn.llmsetting import (  # noqa: N813
+            LLMSettings as llm_settings_cls,
+        )
 
     res = check_text_func(
         app,
         user_info=user_info,
         log_script=ask_block,
-        input=input_text,
+        user_input=input_text,
         span=span,
         outline_item_bid=outline_item_info.bid,
         shifu_bid=outline_item_info.shifu_bid,
@@ -244,12 +259,12 @@ def _run_guardrail(
     chunks = []
     for i in res:
         if i is not None and i != "":
-            app.logger.info(f"check_text_with_llm_response: {i}")
+            app.logger.info("check_text_with_llm_response: %s", i)
             chunks.append(i)
     return chunks
 
 
-def _append_context_langfuse_output(context: Any, value: str) -> None:
+def _append_context_langfuse_output(context: object, value: str) -> None:
     append_output = getattr(context, "append_langfuse_output", None)
     if callable(append_output) and value:
         append_output(value)
@@ -257,10 +272,10 @@ def _append_context_langfuse_output(context: Any, value: str) -> None:
 
 def _finalize_ask_trace(
     *,
-    context: Any,
+    context: object,
     trace: LangfuseTraceHandle,
-    parent_observation: Any | None,
-    span: Any,
+    parent_observation: object | None,
+    span: object,
     trace_args: dict,
     response_text: str,
 ) -> None:
@@ -281,23 +296,23 @@ def _finalize_ask_trace(
 @extensible_generic
 def handle_input_ask(
     app: Flask,
-    context,
+    context: object,
     user_info: UserAggregate,
     attend_id: str,
-    input: str,
+    user_input: str,
     outline_item_info: ShifuOutlineItemDto,
     trace_args: dict,
     trace: LangfuseTraceHandle,
     is_preview: bool = False,
     last_position: int = -1,
     anchor_element_bid: str = "",
-    parent_observation: Any | None = None,
+    parent_observation: object | None = None,
+    runtime_profiles: dict | None = None,
 ) -> Generator[str, None, None]:
-    """
-    Main function to handle user Q&A input
-    Responsible for processing user questions in the shifu and returning AI tutor responses
-    """
+    """Handle user Q&A input.
 
+    Process user questions in the shifu and return AI tutor responses.
+    """
     # Get follow-up information (including Q&A prompts and model configuration)
     follow_up_info = get_follow_up_info_v2(
         app, outline_item_info.shifu_bid, outline_item_info.bid, attend_id, is_preview
@@ -312,7 +327,7 @@ def handle_input_ask(
         usage_scene=usage_scene,
     )
 
-    app.logger.info(f"follow_up_info:{follow_up_info.__json__()}")
+    app.logger.info("follow_up_info:%s", follow_up_info.__json__())
     chapter_title = outline_item_info.title
     ask_scene = "lesson_preview_ask" if is_preview else "lesson_ask"
 
@@ -324,36 +339,54 @@ def handle_input_ask(
 
     llm_messages = []  # Conversation messages for built-in LLM ask.
     provider_messages = []  # Conversation messages for external ask providers.
-    raw_input = input
+    raw_input = user_input
     normalized_trace_input = normalize_langfuse_input_value(raw_input)
     if normalized_trace_input and not trace_args.get("input"):
         trace_args["input"] = normalized_trace_input
-    input = raw_input.replace("{", "{{").replace(
+    escaped_input = raw_input.replace("{", "{{").replace(
         "}", "}}"
     )  # Escape braces to avoid formatting conflicts
     use_learner_language = getattr(context._shifu_info, "use_learner_language", 0)
-    prompt_kwargs: dict[str, Any] = {}
+    profile_overrides: dict[str, Any] = {}
     if use_learner_language:
         runtime_language = str(get_current_language() or "").strip()
         if runtime_language:
-            prompt_kwargs["profile_overrides"] = {
+            profile_overrides = {
                 "sys_user_language": runtime_language,
                 "language": runtime_language,
             }
+    effective_profiles = dict(runtime_profiles or {})
+    effective_profiles.update(profile_overrides)
     system_prompt_template = context.get_system_prompt(outline_item_info.bid)
-    base_system_prompt = (
-        None
-        if system_prompt_template is None or system_prompt_template == ""
-        else get_fmt_prompt(
+    if system_prompt_template is None or system_prompt_template == "":
+        base_system_prompt = None
+    else:
+        variable_course_prompt = build_course_prompt(
+            system_prompt_template,
+            variables=effective_profiles,
+            nickname_identifiers=(
+                getattr(user_info, "user_bid", ""),
+                getattr(user_info, "user_id", ""),
+                getattr(user_info, "identify", ""),
+            ),
+        )
+        variable_course_prompt = render_course_prompt_identity_variables(
+            variable_course_prompt,
+            effective_profiles,
+        )
+        markdownflow_prompt = replace_variables_in_text(
+            variable_course_prompt or "",
+            effective_profiles,
+        )
+        base_system_prompt = get_fmt_prompt(
             app,
             user_info.user_id,
             outline_item_info.shifu_bid,
-            system_prompt_template,
-            **prompt_kwargs,
+            markdownflow_prompt,
+            resolved_profiles=effective_profiles,
         )
-    )
     llm_system_prompt = follow_up_info.ask_prompt.replace(
-        "{shifu_system_message}", base_system_prompt if base_system_prompt else ""
+        "{shifu_system_message}", base_system_prompt or ""
     )
     # Append language instruction if use_learner_language is enabled
     if use_learner_language:
@@ -394,7 +427,7 @@ def handle_input_ask(
             .limit(ask_max_history_len)
             .all()
         )
-        history_scripts = history_scripts[::-1]
+        history_scripts.reverse()
         for script in history_scripts:
             if script.type in [BLOCK_TYPE_MDASK_VALUE, BLOCK_TYPE_MDINTERACTION_VALUE]:
                 history_message = {
@@ -430,7 +463,7 @@ def handle_input_ask(
         "User question:\n"
     )
     # Append language instruction to user input if use_learner_language is enabled
-    user_content = format_constraint + input
+    user_content = format_constraint + escaped_input
     if use_learner_language:
         output_language = get_markdownflow_output_language()
         user_content += f"\n\n(IMPORTANT: You MUST respond in {output_language}.)"
@@ -440,8 +473,8 @@ def handle_input_ask(
     }
     llm_messages.append(user_message)
     provider_messages.append(user_message)
-    app.logger.info(f"llm_messages: {llm_messages}")
-    app.logger.info(f"provider_messages: {provider_messages}")
+    app.logger.info("llm_messages: %s", llm_messages)
+    app.logger.info("provider_messages: %s", provider_messages)
 
     # Get model for follow-up Q&A
     follow_up_model = follow_up_info.ask_model
@@ -450,7 +483,12 @@ def handle_input_ask(
 
     # Create ask block
     ask_block = _create_ask_block(
-        app, outline_item_info, attend_id, user_info.user_id, input, last_position
+        app,
+        outline_item_info,
+        attend_id,
+        user_info.user_id,
+        escaped_input,
+        last_position,
     )
 
     # Create answer block early (empty placeholder) so all teacher-side
@@ -465,7 +503,7 @@ def handle_input_ask(
         outline_bid=outline_item_info.bid,
         generated_block_bid=answer_block.generated_block_bid,
         type=GeneratedType.ASK,
-        content=input,
+        content=escaped_input,
         anchor_element_bid=anchor_element_bid,
     )
 
@@ -473,7 +511,7 @@ def handle_input_ask(
     span_parent = parent_observation or trace
     span = span_parent.span(
         name=build_langfuse_span_name(chapter_title, ask_scene, "user_follow_up"),
-        input=input,
+        input=escaped_input,
     )
 
     # Run guardrail check
@@ -481,7 +519,7 @@ def handle_input_ask(
         app,
         user_info,
         ask_block,
-        input,
+        escaped_input,
         span,
         outline_item_info,
         last_position,
@@ -512,7 +550,7 @@ def handle_input_ask(
             outline_bid=outline_item_info.bid,
             generated_block_bid=answer_block.generated_block_bid,
             type=GeneratedType.INTERACTION,
-            content=input,
+            content=escaped_input,
         )
         answer_block.generated_content = guardrail_text
         _finalize_ask_trace(
@@ -558,13 +596,15 @@ def handle_input_ask(
         or ask_provider_error_cls is None
         or ask_provider_timeout_error_cls is None
     ):
-        from flaskr.service.learn.ask_provider_adapters import (
+        # Lowercase aliases keep the lazily imported names consistent with the
+        # module-level lookups above.
+        from flaskr.service.learn.ask_provider_adapters import (  # noqa: N813
             AskProviderError as ask_provider_error_cls,
         )
-        from flaskr.service.learn.ask_provider_adapters import (
+        from flaskr.service.learn.ask_provider_adapters import (  # noqa: N813
             AskProviderRuntime as ask_provider_runtime_cls,
         )
-        from flaskr.service.learn.ask_provider_adapters import (
+        from flaskr.service.learn.ask_provider_adapters import (  # noqa: N813
             AskProviderTimeoutError as ask_provider_timeout_error_cls,
         )
         from flaskr.service.learn.ask_provider_adapters import (
@@ -582,7 +622,9 @@ def handle_input_ask(
         apply_knowledge_to_messages,
     )
 
-    def _chat_llm_stream(stream_messages: list[dict[str, Any]]):
+    def _chat_llm_stream(
+        stream_messages: list[dict[str, Any]],
+    ) -> Generator[Any, None, None]:
         return chat_llm_func(
             app,
             user_info.user_id,

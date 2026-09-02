@@ -1,5 +1,4 @@
-"""
-Shifu draft functions
+"""Shifu draft functions.
 
 This module contains functions for managing shifu draft.
 
@@ -7,59 +6,60 @@ Author: yfge
 Date: 2025-08-07
 """
 
-from typing import Any, Optional
-import math
 import json
+import math
+from datetime import datetime
 from time import perf_counter
+from typing import Any
 
 from flask import Flask
-from ...dao import db
-from datetime import datetime
-from flaskr.util.datetime import now_utc
-from .dtos import ShifuDto, ShifuDetailDto
-from ...util import generate_id
-from .consts import (
-    STATUS_DRAFT,
-    STATUS_PUBLISHED,
-    SHIFU_NAME_MAX_LENGTH,
-    ASK_MODE_DEFAULT,
-    ASK_MODE_DISABLE,
-    ASK_MODE_ENABLE,
-)
-from ..check_risk.funcs import check_text_with_risk_control
-from ..common.models import raise_error, raise_error_with_args
-from .utils import (
-    get_shifu_res_url,
-    parse_shifu_res_bid,
-    get_shifu_res_url_dict,
-)
-from .models import DraftShifu, FavoriteScenario, ShifuUserArchive, PublishedShifu
-from .permissions import get_user_shifu_permissions
-from .course_activity import load_course_activity_map
-from .shifu_history_manager import save_shifu_history
-from ..common.dtos import PageNationDTO
-from ...service.config import get_config
-from .funcs import shifu_permission_verification
-from .shifu_outline_funcs import create_default_outlines_for_new_shifu
-from .demo_courses import is_builtin_demo_course
+from flaskr.dao import db
 from flaskr.i18n import _
-from ..tts.validation import validate_tts_settings_strict
+from flaskr.service.check_risk.funcs import check_text_with_risk_control
+from flaskr.service.common.dtos import PageNationDTO
+from flaskr.service.common.models import raise_error, raise_error_with_args
+from flaskr.service.config import get_config
 
 # Deprecation-window shim: the ask-provider constants moved to their canonical
 # home in flaskr/service/learn/ask_provider_adapters/consts.py. They are
 # re-exported here so existing importers keep working; import from the new
 # location in new code.
-from ..learn.ask_provider_adapters.consts import (  # noqa: F401
-    ASK_PROVIDER_LLM,
-    ASK_PROVIDER_DIFY,
+from flaskr.service.learn.ask_provider_adapters.consts import (  # noqa: F401
     ASK_PROVIDER_COZE,
     ASK_PROVIDER_COZE_WORKFLOW,
-    ASK_PROVIDER_VOLC_KNOWLEDGE,
+    ASK_PROVIDER_DIFY,
     ASK_PROVIDER_GET_BIJI_KNOWLEDGE,
+    ASK_PROVIDER_LLM,
     ASK_PROVIDER_MODE_PROVIDER_ONLY,
     ASK_PROVIDER_MODE_PROVIDER_THEN_LLM,
-    SUPPORTED_ASK_PROVIDERS,
+    ASK_PROVIDER_VOLC_KNOWLEDGE,
     SUPPORTED_ASK_PROVIDER_MODES,
+    SUPPORTED_ASK_PROVIDERS,
+)
+from flaskr.service.tts.validation import validate_tts_settings_strict
+from flaskr.util import generate_id
+from flaskr.util.datetime import NAIVE_DATETIME_MIN, now_utc
+
+from .consts import (
+    ASK_MODE_DEFAULT,
+    ASK_MODE_DISABLE,
+    ASK_MODE_ENABLE,
+    SHIFU_NAME_MAX_LENGTH,
+    STATUS_DRAFT,
+    STATUS_PUBLISHED,
+)
+from .course_activity import load_course_activity_map
+from .demo_courses import is_builtin_demo_course
+from .dtos import ShifuDetailDto, ShifuDto
+from .funcs import shifu_permission_verification
+from .models import DraftShifu, FavoriteScenario, PublishedShifu, ShifuUserArchive
+from .permissions import get_user_shifu_permissions
+from .shifu_history_manager import save_shifu_history
+from .shifu_outline_funcs import create_default_outlines_for_new_shifu
+from .utils import (
+    get_shifu_res_url,
+    get_shifu_res_url_dict,
+    parse_shifu_res_bid,
 )
 
 SUPPORTED_ASK_ENABLED_STATUSES = {
@@ -69,10 +69,8 @@ SUPPORTED_ASK_ENABLED_STATUSES = {
 }
 
 
-def normalize_ask_provider_config(raw_config: Any) -> dict[str, Any]:
-    """
-    Normalize ask_provider_config into a stable object shape.
-    """
+def normalize_ask_provider_config(raw_config: object) -> dict[str, object]:
+    """Normalize ask_provider_config into a stable object shape."""
     parsed: dict[str, Any] = {}
     if isinstance(raw_config, dict):
         parsed = raw_config
@@ -105,21 +103,20 @@ def normalize_ask_provider_config(raw_config: Any) -> dict[str, Any]:
     }
 
 
-def serialize_ask_provider_config(raw_config: Any) -> str:
-    """
-    Serialize ask_provider_config into canonical JSON for persistence.
-    """
+def serialize_ask_provider_config(raw_config: object) -> str:
+    """Serialize ask_provider_config into canonical JSON for persistence."""
     normalized = normalize_ask_provider_config(raw_config)
     return json.dumps(normalized, ensure_ascii=False, sort_keys=True)
 
 
 def get_latest_shifu_draft(shifu_id: str) -> DraftShifu:
-    """
-    Get the latest shifu draft
+    """Get the latest shifu draft.
+
     Args:
         shifu_id: Shifu ID
     Returns:
-        DraftShifu: Shifu draft
+        DraftShifu: Shifu draft.
+
     """
     shifu_draft: DraftShifu = (
         DraftShifu.query.filter(
@@ -136,19 +133,23 @@ def return_shifu_draft_dto(
     shifu_draft: DraftShifu,
     base_url: str,
     readonly: bool,
-    archived_override: Optional[bool] = None,
+    archived_override: bool | None = None,
     can_manage_archive: bool = False,
     can_publish: bool = False,
 ) -> ShifuDetailDto:
-    """
-    Return shifu draft dto
+    """Return shifu draft dto.
+
     Args:
         shifu_draft: Shifu draft
         base_url: Base URL to build shifu links
         readonly: Whether the current user has read-only permission
-        archived_override: Optional override for archived state (per-user)
+        archived_override: Optional override for archived state (per-user).
+        can_manage_archive: Whether the current user can manage archive state.
+        can_publish: Whether the current user can publish the shifu.
+
     Returns:
         ShifuDetailDto: Shifu detail dto
+
     """
     normalized_base = base_url.rstrip("/") if base_url else ""
     shifu_path = f"/c/{shifu_draft.shifu_bid}"
@@ -190,6 +191,9 @@ def return_shifu_draft_dto(
         else 1.0,
         tts_pitch=int(shifu_draft.tts_pitch) if shifu_draft.tts_pitch else 0,
         tts_emotion=shifu_draft.tts_emotion or "",
+        default_listen_mode_enabled=bool(
+            getattr(shifu_draft, "default_listen_mode_enabled", 0)
+        ),
         use_learner_language=bool(getattr(shifu_draft, "use_learner_language", 0)),
         ask_enabled_status=int(
             getattr(shifu_draft, "ask_enabled_status", ASK_MODE_DEFAULT)
@@ -201,10 +205,10 @@ def return_shifu_draft_dto(
     )
 
 
-def _get_user_archive_map(app, user_id: str, shifu_ids: list[str]) -> dict[str, bool]:
-    """
-    Load per-user archive states for the given shifu ids.
-    """
+def _get_user_archive_map(
+    app: object, user_id: str, shifu_ids: list[str]
+) -> dict[str, bool]:
+    """Load per-user archive states for the given shifu ids."""
     if not shifu_ids:
         return {}
     with app.app_context():
@@ -216,18 +220,18 @@ def _get_user_archive_map(app, user_id: str, shifu_ids: list[str]) -> dict[str, 
 
 
 def create_shifu_draft(
-    app,
+    app: object,
     user_id: str,
     shifu_name: str,
     shifu_description: str,
     shifu_image: str,
-    shifu_keywords: list[str] = None,
-    shifu_model: str = None,
-    shifu_temperature: float = None,
-    shifu_price: float = None,
-):
-    """
-    Create a shifu draft
+    shifu_keywords: list[str] | None = None,
+    shifu_model: str | None = None,
+    shifu_temperature: float | None = None,
+    shifu_price: float | None = None,
+) -> ShifuDto:
+    """Create a shifu draft.
+
     Args:
         app: Flask application instance
         user_id: User ID
@@ -239,7 +243,8 @@ def create_shifu_draft(
         shifu_temperature: Shifu temperature
         shifu_price: Shifu price
     Returns:
-        ShifuDto: Shifu dto
+        ShifuDto: Shifu dto.
+
     """
     with app.app_context():
         total_started_at = perf_counter()
@@ -339,17 +344,18 @@ def create_shifu_draft(
 
 
 def get_shifu_draft_info(
-    app, user_id: str, shifu_id: str, base_url: str
+    app: object, user_id: str, shifu_id: str, base_url: str
 ) -> ShifuDetailDto:
-    """
-    Get shifu draft info
+    """Get shifu draft info.
+
     Args:
         app: Flask application instance
         user_id: User ID
         shifu_id: Shifu ID
         base_url: Base URL to build shifu links
     Returns:
-        ShifuDetailDto: Shifu detail dto
+        ShifuDetailDto: Shifu detail dto.
+
     """
     with app.app_context():
         shifu_draft = get_latest_shifu_draft(shifu_id)
@@ -380,7 +386,7 @@ def get_shifu_draft_info(
 
 
 def save_shifu_draft_info(
-    app,
+    app: object,
     user_id: str,
     shifu_id: str,
     shifu_name: str,
@@ -399,15 +405,16 @@ def save_shifu_draft_info(
     tts_speed: float | None = None,
     tts_pitch: int | None = None,
     tts_emotion: str | None = None,
+    default_listen_mode_enabled: bool | None = None,
     use_learner_language: bool | None = None,
     ask_enabled_status: int | None = None,
     ask_model: str | None = None,
     ask_temperature: float | None = None,
     ask_system_prompt: str | None = None,
-    ask_provider_config: Any = None,
-):
-    """
-    Save shifu draft info
+    ask_provider_config: object = None,
+) -> ShifuDetailDto:
+    """Save shifu draft info.
+
     Args:
         app: Flask application instance
         user_id: User ID
@@ -428,6 +435,7 @@ def save_shifu_draft_info(
         tts_speed: TTS speech speed
         tts_pitch: TTS pitch adjustment
         tts_emotion: TTS emotion setting
+        default_listen_mode_enabled: Default learner mode to listen when TTS is enabled
         use_learner_language: Whether to use learner's language for AI output
         ask_enabled_status: Ask mode status
         ask_model: Ask model name
@@ -435,7 +443,8 @@ def save_shifu_draft_info(
         ask_system_prompt: Ask model system prompt
         ask_provider_config: Ask provider config object or JSON string
     Returns:
-        ShifuDetailDto: Shifu detail dto
+        ShifuDetailDto: Shifu detail dto.
+
     """
     with app.app_context():
         total_started_at = perf_counter()
@@ -509,6 +518,8 @@ def save_shifu_draft_info(
             tts_speed = validated.speed
             tts_pitch = validated.pitch
             tts_emotion = validated.emotion
+        if not merged_tts_enabled:
+            default_listen_mode_enabled = False
 
         # Validate input lengths (only when provided — PATCH callers may omit
         # name/description entirely, which must mean "leave unchanged").
@@ -576,7 +587,7 @@ def save_shifu_draft_info(
                     shifu_temperature if shifu_temperature is not None else 0.3
                 ),
                 price=shifu_price,
-                llm_system_prompt=shifu_system_prompt if shifu_system_prompt else "",
+                llm_system_prompt=shifu_system_prompt or "",
                 ask_enabled_status=ask_enabled_status,
                 ask_llm=ask_model,
                 ask_llm_temperature=ask_temperature,
@@ -589,6 +600,7 @@ def save_shifu_draft_info(
                 tts_speed=tts_speed if tts_speed is not None else 1.0,
                 tts_pitch=tts_pitch if tts_pitch is not None else 0,
                 tts_emotion=tts_emotion or "",
+                default_listen_mode_enabled=(1 if default_listen_mode_enabled else 0),
                 use_learner_language=1 if use_learner_language else 0,
                 deleted=0,
                 created_user_bid=user_id,
@@ -641,6 +653,10 @@ def save_shifu_draft_info(
                 new_shifu_draft.tts_pitch = tts_pitch
             if tts_emotion_provided:
                 new_shifu_draft.tts_emotion = tts_emotion or ""
+            if default_listen_mode_enabled is not None:
+                new_shifu_draft.default_listen_mode_enabled = (
+                    1 if default_listen_mode_enabled else 0
+                )
             if use_learner_language is not None:
                 new_shifu_draft.use_learner_language = 1 if use_learner_language else 0
             new_shifu_draft.updated_user_bid = user_id
@@ -698,16 +714,16 @@ def save_shifu_draft_info(
 
 
 def get_shifu_draft_list(
-    app,
+    app: object,
     user_id: str,
     page_index: int,
     page_size: int,
     is_favorite: bool,
     archived: bool = False,
     creator_only: bool = False,
-):
-    """
-    Get shifu draft list
+) -> PageNationDTO:
+    """Get shifu draft list.
+
     Args:
         app: Flask application instance
         user_id: User ID
@@ -717,7 +733,8 @@ def get_shifu_draft_list(
         archived: Filter archived (True) or active (False) shifus
         creator_only: Only include shifus created by the user
     Returns:
-        PageNationDTO: Page nation dto
+        PageNationDTO: Page nation dto.
+
     """
     with app.app_context():
         page_index = max(page_index, 1)
@@ -754,12 +771,12 @@ def get_shifu_draft_list(
 
         def resolve_updated_at(draft: DraftShifu) -> datetime:
             activity = activity_map.get(str(draft.shifu_bid or "").strip(), {})
-            return activity.get("updated_at") or draft.updated_at or datetime.min
+            return activity.get("updated_at") or draft.updated_at or NAIVE_DATETIME_MIN
 
         shifu_drafts.sort(
             key=lambda draft: (
                 resolve_updated_at(draft),
-                draft.updated_at or datetime.min,
+                draft.updated_at or NAIVE_DATETIME_MIN,
                 int(draft.id or 0),
             ),
             reverse=True,
@@ -872,12 +889,12 @@ def get_user_created_published_shifu_bids(app: Flask, user_id: str) -> list[str]
 
 
 def get_shifu_published_list(
-    app,
+    app: object,
     user_id: str,
     page_index: int,
     page_size: int,
     creator_only: bool = True,
-):
+) -> PageNationDTO:
     """Get published shifu list."""
     with app.app_context():
         page_index = max(page_index, 1)
@@ -923,8 +940,8 @@ def get_shifu_published_list(
                 shifu.description,
                 res_url_map.get(shifu.avatar_res_bid, ""),
                 STATUS_PUBLISHED,
-                False,
-                False,
+                is_favorite=False,
+                archived=False,
                 can_manage_archive=True,
                 can_manage_permissions=(shifu.created_user_bid == user_id),
                 created_user_bid=shifu.created_user_bid or "",
@@ -939,7 +956,9 @@ def get_shifu_published_list(
         return PageNationDTO(safe_page_index, page_size, total, shifu_dtos)
 
 
-def _set_shifu_archive_state(app, user_id: str, shifu_id: str, archived: bool):
+def _set_shifu_archive_state(
+    app: object, user_id: str, shifu_id: str, archived: bool
+) -> None:
     with app.app_context():
         shifu_draft = get_latest_shifu_draft(shifu_id)
         if not shifu_draft:
@@ -974,9 +993,11 @@ def _set_shifu_archive_state(app, user_id: str, shifu_id: str, archived: bool):
         db.session.commit()
 
 
-def archive_shifu(app, user_id: str, shifu_id: str):
-    _set_shifu_archive_state(app, user_id, shifu_id, True)
+def archive_shifu(app: object, user_id: str, shifu_id: str) -> None:
+    """Archive shifu."""
+    _set_shifu_archive_state(app, user_id, shifu_id, archived=True)
 
 
-def unarchive_shifu(app, user_id: str, shifu_id: str):
-    _set_shifu_archive_state(app, user_id, shifu_id, False)
+def unarchive_shifu(app: object, user_id: str, shifu_id: str) -> None:
+    """Restore shifu."""
+    _set_shifu_archive_state(app, user_id, shifu_id, archived=False)

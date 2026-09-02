@@ -1,90 +1,96 @@
-from flask import Flask, request, make_response, current_app
-from functools import wraps
+"""Expose user HTTP routes."""
 
-from flaskr.service.common.models import raise_param_error, raise_error
-from flaskr.service.user.consts import CREDENTIAL_STATE_VERIFIED
-from flaskr.service.user.password_utils import (
-    hash_password,
-    verify_password,
-    validate_password_strength,
-)
-from flaskr.service.user.models import AuthCredential
-from flaskr.service.common.phone_numbers import normalize_phone_identifier
-from flaskr.util.uuid import generate_id
+import contextlib
+from collections.abc import Callable
+from functools import wraps
+from typing import ParamSpec, TypeVar
+
+from flask import Flask, Response, current_app, make_response, request
+
+from flaskr.common.public_urls import resolve_request_origin
 from flaskr.common.shifu_context import with_shifu_context
-from flaskr.service.user.repository import (
-    find_credential,
-    get_password_hash,
-    set_password_hash,
-    load_user_aggregate_by_identifier,
-    list_credentials,
-    build_user_info_from_aggregate,
-    load_user_aggregate,
-)
+from flaskr.dao import db
+from flaskr.i18n import _translations, set_language
+from flaskr.service.common.dtos import OAuthStartDTO, UserToken
+from flaskr.service.common.models import raise_error, raise_param_error
+from flaskr.service.common.phone_numbers import normalize_phone_identifier
+from flaskr.service.feedback.funs import submit_feedback
+from flaskr.service.profile.api import merge_learner_profile_for_sign_in
 from flaskr.service.profile.funcs import (
     get_user_profile_labels,
     update_user_profile_with_lable,
 )
-from flaskr.service.profile.api import merge_learner_profile_for_sign_in
-from flaskr.service.profile.learner_profile import (
-    clear_learner_profile,
-    get_learner_profile,
-    replace_learner_profile,
-)
-from flaskr.service.profile.learner_profile_optimizer import optimize_learner_profile
-from flaskr.service.profile.learner_profile_optimizer_admission import (
-    learner_profile_optimization_admission,
-)
-from flaskr.service.profile.onboarding import (
-    complete_profile_onboarding,
-    get_profile_onboarding_status,
-)
-from ..service.user.common import validate_user, update_user_info
-from ..service.user.user import (
-    generate_temp_user,
-    update_user_open_id,
-    upload_user_avatar,
-)
-from ..service.user.utils import (
-    ensure_admin_creator_and_demo_permissions,
-    send_email_code,
-    send_sms_code,
+from flaskr.service.referral.service import extract_referral_post_auth_fields
+from flaskr.service.user.auth import get_provider
+from flaskr.service.user.auth.base import OAuthCallbackRequest, VerificationRequest
+from flaskr.service.user.auth.providers.google import (
+    resolve_state_return_origin,
 )
 from flaskr.service.user.captcha import (
     create_captcha_challenge,
     verify_captcha_code,
 )
-from flaskr.service.user.verification_codes import consume_verification_code
-from ..service.feedback.funs import submit_feedback
-from ..service.user.auth import get_provider
-from ..service.user.auth.base import OAuthCallbackRequest, VerificationRequest
-from ..service.user.post_auth import PostAuthContext, run_post_auth_extensions
-from ..service.user.onboarding import (
+from flaskr.service.user.common import update_user_info, validate_user
+from flaskr.service.user.consts import CREDENTIAL_STATE_VERIFIED
+from flaskr.service.user.device_auth import (
+    approve_device_authorization,
+    create_device_authorization,
+    deny_device_authorization,
+    get_device_authorization,
+    poll_device_authorization,
+)
+from flaskr.service.user.models import AuthCredential, UserInfo
+from flaskr.service.user.onboarding import (
     ONBOARDING_VERSION,
     build_onboarding_status,
     complete_onboarding_scene,
 )
-from ..service.referral.service import extract_referral_post_auth_fields
-from ..service.common.dtos import OAuthStartDTO, UserToken
-from .common import make_common_response, bypass_token_validation, by_pass_login_func
-from flaskr.dao import db
-from flaskr.i18n import _translations, set_language
+from flaskr.service.user.password_utils import (
+    hash_password,
+    validate_password_strength,
+    verify_password,
+)
+from flaskr.service.user.post_auth import PostAuthContext, run_post_auth_extensions
+from flaskr.service.user.repository import (
+    build_user_info_from_aggregate,
+    find_credential,
+    get_password_hash,
+    list_credentials,
+    load_user_aggregate,
+    load_user_aggregate_by_identifier,
+    set_password_hash,
+)
+from flaskr.service.user.sessions import (
+    list_user_sessions,
+    revoke_other_user_sessions,
+    revoke_user_session,
+)
+from flaskr.service.user.user import (
+    generate_temp_user,
+    update_user_open_id,
+    upload_user_avatar,
+)
+from flaskr.service.user.utils import (
+    ensure_admin_creator_and_demo_permissions,
+    send_email_code,
+    send_sms_code,
+)
+from flaskr.service.user.verification_codes import consume_verification_code
+from flaskr.util.uuid import generate_id
 
-_DEFAULT_SUPPORTED_RUNTIME_LANGUAGES = ("zh-CN", "en-US", "fr-FR")
+from .common import by_pass_login_func, bypass_token_validation, make_common_response
+from .profile import register_profile_routes
 
+P = ParamSpec("P")
+R = TypeVar("R")
 
-def _request_json_object(parameter_name: str) -> dict:
-    payload = request.get_json(silent=True)
-    if not isinstance(payload, dict):
-        raise_param_error(parameter_name)
-    return payload
-
-
-def _reject_unknown_fields(
-    payload: dict, *, allowed_fields: set[str], parameter_name: str
-) -> None:
-    if set(payload) - allowed_fields:
-        raise_param_error(parameter_name)
+_DEFAULT_SUPPORTED_RUNTIME_LANGUAGES = (
+    "zh-CN",
+    "en-US",
+    "fr-FR",
+    "ar-SA",
+    "th-TH",
+)
 
 
 def _normalize_runtime_language_code(language_code: str) -> str:
@@ -125,6 +131,31 @@ def _resolve_supported_runtime_language(raw_language: str | None) -> str | None:
     return normalized_language
 
 
+def _resolve_profile_onboarding_runtime_language(
+    user: UserInfo, raw_language: str | None
+) -> str:
+    """Resolve profile research to a bounded application-supported locale."""
+    supported_languages = (
+        tuple(_translations.keys()) or _DEFAULT_SUPPORTED_RUNTIME_LANGUAGES
+    )
+    if raw_language is not None:
+        resolved_language = _resolve_supported_runtime_language(raw_language)
+        if resolved_language in supported_languages:
+            return resolved_language
+        raise_param_error("language")
+
+    request_language = _extract_request_language({})
+    for candidate in (
+        request_language,
+        getattr(user, "language", None),
+        "en-US",
+    ):
+        resolved_language = _resolve_supported_runtime_language(candidate)
+        if resolved_language in supported_languages:
+            return resolved_language
+    return supported_languages[0]
+
+
 def _extract_request_language(payload: dict | None = None) -> str | None:
     raw_language = None
     if isinstance(payload, dict):
@@ -151,7 +182,7 @@ def _apply_request_language(payload: dict | None = None) -> None:
         set_language(language)
 
 
-def _resolve_runtime_language(user, payload: dict | None = None) -> str:
+def _resolve_runtime_language(user: object, payload: dict | None = None) -> str:
     """Prefer the current client language for this request without mutating the profile."""
     if payload is None and request.is_json:
         json_data = request.get_json(silent=True) or {}
@@ -176,16 +207,26 @@ def _extract_referral_post_auth_fields(payload: dict) -> dict[str, str]:
     )
 
 
-def optional_token_validation(f):
+def _extract_request_token() -> str | None:
+    """Read the request's token from every place a client may supply it."""
+    token = request.cookies.get("token", None)
+    if not token:
+        token = request.args.get("token", None)
+    if not token:
+        token = request.headers.get("Token", None)
+    if not token and request.method.upper() == "POST" and request.is_json:
+        payload = request.get_json(silent=True)
+        if isinstance(payload, dict):
+            token = payload.get("token", None)
+    return token
+
+
+def optional_token_validation(f: Callable[P, R]) -> Callable[P, R]:
+    """Allow a route to accept an optional authentication token."""
+
     @wraps(f)
-    def decorated_function(*args, **kwargs):
-        token = request.cookies.get("token", None)
-        if not token:
-            token = request.args.get("token", None)
-        if not token:
-            token = request.headers.get("Token", None)
-        if not token and request.method.upper() == "POST" and request.is_json:
-            token = request.get_json().get("token", None)
+    def decorated_function(*args: object, **kwargs: object) -> R:
+        token = _extract_request_token()
 
         if token:
             token = str(token)
@@ -197,22 +238,23 @@ def optional_token_validation(f):
     return decorated_function
 
 
-def _best_effort_password_login_user(app: Flask):
+def _best_effort_password_login_user(app: Flask) -> UserInfo | None:
     """Resolve the explicitly authenticated guest without blocking login."""
-
     token = request.headers.get("Token", None)
     if not token:
         return None
 
     try:
         return validate_user(app, str(token))
-    except Exception:  # noqa: BLE001 - stale login tokens must not block recovery
+    except Exception:  # stale login tokens must not block recovery
         return None
 
 
 def register_user_handler(app: Flask, path_prefix: str) -> Flask:
+    """Register the user routes on the Flask application."""
+
     @app.before_request
-    def before_request():
+    def before_request() -> None:
         if request.path.startswith("/internal/"):
             return
         if (
@@ -240,10 +282,16 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         set_language(_resolve_runtime_language(user))
         request.user = user
 
+    register_profile_routes(
+        app,
+        path_prefix,
+        resolve_onboarding_language=_resolve_profile_onboarding_runtime_language,
+    )
+
     @app.route(path_prefix + "/info", methods=["GET"])
-    def info():
-        """
-        get user information
+    def info() -> str:
+        """Get user information.
+
         ---
         tags:
             - user
@@ -266,9 +314,9 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         return make_common_response(request.user)
 
     @app.route(path_prefix + "/ensure_admin_creator", methods=["POST"])
-    def ensure_admin_creator():
-        """
-        Ensure admin creator permissions for the current user.
+    def ensure_admin_creator() -> str:
+        """Ensure admin creator permissions for the current user.
+
         ---
         tags:
             - user
@@ -298,7 +346,7 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         return make_common_response({"granted": True})
 
     @app.route(path_prefix + "/onboarding/status", methods=["GET"])
-    def onboarding_status():
+    def onboarding_status() -> str:
         return make_common_response(
             build_onboarding_status(
                 app,
@@ -308,7 +356,7 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         )
 
     @app.route(path_prefix + "/onboarding/complete", methods=["POST"])
-    def complete_onboarding():
+    def complete_onboarding() -> str:
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             payload = {}
@@ -324,9 +372,9 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         )
 
     @app.route(path_prefix + "/update_info", methods=["POST"])
-    def update_info():
-        """
-        update user information
+    def update_info() -> str:
+        """Update user information.
+
         ---
         tags:
             - user
@@ -377,108 +425,12 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
             update_user_info(app, request.user, name, email, mobile, language, avatar)
         )
 
-    @app.route(path_prefix + "/profile-onboarding", methods=["GET"])
-    def profile_onboarding_status_api():
-        """
-        Get platform-level profile onboarding state for current user.
-        ---
-        tags:
-            - user
-        responses:
-            200:
-                description: onboarding config and current user state
-        """
-        return make_common_response(
-            get_profile_onboarding_status(app, user_id=request.user.user_id)
-        )
-
-    @app.route(path_prefix + "/profile-onboarding/complete", methods=["POST"])
-    def complete_profile_onboarding_api():
-        """
-        Complete or skip platform-level profile onboarding.
-        ---
-        tags:
-            - user
-        responses:
-            200:
-                description: onboarding completion result
-        """
-        payload = request.get_json(silent=True) or {}
-        if not isinstance(payload, dict):
-            raise_param_error("profile_onboarding")
-        result = complete_profile_onboarding(
-            app,
-            user_id=request.user.user_id,
-            skipped=bool(payload.get("skipped", False)),
-            variables=payload.get("variables") or {},
-        )
-        db.session.commit()
-        return make_common_response(result)
-
-    @app.route(path_prefix + "/learner-profile", methods=["GET"])
-    def learner_profile_api():
-        """Return the current user's canonical learning profile."""
-        return make_common_response(get_learner_profile(user_id=request.user.user_id))
-
-    @app.route(path_prefix + "/learner-profile", methods=["PUT"])
-    def update_learner_profile_api():
-        """Replace the current user's canonical learning profile."""
-        payload = _request_json_object("learner_profile")
-        _reject_unknown_fields(
-            payload,
-            allowed_fields={"learner_profile", "nickname"},
-            parameter_name="learner_profile",
-        )
-        learner_profile = payload.get("learner_profile")
-        if not isinstance(learner_profile, str):
-            raise_param_error("learner_profile")
-        nickname = payload.get("nickname")
-        if "nickname" in payload and not isinstance(nickname, str):
-            raise_param_error("nickname")
-        return make_common_response(
-            replace_learner_profile(
-                app,
-                user_id=request.user.user_id,
-                learner_profile=learner_profile,
-                nickname=nickname,
-            )
-        )
-
-    @app.route(path_prefix + "/learner-profile", methods=["DELETE"])
-    def clear_learner_profile_api():
-        """Clear the profile while keeping profile-v2 handled."""
-        return make_common_response(clear_learner_profile(user_id=request.user.user_id))
-
-    @app.route(path_prefix + "/learner-profile/optimize", methods=["POST"])
-    def optimize_learner_profile_api():
-        """Return an LLM-optimized draft without saving profile state."""
-        payload = _request_json_object("learner_profile")
-        _reject_unknown_fields(
-            payload,
-            allowed_fields={"learner_profile"},
-            parameter_name="learner_profile",
-        )
-        learner_profile = payload.get("learner_profile")
-        if not isinstance(learner_profile, str):
-            raise_param_error("learner_profile")
-        with learner_profile_optimization_admission(
-            app,
-            user_id=request.user.user_id,
-        ):
-            result = optimize_learner_profile(
-                app,
-                user_id=request.user.user_id,
-                learner_profile=learner_profile,
-                output_language=getattr(request.user, "language", None),
-            )
-        return make_common_response(result)
-
     @app.route(path_prefix + "/require_tmp", methods=["POST"])
     @bypass_token_validation
     @with_shifu_context()
-    def require_tmp():
-        """
-        Temp login user
+    def require_tmp() -> Response:
+        """Temp login user.
+
         ---
         tags:
             - user
@@ -516,8 +468,6 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
                                     $ref: "#/components/schemas/UserToken"
             400:
                 description: parameter error
-
-
         """
         parsed_payload = request.get_json(silent=True)
         payload = parsed_payload if isinstance(parsed_payload, dict) else {}
@@ -537,14 +487,13 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         if not tmp_id:
             raise_param_error("temp_id")
         user_token = generate_temp_user(app, tmp_id, source, wx_code, language)
-        resp = make_response(make_common_response(user_token))
-        return resp
+        return make_response(make_common_response(user_token))
 
     @app.route(path_prefix + "/captcha", methods=["GET"])
     @bypass_token_validation
-    def captcha_api():
-        """
-        Create image captcha
+    def captcha_api() -> str:
+        """Create image captcha.
+
         ---
         tags:
            - user
@@ -554,9 +503,9 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
 
     @app.route(path_prefix + "/captcha/verify", methods=["POST"])
     @bypass_token_validation
-    def captcha_verify_api():
-        """
-        Verify image captcha and return one-time ticket
+    def captcha_verify_api() -> str:
+        """Verify image captcha and return one-time ticket.
+
         ---
         tags:
            - user
@@ -572,12 +521,16 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
             raise_param_error("captcha_code")
         return make_common_response(verify_captcha_code(app, captcha_id, captcha_code))
 
+    # Flasgger parses `parameters:` below as a YAML key. D405 would capitalize
+    # the key and remove the OpenAPI field, D406 would remove its colon, and
+    # D407 would insert a dashed underline; each fix breaks the published API
+    # specification.
     @app.route(path_prefix + "/send_sms_code", methods=["POST"])
     @bypass_token_validation
     @optional_token_validation
-    def send_sms_code_api():
-        """
-        Send SMS Captcha
+    def send_sms_code_api() -> str:
+        """Send SMS Captcha.
+
         ---
         tags:
            - user
@@ -621,7 +574,7 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
             400:
                 description: parameter error
 
-        """
+        """  # noqa: D405, D406, D407
         payload = request.get_json(silent=True)
         payload = payload if isinstance(payload, dict) else {}
         _apply_request_language(payload)
@@ -640,9 +593,9 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
     @app.route(path_prefix + "/console_send_sms_code", methods=["POST"])
     @bypass_token_validation
     @optional_token_validation
-    def console_send_sms_code_api():
-        """
-        Send SMS verification code for console clients without image captcha
+    def console_send_sms_code_api() -> str:
+        """Send SMS verification code for console clients without image captcha.
+
         ---
         tags:
            - user
@@ -664,9 +617,9 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
     @app.route(path_prefix + "/send_email_code", methods=["POST"])
     @bypass_token_validation
     @optional_token_validation
-    def send_email_code_api():
-        """
-        Send email verification code
+    def send_email_code_api() -> str:
+        """Send email verification code.
+
         ---
         tags:
            - user
@@ -678,10 +631,8 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
 
         # Best-effort language override for the email subject.
         if language:
-            try:
+            with contextlib.suppress(Exception):
                 set_language(language)
-            except Exception:
-                pass
 
         if "X-Forwarded-For" in request.headers:
             client_ip = request.headers["X-Forwarded-For"].split(",")[0].strip()
@@ -690,7 +641,7 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
 
         return make_common_response(send_email_code(app, email, client_ip, language))
 
-    def _handle_sms_login():
+    def _handle_sms_login() -> Response:
         with app.app_context():
             payload = request.get_json(silent=True)
             payload = payload if isinstance(payload, dict) else {}
@@ -744,25 +695,182 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
                     **referral_fields,
                 ),
             )
-            resp = make_response(make_common_response(auth_result.token))
-            return resp
+            return make_response(make_common_response(auth_result.token))
 
     @app.route(path_prefix + "/login_sms", methods=["POST"])
     @bypass_token_validation
     @optional_token_validation
-    def login_sms_api():
-        """
-        Login through SMS verification code for web clients
+    def login_sms_api() -> Response:
+        """Login through SMS verification code for web clients.
+
         ---
         tags:
            - user
         """
         return _handle_sms_login()
 
-    @app.route(path_prefix + "/get_profile", methods=["GET"])
-    def get_profile():
+    @app.route(path_prefix + "/device/authorize", methods=["POST"])
+    @bypass_token_validation
+    def device_authorize_api() -> str:
+        """Start a device authorization request for a command-line client.
+
+        ---
+        tags:
+           - user
         """
-        get user profile
+        payload = request.get_json(silent=True)
+        payload = payload if isinstance(payload, dict) else {}
+        _apply_request_language(payload)
+        return make_common_response(
+            create_device_authorization(
+                app,
+                device_name=payload.get("device_name"),
+                device_os=payload.get("device_os"),
+                client_version=payload.get("client_version"),
+                client_ip=_request_client_ip(),
+            )
+        )
+
+    @app.route(path_prefix + "/device/token", methods=["POST"])
+    @bypass_token_validation
+    def device_token_api() -> str:
+        """Poll a pending device authorization until it is resolved.
+
+        Returns the current status instead of an error while the request is
+        still pending, so the polling client does not have to treat the normal
+        waiting state as a failure.
+        ---
+        tags:
+           - user
+        """
+        payload = request.get_json(silent=True)
+        payload = payload if isinstance(payload, dict) else {}
+        _apply_request_language(payload)
+        return make_common_response(
+            poll_device_authorization(app, device_code=payload.get("device_code"))
+        )
+
+    @app.route(path_prefix + "/device/pending", methods=["GET"])
+    def device_pending_api() -> str:
+        """Describe the pending authorization behind a pairing code.
+
+        ---
+        tags:
+           - user
+        """
+        return make_common_response(
+            get_device_authorization(
+                app,
+                user_code=request.args.get("user_code"),
+                client_ip=_request_client_ip(),
+            )
+        )
+
+    @app.route(path_prefix + "/device/approve", methods=["POST"])
+    def device_approve_api() -> str:
+        """Approve a pending device authorization for the signed-in user.
+
+        ---
+        tags:
+           - user
+        """
+        payload = request.get_json(silent=True)
+        payload = payload if isinstance(payload, dict) else {}
+        _apply_request_language(payload)
+        return make_common_response(
+            approve_device_authorization(
+                app,
+                user_code=payload.get("user_code"),
+                user_id=request.user.user_id,
+                client_ip=_request_client_ip(),
+            )
+        )
+
+    @app.route(path_prefix + "/device/deny", methods=["POST"])
+    def device_deny_api() -> str:
+        """Reject a pending device authorization.
+
+        ---
+        tags:
+           - user
+        """
+        payload = request.get_json(silent=True)
+        payload = payload if isinstance(payload, dict) else {}
+        _apply_request_language(payload)
+        return make_common_response(
+            deny_device_authorization(
+                app,
+                user_code=payload.get("user_code"),
+                client_ip=_request_client_ip(),
+            )
+        )
+
+    def _current_request_token() -> str:
+        """Identify the session making this request, so it can be marked.
+
+        This must follow the same order as token validation, JSON body
+        included. Reading a different source would leave the marker empty for
+        a request authenticated that way, and ending every other session would
+        then end the caller's own session too.
+        """
+        return str(_extract_request_token() or "")
+
+    @app.route(path_prefix + "/sessions", methods=["GET"])
+    def list_sessions_api() -> str:
+        """List the sign-in sessions belonging to the current user.
+
+        ---
+        tags:
+           - user
+        """
+        return make_common_response(
+            list_user_sessions(
+                user_id=request.user.user_id,
+                current_token=_current_request_token(),
+            )
+        )
+
+    @app.route(path_prefix + "/sessions/revoke", methods=["POST"])
+    def revoke_session_api() -> str:
+        """End one of the current user's sign-in sessions.
+
+        ---
+        tags:
+           - user
+        """
+        payload = request.get_json(silent=True)
+        payload = payload if isinstance(payload, dict) else {}
+        _apply_request_language(payload)
+        return make_common_response(
+            revoke_user_session(
+                app,
+                user_id=request.user.user_id,
+                session_bid=payload.get("session_bid"),
+            )
+        )
+
+    @app.route(path_prefix + "/sessions/revoke-others", methods=["POST"])
+    def revoke_other_sessions_api() -> str:
+        """End every session except the one making this request.
+
+        ---
+        tags:
+           - user
+        """
+        payload = request.get_json(silent=True)
+        _apply_request_language(payload if isinstance(payload, dict) else {})
+        return make_common_response(
+            revoke_other_user_sessions(
+                app,
+                user_id=request.user.user_id,
+                current_token=_current_request_token(),
+            )
+        )
+
+    @app.route(path_prefix + "/get_profile", methods=["GET"])
+    def get_profile() -> str:
+        """Get user profile.
+
         ---
         tags:
             - user
@@ -788,7 +896,6 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
                                     description: return message
                                 data:
                                     $ref: "#/components/schemas/UserProfileLabelDTO"
-
         """
         course_id = request.args.get("course_id", None)
         if not course_id:
@@ -798,9 +905,9 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         )
 
     @app.route(path_prefix + "/update_profile", methods=["POST"])
-    def update_profile():
-        """
-        update user profile
+    def update_profile() -> str:
+        """Update user profile.
+
         ---
         tags:
             - user
@@ -860,9 +967,9 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
             return make_common_response(ret.__json__())
 
     @app.route(path_prefix + "/upload_avatar", methods=["POST"])
-    def upload_avatar():
-        """
-        Upload avatar
+    def upload_avatar() -> str:
+        """Upload avatar.
+
         ---
         tags:
             - user
@@ -898,9 +1005,9 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
 
     @app.route(path_prefix + "/update_openid", methods=["POST"])
     @with_shifu_context()
-    def update_wechat_openid():
-        """
-        Update Wechat OpenID
+    def update_wechat_openid() -> str:
+        """Update Wechat OpenID.
+
         ---
         summary: update wechat openid
         tags:
@@ -933,7 +1040,7 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
                                     description: openid
         """
         code = request.get_json().get("wxcode", None)
-        app.logger.info(f"update_wechat_openid code: {code}")
+        app.logger.info("update_wechat_openid code: %s", code)
         if not code:
             raise_param_error("wxcode")
         return make_common_response(
@@ -943,9 +1050,9 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
     @app.route(path_prefix + "/submit-feedback", methods=["POST"])
     @bypass_token_validation
     @optional_token_validation
-    def sumbit_feedback_api():
-        """
-        submit feedback
+    def sumbit_feedback_api() -> str:
+        """Submit feedback.
+
         ---
         tags:
             - user
@@ -992,7 +1099,8 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
 
     @app.route(path_prefix + "/oauth/google", methods=["GET"])
     @bypass_token_validation
-    def google_oauth_start():
+    @optional_token_validation
+    def google_oauth_start() -> str:
         provider = get_provider("google")
         metadata = {}
         redirect_uri = request.args.get("redirect_uri")
@@ -1004,6 +1112,16 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         ui_language = request.args.get("language")
         if ui_language:
             metadata["language"] = ui_language
+        # Every header here is attacker-controllable — the edge nginx passes
+        # inbound X-Forwarded-* through, and Origin is forwarded unchanged — so
+        # the origin alone cannot decide where the authorization code is sent.
+        # It is paired with the session that started the flow, and the callback
+        # refuses to hand the code back unless the same session presents it.
+        metadata["origin"] = resolve_request_origin()
+        initiator = getattr(request, "user", None)
+        metadata["initiator_user_id"] = str(
+            getattr(initiator, "user_id", "") or ""
+        ).strip()
         result = provider.begin_oauth(app, metadata)
         dto = OAuthStartDTO(
             authorization_url=result["authorization_url"],
@@ -1011,10 +1129,26 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         )
         return make_common_response(dto)
 
+    @app.route(path_prefix + "/oauth/google/callback-origin", methods=["GET"])
+    @bypass_token_validation
+    def google_oauth_callback_origin() -> str:
+        """Resolve which domain a pending Google login should return to.
+
+        Every domain shares one Google callback, so the page that receives it
+        asks here whether the code belongs to a different domain and should be
+        forwarded there. Returns an empty origin when the login started on this
+        domain or when the recorded origin is no longer allowed.
+        ---
+        tags:
+            - user
+        """
+        origin = resolve_state_return_origin(app, request.args.get("state"))
+        return make_common_response({"origin": origin})
+
     @app.route(path_prefix + "/oauth/google/callback", methods=["GET"])
     @bypass_token_validation
     @optional_token_validation
-    def google_oauth_callback():
+    def google_oauth_callback() -> str:
         provider = get_provider("google")
         current_user = getattr(request, "user", None)
         current_user_id = None
@@ -1053,9 +1187,9 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
 
     @app.route(path_prefix + "/login_password", methods=["POST"])
     @bypass_token_validation
-    def login_password():
-        """
-        Login with password
+    def login_password() -> str:
+        """Login with password.
+
         ---
         tags:
             - user
@@ -1064,17 +1198,15 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         password = request.get_json().get("password", None)
         language = request.get_json().get("language", None)
         if language:
-            try:
+            with contextlib.suppress(Exception):
                 set_language(language)
-            except Exception:
-                pass
         if not identifier:
             raise_param_error("identifier")
         if not password:
             raise_param_error("password")
         provider = get_provider("password")
         vr = VerificationRequest(identifier=identifier, code=password)
-        # TODO: Add rate-limiting and failed login attempt tracking
+        # TODO(geyunfei): Add rate-limiting and failed login attempt tracking
         # (record identifier, request.remote_addr, timestamp on failure)
         auth_result = provider.verify(app, vr)
         current_user = _best_effort_password_login_user(app)
@@ -1092,7 +1224,7 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
             refreshed_user = build_user_info_from_aggregate(refreshed)
             auth_result.user = refreshed_user
             auth_result.token = UserToken(
-                userInfo=refreshed_user,
+                user_info=refreshed_user,
                 token=auth_result.token.token,
             )
         db.session.commit()
@@ -1112,14 +1244,13 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         return make_common_response(auth_result.token)
 
     @app.route(path_prefix + "/set_password", methods=["POST"])
-    def set_password():
-        """
-        Set password for logged-in user (first time only)
+    def set_password() -> str:
+        """Set password for logged-in user (first time only).
+
         ---
         tags:
             - user
         """
-
         identifier = request.get_json().get("identifier", None)
         code = request.get_json().get("code", None)
         new_password = request.get_json().get("new_password", None)
@@ -1196,9 +1327,9 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         return make_common_response({"success": True})
 
     @app.route(path_prefix + "/change_password", methods=["POST"])
-    def change_password():
-        """
-        Change password for logged-in user (requires old password)
+    def change_password() -> str:
+        """Change password for logged-in user (requires old password).
+
         ---
         tags:
             - user
@@ -1231,14 +1362,13 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
 
     @app.route(path_prefix + "/reset_password", methods=["POST"])
     @bypass_token_validation
-    def reset_password():
-        """
-        Reset password via verification code
+    def reset_password() -> str:
+        """Reset password via verification code.
+
         ---
         tags:
             - user
         """
-
         identifier = request.get_json().get("identifier", None)
         code = request.get_json().get("code", None)
         new_password = request.get_json().get("new_password", None)
@@ -1301,7 +1431,7 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
     # health check
     @app.route("/health", methods=["GET"])
     @bypass_token_validation
-    def health():
+    def health() -> str:
         app.logger.info("health")
         return make_common_response("ok")
 

@@ -1,11 +1,10 @@
+"""Resolve and complete user onboarding scenes."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any
-
-from flask import Flask
-from sqlalchemy.exc import IntegrityError
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from flaskr.dao import db
 from flaskr.service.common.models import raise_error, raise_param_error
@@ -13,8 +12,11 @@ from flaskr.service.config.funcs import get_config as get_dynamic_config
 from flaskr.service.shifu.dtos import resolve_demo_course_for_language
 from flaskr.service.user.models import UserInfo as UserEntity
 from flaskr.service.user.models import UserOnboardingState
-from flaskr.util.datetime import now_utc
+from flaskr.util.datetime import now_utc, parse_naive_utc
+from sqlalchemy.exc import IntegrityError
 
+if TYPE_CHECKING:
+    from flask import Flask
 
 ONBOARDING_VERSION = "v1"
 SCENE_ADMIN_HOME = "admin_home_onboarding"
@@ -41,6 +43,8 @@ USER_SEGMENT_INELIGIBLE = "ineligible"
 
 @dataclass(frozen=True)
 class OnboardingSceneStatus:
+    """Track completion state for one onboarding scene."""
+
     completed: bool
     completed_at: str | None
     eligible: bool
@@ -52,10 +56,10 @@ def _serialize_datetime(value: datetime | None) -> str | None:
         return None
     if value.tzinfo is None:
         return f"{value.isoformat()}Z"
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
-def _parse_rollout_threshold(value: Any) -> datetime | None:
+def _parse_rollout_threshold(value: object) -> datetime | None:
     text = str(value or "").strip()
     if not text:
         return None
@@ -67,15 +71,13 @@ def _parse_rollout_threshold(value: Any) -> datetime | None:
         try:
             parsed = datetime.fromisoformat(candidate)
             return (
-                parsed.astimezone(timezone.utc).replace(tzinfo=None)
-                if parsed.tzinfo
-                else parsed
+                parsed.astimezone(UTC).replace(tzinfo=None) if parsed.tzinfo else parsed
             )
         except ValueError:
             continue
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
         try:
-            return datetime.strptime(text, fmt)
+            return parse_naive_utc(text, fmt)
         except ValueError:
             continue
     return None
@@ -112,7 +114,7 @@ def _resolve_user_segment(user: UserEntity | None) -> str:
     if eligible_at is None:
         return USER_SEGMENT_INELIGIBLE
     if getattr(eligible_at, "tzinfo", None) is not None:
-        eligible_at = eligible_at.astimezone(timezone.utc).replace(tzinfo=None)
+        eligible_at = eligible_at.astimezone(UTC).replace(tzinfo=None)
 
     existing_rollout_threshold = _parse_rollout_threshold(
         get_dynamic_config(EXISTING_CREATOR_ROLLOUT_CONFIG_KEY, "")
@@ -160,7 +162,8 @@ def _build_scene_status(
 
 def build_onboarding_status(
     app: Flask, user_bid: str, language: str | None
-) -> dict[str, Any]:
+) -> dict[str, object]:
+    """Build onboarding status."""
     with app.app_context():
         user = _load_user_entity(user_bid)
         user_segment = _resolve_user_segment(user)
@@ -206,7 +209,8 @@ def complete_onboarding_scene(
     version: str,
     trigger_source: str,
     status: str = STATUS_COMPLETED,
-) -> dict[str, Any]:
+) -> dict[str, object]:
+    """Complete onboarding scene."""
     normalized_user_bid = str(user_bid or "").strip()
     normalized_scene_key = str(scene_key or "").strip()
     normalized_version = str(version or "").strip()

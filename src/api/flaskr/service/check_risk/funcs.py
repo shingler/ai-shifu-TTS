@@ -1,23 +1,27 @@
+"""Implement business operations for risk control."""
+
 from flask import Flask
-from ...dao import db
-from .models import RiskControlResult
-from flaskr.api.check import check_text, CHECK_RESULT_REJECT, CHECK_RESULT_PASS
+from flaskr.api.check import CHECK_RESULT_PASS, CHECK_RESULT_REJECT, check_text
+from flaskr.api.check.dto import CheckResultDTO
+from flaskr.dao import db
 from flaskr.service.common.models import raise_error
 from flaskr.util.datetime import now_utc
-from flaskr.api.check.dto import CheckResultDTO
+
+from .models import RiskControlResult
 
 
 def add_risk_control_result(
     app: Flask,
-    chat_id,
-    user_id,
-    text,
-    check_vendor,
-    check_result,
-    check_resp,
-    is_pass,
-    check_strategy,
-):
+    chat_id: object,
+    user_id: object,
+    text: object,
+    check_vendor: object,
+    check_result: object,
+    check_resp: object,
+    is_pass: object,
+    check_strategy: object,
+) -> int:
+    """Add risk control result."""
     with app.app_context():
         risk_control_result = RiskControlResult(
             chat_id=chat_id,
@@ -37,6 +41,7 @@ def add_risk_control_result(
 def check_text_with_risk_control(
     app: Flask, check_id: str, user_id: str, text: str | None
 ) -> CheckResultDTO:
+    """Check text with risk control."""
     if text is None or text == "":
         return CheckResultDTO(
             check_result=CHECK_RESULT_PASS,
@@ -62,3 +67,4 @@ def check_text_with_risk_control(
     )
     if res.check_result == CHECK_RESULT_REJECT:
         raise_error("server.check.checkRiskControlReject")
+    return None

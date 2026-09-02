@@ -1,5 +1,4 @@
-"""
-Shifu history manager
+"""Shifu history manager.
 
 This module contains functions for managing shifu history.
 
@@ -36,49 +35,46 @@ format:
 
 """
 
-from flask import Flask
-from typing import Generic, TypeVar, List, Optional
-from pydantic import BaseModel
-from .models import DraftOutlineItem, LogDraftStruct
-from flaskr.dao import db
-from flaskr.util import generate_id
-from flaskr.util.datetime import to_utc_iso
 import queue
-from flaskr.util.datetime import now_utc
 import re
+from collections.abc import Iterator
+from typing import Generic, TypeVar
+
+from flask import Flask
+from flaskr.dao import db
 from flaskr.service.user.models import UserInfo
+from flaskr.util import generate_id
+from flaskr.util.datetime import now_utc, to_utc_iso
+from pydantic import BaseModel
+
+from .models import DraftOutlineItem, LogDraftStruct
 
 T = TypeVar("T", bound="HistoryItem")
 OUTLINE_CONTENT_LOOKBACK_LIMIT = 1000
 
 
 class HistoryItem(BaseModel, Generic[T]):
-    """
-    History item
-    will be saved to database as json
-    """
+    """History item will be saved to database as json."""
 
     bid: str
     id: int
     type: str
-    children: List["HistoryItem"] = []
+    children: list["HistoryItem"] = []
     child_count: int = 0
 
-    def to_json(self):
-        """
-        to json
-        """
+    def to_json(self) -> str:
+        """To json."""
         return self.model_dump_json()
 
     @classmethod
-    def from_json(cls, json: str):
-        """
-        from json to history item
-        """
+    def from_json(cls, json: str) -> "HistoryItem":
+        """From json to history item."""
         return cls.model_validate_json(json)
 
 
-def _get_latest_draft_log(shifu_bid: str, for_update: bool = False):
+def _get_latest_draft_log(
+    shifu_bid: str, for_update: bool = False
+) -> LogDraftStruct | None:
     query = LogDraftStruct.query.filter_by(
         shifu_bid=shifu_bid,
         deleted=0,
@@ -94,7 +90,7 @@ def iter_outline_item_versions_desc(
     *,
     batch_size: int = 200,
     max_rows: int | None = None,
-):
+) -> Iterator[DraftOutlineItem]:
     """Yield draft outline versions newest-first in buffered keyset batches.
 
     Replaces yield_per/stream_results for these scans: a server-side cursor
@@ -131,7 +127,9 @@ def iter_outline_item_versions_desc(
         last_id = int(batch[-1].id)
 
 
-def _get_latest_outline_content_log(shifu_bid: str, outline_bid: str):
+def _get_latest_outline_content_log(
+    shifu_bid: str, outline_bid: str
+) -> DraftOutlineItem | None:
     latest_version = (
         DraftOutlineItem.query.filter(
             DraftOutlineItem.shifu_bid == shifu_bid,
@@ -164,7 +162,7 @@ def _get_latest_outline_content_log(shifu_bid: str, outline_bid: str):
     return latest_content_revision
 
 
-def _mask_phone_identifier(identifier: Optional[str]) -> str:
+def _mask_phone_identifier(identifier: str | None) -> str:
     if not identifier:
         return ""
     digits = re.sub(r"\D", "", identifier)
@@ -175,7 +173,7 @@ def _mask_phone_identifier(identifier: Optional[str]) -> str:
     return digits or ""
 
 
-def _mask_email_identifier(identifier: Optional[str]) -> str:
+def _mask_email_identifier(identifier: str | None) -> str:
     if not identifier:
         return ""
     local, _, domain = identifier.partition("@")
@@ -183,14 +181,11 @@ def _mask_email_identifier(identifier: Optional[str]) -> str:
         return _mask_phone_identifier(identifier)
     if not local:
         return f"***@{domain}"
-    if len(local) <= 1:
-        masked_local = f"{local[:1]}***"
-    else:
-        masked_local = f"{local[:2]}***"
+    masked_local = f"{local[:1]}***" if len(local) <= 1 else f"{local[:2]}***"
     return f"{masked_local}@{domain}"
 
 
-def _mask_contact_identifier(identifier: Optional[str]) -> str:
+def _mask_contact_identifier(identifier: str | None) -> str:
     if not identifier:
         return ""
     if "@" in identifier:
@@ -198,7 +193,7 @@ def _mask_contact_identifier(identifier: Optional[str]) -> str:
     return _mask_phone_identifier(identifier)
 
 
-def _build_draft_meta(latest) -> dict:
+def _build_draft_meta(latest: object) -> dict:
     if not latest:
         return {
             "revision": 0,
@@ -233,6 +228,7 @@ def _build_draft_meta(latest) -> dict:
 def get_shifu_draft_revision(
     app: Flask, shifu_bid: str, outline_bid: str | None = None
 ) -> int:
+    """Return shifu draft revision."""
     with app.app_context():
         if outline_bid:
             latest = _get_latest_outline_content_log(shifu_bid, outline_bid)
@@ -241,7 +237,7 @@ def get_shifu_draft_revision(
         return int(latest.id) if latest else 0
 
 
-def mask_contact_identifier(identifier: Optional[str]) -> str:
+def mask_contact_identifier(identifier: str | None) -> str:
     """Public wrapper for contact identifier masking."""
     return _mask_contact_identifier(identifier)
 
@@ -251,6 +247,7 @@ def get_shifu_draft_meta(
     shifu_bid: str,
     outline_bid: str | None = None,
 ) -> dict:
+    """Return shifu draft meta."""
     with app.app_context():
         if outline_bid:
             latest = _get_latest_outline_content_log(shifu_bid, outline_bid)
@@ -259,14 +256,15 @@ def get_shifu_draft_meta(
         return _build_draft_meta(latest)
 
 
-def get_shifu_history(app, shifu_bid: str) -> HistoryItem:
-    """
-    Get shifu history
+def get_shifu_history(app: object, shifu_bid: str) -> HistoryItem:
+    """Get shifu history.
+
     Args:
         app: Flask application instance
         shifu_bid: Shifu bid
     Returns:
-        HistoryItem: History item
+        HistoryItem: History item.
+
     """
     with app.app_context():
         shifu_history = (
@@ -277,23 +275,23 @@ def get_shifu_history(app, shifu_bid: str) -> HistoryItem:
             .first()
         )
         if not shifu_history:
-            init_history = HistoryItem(bid=shifu_bid, id=0, type="shifu", children=[])
-            return init_history
+            return HistoryItem(bid=shifu_bid, id=0, type="shifu", children=[])
         return HistoryItem.from_json(shifu_history.struct)
 
 
 def __save_shifu_history(
     app: Flask, user_id: str, shifu_bid: str, history: HistoryItem
-):
-    """
-    Save shifu history
+) -> LogDraftStruct:
+    """Save shifu history.
+
     Args:
         app: Flask application instance
         user_id: User ID
         shifu_bid: Shifu bid
         history: History item
     Returns:
-        None
+        None.
+
     """
     now = now_utc()
     shifu_history = LogDraftStruct(
@@ -310,19 +308,20 @@ def __save_shifu_history(
     return shifu_history
 
 
-def save_shifu_history(app: Flask, user_id: str, shifu_bid: str, id: int):
-    """
-    Save shifu history
+def save_shifu_history(app: Flask, user_id: str, shifu_bid: str, row_id: int) -> None:
+    """Save shifu history.
+
     Args:
         app: Flask application instance
         user_id: User ID
         shifu_bid: Shifu bid
-        id: Shifu id
+        row_id: Shifu id
     Returns:
-        None
+        None.
+
     """
     history = get_shifu_history(app, shifu_bid)
-    history.id = id
+    history.id = row_id
     __save_shifu_history(app, user_id, shifu_bid, history)
 
 
@@ -331,32 +330,32 @@ def __save_new_item_history(
     user_id: str,
     shifu_bid: str,
     item_bid: str,
-    id: int,
+    row_id: int,
     parent_bid: str,
-    type: str,
+    item_type: str,
     index: int = 0,
-):
-    """
-    Save new item history
-    internal function
+) -> None:
+    """Save new item history internal function.
+
     Args:
         app: Flask application instance
         user_id: User ID
         shifu_bid: Shifu bid
         item_bid: Item bid
-        id: Item id
+        row_id: Item id
         parent_bid: Parent bid
-        type: Item type
+        item_type: Item type
         index: Item index
     Returns:
-        None
+        None.
+
     """
     history = get_shifu_history(app, shifu_bid)
     if not parent_bid or parent_bid == "":
         if not history.children:
             history.children = []
         history.children.insert(
-            index, HistoryItem(bid=item_bid, id=id, type=type, children=[])
+            index, HistoryItem(bid=item_bid, id=row_id, type=item_type, children=[])
         )
         __save_shifu_history(app, user_id, shifu_bid, history)
         return
@@ -368,7 +367,7 @@ def __save_new_item_history(
         item = q.get()
         if item.bid == parent_bid:
             item.children.append(
-                HistoryItem(bid=item_bid, id=id, type=type, children=[])
+                HistoryItem(bid=item_bid, id=row_id, type=item_type, children=[])
             )
             parent_found = True
             break
@@ -378,30 +377,31 @@ def __save_new_item_history(
     if not parent_found:
         app.logger.error(
             "Failed to append %s history node because parent is missing | shifu_bid=%s item_bid=%s item_id=%s parent_bid=%s",
-            type,
+            item_type,
             shifu_bid,
             item_bid,
-            id,
+            row_id,
             parent_bid,
         )
-        raise RuntimeError(
-            f"Parent history node not found for {type} {item_bid} under {parent_bid}"
-        )
+        message = f"Parent history node not found for {item_type} {item_bid} under {parent_bid}"
+        raise RuntimeError(message)
 
     __save_shifu_history(app, user_id, shifu_bid, history)
 
 
-def __delete_item_history(app: Flask, user_id: str, shifu_bid: str, item_bid: str):
-    """
-    Delete item history
-    internal function
+def __delete_item_history(
+    app: Flask, user_id: str, shifu_bid: str, item_bid: str
+) -> None:
+    """Delete item history internal function.
+
     Args:
         app: Flask application instance
         user_id: User ID
         shifu_bid: Shifu bid
         item_bid: Item bid
     Returns:
-        None
+        None.
+
     """
     history = get_shifu_history(app, shifu_bid)
     q = queue.Queue()
@@ -423,23 +423,24 @@ def save_new_outline_history(
     user_id: str,
     shifu_bid: str,
     outline_bid: str,
-    id: int,
+    row_id: int,
     parent_bid: str,
     index: int = 0,
-):
-    """
-    Save new outline history
+) -> None:
+    """Save new outline history.
+
     Args:
         app: Flask application instance
         user_id: User ID
         shifu_bid: Shifu bid
         outline_bid: Outline bid
-        id: Outline id
+        row_id: Outline id
         parent_bid: Parent bid
-        index: Outline index
+        index: Outline index.
+
     """
     __save_new_item_history(
-        app, user_id, shifu_bid, outline_bid, id, parent_bid, "outline", index
+        app, user_id, shifu_bid, outline_bid, row_id, parent_bid, "outline", index
     )
 
 
@@ -448,19 +449,22 @@ def save_outline_history(
     user_id: str,
     shifu_bid: str,
     outline_bid: str,
-    id: int,
+    row_id: int,
     child_count: int = 0,
-):
-    """
-    Save outline history
+) -> int:
+    """Save outline history.
+
     Args:
         app: Flask application instance
         user_id: User ID
         shifu_bid: Shifu bid
         outline_bid: Outline bid
-        id: Outline id
+        row_id: Outline id
+        child_count: Optional child count to store on the history item.
+
     Returns:
-        None
+        None.
+
     """
     history = get_shifu_history(app, shifu_bid)
     q = queue.Queue()
@@ -468,7 +472,7 @@ def save_outline_history(
     while not q.empty():
         item = q.get()
         if item.bid == outline_bid:
-            item.id = id
+            item.id = row_id
             if child_count > 0:
                 item.child_count = child_count
             break
@@ -478,16 +482,19 @@ def save_outline_history(
     return int(log.id) if log else 0
 
 
-def delete_outline_history(app: Flask, user_id: str, shifu_bid: str, outline_bid: str):
-    """
-    Delete outline history
+def delete_outline_history(
+    app: Flask, user_id: str, shifu_bid: str, outline_bid: str
+) -> None:
+    """Delete outline history.
+
     Args:
         app: Flask application instance
         user_id: User ID
         shifu_bid: Shifu bid
         outline_bid: Outline bid
     Returns:
-        None
+        None.
+
     """
     __delete_item_history(app, user_id, shifu_bid, outline_bid)
 
@@ -496,11 +503,11 @@ def save_outline_tree_history(
     app: Flask,
     user_id: str,
     shifu_bid: str,
-    outline_tree: List[HistoryItem],
-    shifu_id: int = None,
-):
-    """
-    Save outline tree history
+    outline_tree: list[HistoryItem],
+    shifu_id: int | None = None,
+) -> None:
+    """Save outline tree history.
+
     Args:
         app: Flask application instance
         user_id: User ID
@@ -508,7 +515,8 @@ def save_outline_tree_history(
         outline_tree: Outline tree
         shifu_id: Optional shifu database id to ensure root node id is correct
     Returns:
-        None
+        None.
+
     """
     history = get_shifu_history(app, shifu_bid)
     if shifu_id is not None:

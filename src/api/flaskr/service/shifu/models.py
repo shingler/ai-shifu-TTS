@@ -1,5 +1,4 @@
-"""
-Shifu models
+"""Shifu models.
 
 This module contains models for shifu.
 
@@ -7,35 +6,36 @@ Author: yfge
 Date: 2025-08-07
 """
 
+from flaskr.dao import db
+from flaskr.util.compare import compare_decimal
+from flaskr.util.datetime import now_utc
 from sqlalchemy import (
-    Column,
-    String,
-    Integer,
-    TIMESTAMP,
     DECIMAL,
-    Text,
-    SmallInteger,
+    TIMESTAMP,
+    Column,
     DateTime,
-    UniqueConstraint,
     Index,
+    Integer,
+    SmallInteger,
+    String,
+    Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.mysql import BIGINT, LONGTEXT
-from flaskr.util.datetime import now_utc
-from ...dao import db
+
 from .consts import ASK_MODE_DEFAULT
-from flaskr.util.compare import compare_decimal
 
 
 class ResourceType:
+    """Enumerate resource categories stored with course assets."""
+
     CHAPTER = 9001
     SECTION = 9002
     BLOCK = 9003
 
 
 class FavoriteScenario(db.Model):
-    """
-    Favorite scenario
-    """
+    """Favorite scenario."""
 
     __tablename__ = "scenario_favorite"
     id = Column(BIGINT, primary_key=True, autoincrement=True)
@@ -57,9 +57,7 @@ class FavoriteScenario(db.Model):
 
 
 class ScenarioResource(db.Model):
-    """
-    Scenario resource
-    """
+    """Scenario resource."""
 
     __tablename__ = "scenario_resource"
     id = Column(BIGINT, primary_key=True, autoincrement=True)
@@ -83,9 +81,7 @@ class ScenarioResource(db.Model):
 
 
 class AiCourseAuth(db.Model):
-    """
-    Ai course auth
-    """
+    """Ai course auth."""
 
     __tablename__ = "ai_course_auth"
     id = Column(BIGINT, primary_key=True, autoincrement=True)
@@ -115,9 +111,7 @@ class AiCourseAuth(db.Model):
 
 # per-user archive status for a shifu
 class ShifuUserArchive(db.Model):
-    """
-    Per-user archive state for a shifu
-    """
+    """Per-user archive state for a shifu."""
 
     __tablename__ = "shifu_user_archives"
     __table_args__ = (
@@ -168,9 +162,7 @@ class ShifuUserArchive(db.Model):
 
 # draft shifu's model
 class DraftShifu(db.Model):
-    """
-    Shifu draft shifu
-    """
+    """Shifu draft shifu."""
 
     __tablename__ = "shifu_draft_shifus"
     id = Column(BIGINT, primary_key=True, autoincrement=True)
@@ -282,6 +274,12 @@ class DraftShifu(db.Model):
         default="",
         comment="TTS emotion setting",
     )
+    default_listen_mode_enabled = Column(
+        SmallInteger,
+        nullable=False,
+        default=0,
+        comment="Default learner mode to listen when TTS is enabled",
+    )
 
     # Language Output Configuration
     use_learner_language = Column(
@@ -322,7 +320,8 @@ class DraftShifu(db.Model):
         comment="Last updater user business identifier",
     )
 
-    def clone(self):
+    def clone(self) -> "DraftShifu":
+        """Create a transient copy of this draft record for a new revision."""
         return DraftShifu(
             shifu_bid=self.shifu_bid,
             title=self.title,
@@ -345,6 +344,7 @@ class DraftShifu(db.Model):
             tts_speed=self.tts_speed,
             tts_pitch=self.tts_pitch,
             tts_emotion=self.tts_emotion,
+            default_listen_mode_enabled=self.default_listen_mode_enabled,
             use_learner_language=self.use_learner_language,
             deleted=self.deleted,
             created_at=self.created_at,
@@ -353,7 +353,8 @@ class DraftShifu(db.Model):
             updated_user_bid=self.updated_user_bid,
         )
 
-    def eq(self, other):
+    def eq(self, other: object) -> bool:
+        """Compare the persisted fields relevant to draft equality."""
         return (
             self.shifu_bid == other.shifu_bid
             and self.title == other.title
@@ -376,14 +377,18 @@ class DraftShifu(db.Model):
             and compare_decimal(self.tts_speed, other.tts_speed)
             and self.tts_pitch == other.tts_pitch
             and self.tts_emotion == other.tts_emotion
+            and (self.default_listen_mode_enabled == other.default_listen_mode_enabled)
             and self.use_learner_language == other.use_learner_language
         )
 
-    def get_str_to_check(self):
+    def get_str_to_check(self) -> str:
+        """Return concatenated draft fields for comparison without normalization."""
         return f"{self.title} {self.keywords} {self.description} {self.llm_system_prompt} {self.ask_llm_system_prompt}"
 
 
 class DraftOutlineItem(db.Model):
+    """Persist draft outline item records."""
+
     __tablename__ = "shifu_draft_outline_items"
     __table_args__ = (
         Index(
@@ -517,7 +522,8 @@ class DraftOutlineItem(db.Model):
         comment="Last updater user business identifier",
     )
 
-    def clone(self):
+    def clone(self) -> "DraftOutlineItem":
+        """Create a transient copy of this draft record for a new revision."""
         return DraftOutlineItem(
             outline_item_bid=self.outline_item_bid,
             shifu_bid=self.shifu_bid,
@@ -542,7 +548,8 @@ class DraftOutlineItem(db.Model):
             updated_user_bid=self.updated_user_bid,
         )
 
-    def eq(self, other):
+    def eq(self, other: object) -> bool:
+        """Compare the persisted fields relevant to draft equality."""
         return (
             self.outline_item_bid == other.outline_item_bid
             and self.shifu_bid == other.shifu_bid
@@ -562,11 +569,14 @@ class DraftOutlineItem(db.Model):
             and self.content == other.content
         )
 
-    def get_str_to_check(self):
+    def get_str_to_check(self) -> str:
+        """Return concatenated draft fields for comparison without normalization."""
         return f"{self.title} {self.llm_system_prompt} {self.ask_llm_system_prompt}"
 
 
 class LogDraftStruct(db.Model):
+    """Persist log draft struct records."""
+
     __tablename__ = "shifu_log_draft_structs"
     id = Column(BIGINT, primary_key=True, autoincrement=True)
     struct_bid = Column(
@@ -619,6 +629,8 @@ class LogDraftStruct(db.Model):
 
 # published shifu's model
 class PublishedShifu(db.Model):
+    """Persist published shifu records."""
+
     __tablename__ = "shifu_published_shifus"
     id = Column(BIGINT, primary_key=True, autoincrement=True)
     shifu_bid = Column(
@@ -714,6 +726,12 @@ class PublishedShifu(db.Model):
         default="",
         comment="TTS emotion setting",
     )
+    default_listen_mode_enabled = Column(
+        SmallInteger,
+        nullable=False,
+        default=0,
+        comment="Default learner mode to listen when TTS is enabled",
+    )
 
     # Language Output Configuration
     use_learner_language = Column(
@@ -755,6 +773,8 @@ class PublishedShifu(db.Model):
 
 
 class PublishedOutlineItem(db.Model):
+    """Persist published outline item records."""
+
     __tablename__ = "shifu_published_outline_items"
     id = Column(BIGINT, primary_key=True, autoincrement=True)
     outline_item_bid = Column(
@@ -862,6 +882,8 @@ class PublishedOutlineItem(db.Model):
 
 
 class LogPublishedStruct(db.Model):
+    """Persist log published struct records."""
+
     __tablename__ = "shifu_log_published_structs"
     id = Column(BIGINT, primary_key=True, autoincrement=True)
     struct_bid = Column(

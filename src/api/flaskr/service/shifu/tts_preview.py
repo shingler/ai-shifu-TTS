@@ -1,38 +1,43 @@
+"""Handle TTS preview for course authoring."""
+
 from __future__ import annotations
 
 import base64
 import json
 import uuid
 from dataclasses import replace
-from typing import Any
+from typing import TYPE_CHECKING
 
 from flask import Response, current_app, stream_with_context
-
-from flaskr.dao import cleanup_session_after, invalidate_session
-
 from flaskr.api.tts import (
     get_default_audio_settings,
     get_default_voice_settings,
     is_tts_configured,
     synthesize_text,
 )
+from flaskr.dao import cleanup_session_after, invalidate_session
 from flaskr.service.common import raise_error
 from flaskr.service.common.models import raise_param_error
 from flaskr.service.metering import UsageContext, record_tts_usage
 from flaskr.service.metering.consts import BILL_USAGE_SCENE_DEBUG
 from flaskr.service.tts import preprocess_for_tts, resolve_tts_billable_chars
-from flaskr.service.tts.pipeline import split_text_for_tts
 from flaskr.service.tts.api import supports_cloned_voices
+from flaskr.service.tts.pipeline import split_text_for_tts
 from flaskr.service.tts.validation import (
     assert_preview_cloned_voice_available,
     validate_tts_settings_strict,
 )
 from flaskr.util.uuid import generate_id
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from flaskr.api.tts.base import AudioSettings, VoiceSettings
+
 
 def _build_tts_preview_usage_metadata(
-    voice_settings: Any,
-    audio_settings: Any,
+    voice_settings: VoiceSettings,
+    audio_settings: AudioSettings,
 ) -> dict[str, object]:
     return {
         "voice_id": getattr(voice_settings, "voice_id", "") or "",
@@ -51,6 +56,7 @@ def build_tts_preview_response(
     request_user_id: str = "",
     request_user_is_creator: bool = False,
 ) -> Response:
+    """Build TTS preview response."""
     app = current_app._get_current_object()
     payload = json_data or {}
     provider_name = (payload.get("provider") or "").strip().lower()
@@ -61,7 +67,7 @@ def build_tts_preview_response(
     emotion = ""
     text = payload.get(
         "text",
-        "你好，这是语音合成的试听效果。Hello, this is a preview of text-to-speech.",
+        "你好，这是语音合成的试听效果。Hello, this is a preview of text-to-speech.",  # noqa: RUF001 - intentional fullwidth Chinese punctuation
     )
 
     validated = validate_tts_settings_strict(
@@ -120,7 +126,7 @@ def build_tts_preview_response(
         audio_settings=safe_audio_settings,
     )
 
-    def event_stream():
+    def event_stream() -> Iterator[str]:
         total_duration_ms = 0
         total_word_count = 0
         total_output_chars = 0

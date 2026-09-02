@@ -1,13 +1,14 @@
+"""Verify import user command behavior."""
+
 from importlib import import_module
 from types import SimpleNamespace
 
 import pytest
-
 from flaskr.command.import_user import import_user
 from flaskr.dao import db
 from flaskr.service.profile.learner_profile import (
     PROFILE_ONBOARDING_SCENE_KEY,
-    PROFILE_ONBOARDING_VERSION,
+    PROFILE_ONBOARDING_STATE_VERSION,
 )
 from flaskr.service.user.consts import USER_STATE_REGISTERED
 from flaskr.service.user.models import UserInfo, UserOnboardingState
@@ -17,10 +18,10 @@ from flaskr.util.datetime import now_utc
 
 @pytest.mark.parametrize("canonical_source", ["profile", "cleared-state"])
 def test_import_user_keeps_pre_profile_nickname_behavior(
-    app,
-    monkeypatch,
-    canonical_source,
-):
+    app: object,
+    monkeypatch: object,
+    canonical_source: object,
+) -> None:
     import_user_module = import_module("flaskr.command.import_user")
 
     monkeypatch.setattr(
@@ -66,7 +67,7 @@ def test_import_user_keeps_pre_profile_nickname_behavior(
                 UserOnboardingState(
                     user_bid=user.user_bid,
                     scene_key=PROFILE_ONBOARDING_SCENE_KEY,
-                    version=PROFILE_ONBOARDING_VERSION,
+                    version=PROFILE_ONBOARDING_STATE_VERSION,
                     status="completed",
                     trigger_source="settings",
                     completed_at=now_utc(),
@@ -88,9 +89,9 @@ def test_import_user_keeps_pre_profile_nickname_behavior(
 
 
 def test_import_user_does_not_consult_profile_state_before_nickname_defaults(
-    app,
-    monkeypatch,
-):
+    app: object,
+    monkeypatch: object,
+) -> None:
     import_user_module = import_module("flaskr.command.import_user")
 
     monkeypatch.setattr(
@@ -127,7 +128,7 @@ def test_import_user_does_not_consult_profile_state_before_nickname_defaults(
             UserOnboardingState(
                 user_bid=user.user_bid,
                 scene_key=PROFILE_ONBOARDING_SCENE_KEY,
-                version=PROFILE_ONBOARDING_VERSION,
+                version=PROFILE_ONBOARDING_STATE_VERSION,
                 status="completed",
                 trigger_source="settings",
                 completed_at=now_utc(),
@@ -140,7 +141,7 @@ def test_import_user_does_not_consult_profile_state_before_nickname_defaults(
         read_order: list[tuple[str, str, bool, bool]] = []
         reads_before_ensure: list[tuple[str, str, bool, bool]] = []
 
-        def track_first(query):
+        def track_first(query: object) -> object:
             statement = str(query.statement)
             parameters = query.statement.compile().params
             lookup_value = str(
@@ -165,7 +166,7 @@ def test_import_user_does_not_consult_profile_state_before_nickname_defaults(
 
         original_ensure_user = import_user_module.ensure_user_for_identifier
 
-        def track_ensure_user(*args, **kwargs):
+        def track_ensure_user(*args: object, **kwargs: object) -> object:
             reads_before_ensure.extend(read_order)
             return original_ensure_user(*args, **kwargs)
 

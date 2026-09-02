@@ -1,17 +1,23 @@
-import os
-import re
+"""Load application configuration from defaults and the environment."""
+
+from __future__ import annotations
+
 import json
 import logging
+import os
+import re
 from dataclasses import dataclass, field
-from typing import Any, Optional, Callable, Dict, List, Type
-from flask import Flask
+from typing import TYPE_CHECKING, Any
+
 from flask import Config as FlaskConfig
+from flask import Flask
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class EnvironmentConfigError(Exception):
     """Exception raised for environment configuration errors."""
-
-    pass
 
 
 @dataclass
@@ -22,28 +28,29 @@ class EnvVar:
     required: bool = False  # Whether variable must be explicitly set in environment
     default: Any = None  # Default value if not set (only if required=False)
     example: Any = None  # Optional value to emit in generated example files
-    type: Type = str  # Using Type annotation to avoid conflict
+    type: type = str  # Using Type annotation to avoid conflict
     description: str = ""
-    validator: Optional[Callable[[Any], bool]] = None
+    validator: Callable[[Any], bool] | None = None
     secret: bool = False
     group: str = "general"
-    depends_on: List[str] = field(default_factory=list)
+    depends_on: list[str] = field(default_factory=list)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate EnvVar configuration after initialization."""
         if self.required and self.default is not None:
-            raise ValueError(
+            message = (
                 f"Environment variable '{self.name}' is marked as required "
                 "but has a default value. Required variables must not have defaults."
             )
+            raise ValueError(message)
 
-    def validate_value(self, value: Any) -> bool:
+    def validate_value(self, value: object) -> bool:
         """Validate the environment variable value."""
         if self.validator:
             return self.validator(value)
         return True
 
-    def convert_type(self, value: Any) -> Any:
+    def convert_type(self, value: object) -> object:
         """Convert string value to the specified type."""
         # Trim whitespace from string values before conversion
         if isinstance(value, str):
@@ -57,20 +64,18 @@ class EnvVar:
             if isinstance(value, str):
                 return value.lower() in ("true", "1", "yes", "on")
             return bool(value)
-        elif self.type is int:
+        if self.type is int:
             try:
                 return int(value)
-            except ValueError:
-                raise EnvironmentConfigError(
-                    f"Invalid integer value for {self.name}: {value}"
-                )
+            except ValueError as exc:
+                message = f"Invalid integer value for {self.name}: {value}"
+                raise EnvironmentConfigError(message) from exc
         elif self.type is float:
             try:
                 return float(value)
-            except ValueError:
-                raise EnvironmentConfigError(
-                    f"Invalid float value for {self.name}: {value}"
-                )
+            except ValueError as exc:
+                message = f"Invalid float value for {self.name}: {value}"
+                raise EnvironmentConfigError(message) from exc
         elif self.type is list:
             if isinstance(value, str):
                 return [item.strip() for item in value.split(",") if item.strip()]
@@ -79,7 +84,7 @@ class EnvVar:
             return str(value)
 
 
-def _is_valid_rpm_limits_json(value: Any) -> bool:
+def _is_valid_rpm_limits_json(value: object) -> bool:
     """Validate the MINIMAX_TTS_RPM_LIMITS override map.
 
     Empty is allowed (no overrides). A non-empty value must be a JSON object
@@ -104,9 +109,8 @@ def _is_valid_rpm_limits_json(value: Any) -> bool:
     return True
 
 
-def parse_llm_model_max_output_tokens(value: Any) -> Dict[str, int]:
+def parse_llm_model_max_output_tokens(value: object) -> dict[str, int]:
     """Parse a routed model id -> maximum output token JSON map."""
-
     if value in (None, ""):
         return {}
     if isinstance(value, dict):
@@ -115,28 +119,34 @@ def parse_llm_model_max_output_tokens(value: Any) -> Dict[str, int]:
         try:
             candidate = json.loads(value)
         except (TypeError, ValueError) as exc:
-            raise ValueError("must be a JSON object") from exc
+            message = "must be a JSON object"
+            raise ValueError(message) from exc
     if not isinstance(candidate, dict):
-        raise ValueError("must be a JSON object")
+        # ValueError is part of this parser's contract: callers only catch it.
+        message = "must be a JSON object"
+        raise ValueError(message)  # noqa: TRY004
 
-    parsed: Dict[str, int] = {}
+    parsed: dict[str, int] = {}
     for model, max_output_tokens in candidate.items():
         if not isinstance(model, str) or not model.strip():
-            raise ValueError("model ids must be non-empty strings")
+            message = "model ids must be non-empty strings"
+            raise ValueError(message)
         normalized_model = model.strip()
         if normalized_model in parsed:
-            raise ValueError("model ids must be unique after trimming whitespace")
+            message = "model ids must be unique after trimming whitespace"
+            raise ValueError(message)
         if (
             isinstance(max_output_tokens, bool)
             or not isinstance(max_output_tokens, int)
             or max_output_tokens <= 0
         ):
-            raise ValueError("maximum output token values must be positive integers")
+            message = "maximum output token values must be positive integers"
+            raise ValueError(message)
         parsed[normalized_model] = max_output_tokens
     return parsed
 
 
-def _is_valid_llm_model_max_output_tokens_json(value: Any) -> bool:
+def _is_valid_llm_model_max_output_tokens_json(value: object) -> bool:
     try:
         parse_llm_model_max_output_tokens(value)
     except ValueError:
@@ -145,7 +155,7 @@ def _is_valid_llm_model_max_output_tokens_json(value: Any) -> bool:
 
 
 # Environment variable registry
-ENV_VARS: Dict[str, EnvVar] = {
+ENV_VARS: dict[str, EnvVar] = {
     # Application Configuration
     "LOGGING_PATH": EnvVar(
         name="LOGGING_PATH",
@@ -322,46 +332,6 @@ ENV_VARS: Dict[str, EnvVar] = {
         description="Umami analytics site identifier",
         group="frontend",
     ),
-    "ANALYTICS_UMAMI_API_URL": EnvVar(
-        name="ANALYTICS_UMAMI_API_URL",
-        default="",
-        description="Umami management API base URL used by backend analytics reads",
-        group="analytics",
-    ),
-    "ANALYTICS_UMAMI_API_KEY": EnvVar(
-        name="ANALYTICS_UMAMI_API_KEY",
-        default="",
-        description="Umami API key for backend analytics reads",
-        secret=True,
-        group="analytics",
-    ),
-    "ANALYTICS_UMAMI_API_USERNAME": EnvVar(
-        name="ANALYTICS_UMAMI_API_USERNAME",
-        default="",
-        description="Umami username fallback for backend analytics reads",
-        group="analytics",
-    ),
-    "ANALYTICS_UMAMI_API_PASSWORD": EnvVar(
-        name="ANALYTICS_UMAMI_API_PASSWORD",
-        default="",
-        description="Umami password fallback for backend analytics reads",
-        secret=True,
-        group="analytics",
-    ),
-    "ANALYTICS_UMAMI_CACHE_EXPIRE_SECONDS": EnvVar(
-        name="ANALYTICS_UMAMI_CACHE_EXPIRE_SECONDS",
-        default=900,
-        type=int,
-        description="Course visit analytics cache expiration time in seconds",
-        group="analytics",
-    ),
-    "ANALYTICS_UMAMI_TIMEOUT_SECONDS": EnvVar(
-        name="ANALYTICS_UMAMI_TIMEOUT_SECONDS",
-        default=10,
-        type=int,
-        description="Timeout in seconds for backend Umami API requests",
-        group="analytics",
-    ),
     "ANALYTICS_DATABASE_URI": EnvVar(
         name="ANALYTICS_DATABASE_URI",
         default="",
@@ -396,7 +366,10 @@ ENV_VARS: Dict[str, EnvVar] = {
     "DEFAULT_LOGIN_METHOD": EnvVar(
         name="DEFAULT_LOGIN_METHOD",
         default="phone",
-        description='Default login method tab. Values: "phone" | "email" | "google"',
+        description=(
+            'Default login method tab. Values: "phone" | "email" | '
+            '"google" | "password"'
+        ),
         group="frontend",
     ),
     "DEBUG_ERUDA_ENABLED": EnvVar(
@@ -410,7 +383,7 @@ ENV_VARS: Dict[str, EnvVar] = {
         name="LOGIN_METHODS_ENABLED",
         default="phone",
         description="""Login methods exposed to users.
-Values: "phone" | "email" | "google" combinations (comma-separated)
+Values: "phone" | "email" | "google" | "password" combinations (comma-separated)
 Default: "phone".""",
         group="frontend",
     ),
@@ -472,6 +445,18 @@ Default: "phone".""",
         description="Service agreement URL for French (fr-FR) users. Leave empty to disable the link.",
         group="legal",
     ),
+    "LEGAL_AGREEMENT_URL_AR_SA": EnvVar(
+        name="LEGAL_AGREEMENT_URL_AR_SA",
+        default="",
+        description="Service agreement URL for Arabic (ar-SA) users. Leave empty to use the English reference.",
+        group="legal",
+    ),
+    "LEGAL_AGREEMENT_URL_TH_TH": EnvVar(
+        name="LEGAL_AGREEMENT_URL_TH_TH",
+        default="",
+        description="Service agreement URL for Thai (th-TH) users. Leave empty to use the English reference.",
+        group="legal",
+    ),
     "LEGAL_PRIVACY_URL_ZH_CN": EnvVar(
         name="LEGAL_PRIVACY_URL_ZH_CN",
         default="",
@@ -488,6 +473,18 @@ Default: "phone".""",
         name="LEGAL_PRIVACY_URL_FR_FR",
         default="",
         description="Privacy policy URL for French (fr-FR) users. Leave empty to disable the link.",
+        group="legal",
+    ),
+    "LEGAL_PRIVACY_URL_AR_SA": EnvVar(
+        name="LEGAL_PRIVACY_URL_AR_SA",
+        default="",
+        description="Privacy policy URL for Arabic (ar-SA) users. Leave empty to use the English reference.",
+        group="legal",
+    ),
+    "LEGAL_PRIVACY_URL_TH_TH": EnvVar(
+        name="LEGAL_PRIVACY_URL_TH_TH",
+        default="",
+        description="Privacy policy URL for Thai (th-TH) users. Leave empty to use the English reference.",
         group="legal",
     ),
     # LLM Configuration
@@ -846,6 +843,48 @@ Generate secure key: python -c "import secrets; print(secrets.token_urlsafe(32))
         description="Token expiration time in seconds",
         group="auth",
     ),
+    "DEVICE_AUTH_EXPIRE_TIME": EnvVar(
+        name="DEVICE_AUTH_EXPIRE_TIME",
+        default=600,
+        type=int,
+        description="Lifetime in seconds of a pending device authorization request",
+        group="auth",
+    ),
+    "DEVICE_AUTH_POLL_INTERVAL": EnvVar(
+        name="DEVICE_AUTH_POLL_INTERVAL",
+        default=5,
+        type=int,
+        description="Seconds a device client should wait between polls",
+        group="auth",
+    ),
+    "DEVICE_AUTH_MAX_LOOKUP_ATTEMPTS": EnvVar(
+        name="DEVICE_AUTH_MAX_LOOKUP_ATTEMPTS",
+        default=10,
+        type=int,
+        description="Failed pairing-code lookups allowed per IP before refusing",
+        group="auth",
+    ),
+    "DEVICE_AUTH_MAX_REQUESTS": EnvVar(
+        name="DEVICE_AUTH_MAX_REQUESTS",
+        default=20,
+        type=int,
+        description="Device authorization requests allowed per IP per window",
+        group="auth",
+    ),
+    "DEVICE_AUTH_ISSUE_WINDOW": EnvVar(
+        name="DEVICE_AUTH_ISSUE_WINDOW",
+        default=600,
+        type=int,
+        description="Window in seconds for counting device authorization requests",
+        group="auth",
+    ),
+    "DEVICE_AUTH_LOOKUP_WINDOW": EnvVar(
+        name="DEVICE_AUTH_LOOKUP_WINDOW",
+        default=600,
+        type=int,
+        description="Window in seconds for counting failed pairing-code lookups",
+        group="auth",
+    ),
     "RESET_PWD_CODE_EXPIRE_TIME": EnvVar(
         name="RESET_PWD_CODE_EXPIRE_TIME",
         default=300,
@@ -901,6 +940,19 @@ Generate secure key: python -c "import secrets; print(secrets.token_urlsafe(32))
         default="",
         description="OAuth client secret issued by Google",
         secret=True,
+        group="auth",
+    ),
+    "GOOGLE_OAUTH_REDIRECT_URI": EnvVar(
+        name="GOOGLE_OAUTH_REDIRECT_URI",
+        default="",
+        description=(
+            "Shared Google OAuth callback URL for every domain this deployment "
+            "serves. Google does not accept wildcards in a client's authorized "
+            "redirect URIs, so pinning one callback here keeps white-label "
+            "domains from each needing their own entry; the browser is handed "
+            "back to the domain it started from afterwards. Leave empty to "
+            "derive the callback from the requested origin."
+        ),
         group="auth",
     ),
     "GOOGLE_OAUTH_TOKEN_ENDPOINT": EnvVar(
@@ -1515,6 +1567,24 @@ Generate secure key: python -c "import secrets; print(secrets.token_urlsafe(32))
         description="Minimax group ID for API access",
         group="tts",
     ),
+    "ELEVENLABS_API_KEY": EnvVar(
+        name="ELEVENLABS_API_KEY",
+        default="",
+        description="ElevenLabs API key for TTS synthesis",
+        secret=True,
+        group="tts",
+    ),
+    "ELEVENLABS_TTS_VOICES_JSON": EnvVar(
+        name="ELEVENLABS_TTS_VOICES_JSON",
+        default="",
+        description=(
+            "JSON array of approved ElevenLabs voices. Each item must contain "
+            'non-empty value and label fields, e.g. [{"value":"voice_id",'
+            '"label":"Display name"}].'
+        ),
+        group="tts",
+        required=False,
+    ),
     "TTS_MAX_SEGMENT_CHARS": EnvVar(
         name="TTS_MAX_SEGMENT_CHARS",
         default=300,
@@ -1754,7 +1824,7 @@ Generate secure key: python -c "import secrets; print(secrets.token_urlsafe(32))
 }
 
 # Derived Redis prefixes built from REDIS_KEY_PREFIX
-REDIS_KEY_SUFFIXES: Dict[str, str] = {
+REDIS_KEY_SUFFIXES: dict[str, str] = {
     "REDIS_KEY_PREFIX_USER": "user:",
     "REDIS_KEY_PREFIX_RESET_PWD": "reset_pwd:",
     "REDIS_KEY_PREFIX_PHONE": "phone:",
@@ -1766,15 +1836,18 @@ REDIS_KEY_SUFFIXES: Dict[str, str] = {
     "REDIS_KEY_PREFIX_PHONE_LIMIT": "phone_limit:",
     "REDIS_KEY_PREFIX_IP_BAN": "ip_ban:",
     "REDIS_KEY_PREFIX_IP_LIMIT": "ip_limit:",
+    "REDIS_KEY_PREFIX_DEVICE_AUTH": "device_auth:",
+    "REDIS_KEY_PREFIX_DEVICE_USER_CODE": "device_user_code:",
 }
 
 
 class EnhancedConfig:
     """Enhanced configuration management with validation and type safety."""
 
-    def __init__(self, env_vars: Dict[str, EnvVar]):
+    def __init__(self, env_vars: dict[str, EnvVar]) -> None:
+        """Register environment declarations with an empty, unvalidated cache."""
         self.env_vars = env_vars
-        self._cache: Dict[str, Any] = {}
+        self._cache: dict[str, Any] = {}
         self._validated = False
 
     def validate_environment(self, allow_conversion_errors: bool = False) -> None:
@@ -1817,7 +1890,7 @@ class EnhancedConfig:
                 missing_required.append(f"- {var_name}: {env_var.description}")
                 continue
             # Get value (from environment or default)
-            value = raw_value if raw_value else env_var.default
+            value = raw_value or env_var.default
             # Validate value if present
             if value is not None and value != "":
                 try:
@@ -1829,7 +1902,7 @@ class EnhancedConfig:
                 except Exception as e:
                     # For optional fields, log and continue; required fields remain fatal
                     if env_var.required or not allow_conversion_errors:
-                        validation_errors.append(f"- {var_name}: {str(e)}")
+                        validation_errors.append(f"- {var_name}: {e!s}")
                     else:
                         logging.getLogger(__name__).warning(
                             "Non-fatal config conversion issue for %s: %s",
@@ -1849,7 +1922,7 @@ class EnhancedConfig:
             raise EnvironmentConfigError("\n\n".join(errors))
         self._validated = True
 
-    def get(self, key: str) -> Any:
+    def get(self, key: str) -> object:
         """Get configuration value with type conversion."""
         if key in self._cache:
             return self._cache[key]
@@ -1868,9 +1941,12 @@ class EnhancedConfig:
                     # Log warning about type conversion failure
                     logger = logging.getLogger(__name__)
                     logger.warning(
-                        f"Failed to convert environment variable '{key}' with value '{value}' "
-                        f"to type {env_var.type.__name__}. Using default value '{env_var.default}'. "
-                        f"Error: {str(e)}"
+                        "Failed to convert environment variable '%s' with value '%s' to type %s. Using default value '%s'. Error: %s",
+                        key,
+                        value,
+                        env_var.type.__name__,
+                        env_var.default,
+                        e,
                     )
                     value = env_var.default
             # Apply interpolation
@@ -1911,7 +1987,7 @@ class EnhancedConfig:
         except (TypeError, ValueError):
             return 0.0
 
-    def get_list(self, key: str) -> List[str]:
+    def get_list(self, key: str) -> list[str]:
         """Get list configuration value (comma-separated)."""
         value = self.get(key)
         if value is None:
@@ -1926,7 +2002,7 @@ class EnhancedConfig:
         """Interpolate environment variables in format ${VAR_NAME}."""
         pattern = re.compile(r"\$\{([^}]+)\}")
 
-        def replacer(match):
+        def replacer(match: re.Match[str]) -> str:
             var_name = match.group(1)
             return os.environ.get(var_name, match.group(0))
 
@@ -1934,22 +2010,19 @@ class EnhancedConfig:
 
     def debug_print(self) -> None:
         """Print all configuration values (excluding secrets) for debugging."""
-        print("\n=== Configuration Values ===")
+        print("\n=== Configuration Values ===")  # noqa: T201
         groups = {}
         for var_name, env_var in self.env_vars.items():
             if env_var.group not in groups:
                 groups[env_var.group] = []
             value = self.get(var_name)
-            if env_var.secret and value:
-                display_value = "[REDACTED]"
-            else:
-                display_value = str(value)
+            display_value = "[REDACTED]" if env_var.secret and value else str(value)
             groups[env_var.group].append(f"  {var_name}: {display_value}")
         for group, items in sorted(groups.items()):
-            print(f"\n[{group.upper()}]")
+            print(f"\n[{group.upper()}]")  # noqa: T201
             for item in sorted(items):
-                print(item)
-        print("\n" + "=" * 30 + "\n")
+                print(item)  # noqa: T201
+        print("\n" + "=" * 30 + "\n")  # noqa: T201
 
     def export_env_example(self) -> str:
         """Export full environment variable definitions as .env.example format."""
@@ -1963,10 +2036,11 @@ class EnhancedConfig:
 
         Returns:
             Formatted .env.example content as string
+
         """
 
         # Format values for .env output, handling lists as comma-separated strings
-        def format_value(env_var: EnvVar, value: Any) -> str:
+        def format_value(env_var: EnvVar, value: object) -> str:
             if value is None:
                 return ""
             if env_var.type is list:
@@ -1992,7 +2066,7 @@ class EnhancedConfig:
         groups = {}
 
         # Filter and group variables
-        for var_name, env_var in self.env_vars.items():
+        for env_var in self.env_vars.values():
             # Apply filter
             if filter_type == "required" and not env_var.required:
                 continue
@@ -2002,16 +2076,16 @@ class EnhancedConfig:
             groups[env_var.group].append(env_var)
 
         # Generate output for each group
-        for group, vars in sorted(groups.items()):
+        for group, group_vars in sorted(groups.items()):
             # Skip empty groups
-            if not vars:
+            if not group_vars:
                 continue
 
             lines.append(f"\n#{'=' * 60}")
             lines.append(f"# {group.replace('_', ' ').title()}")
             lines.append(f"#{'=' * 60}\n")
 
-            for env_var in sorted(vars, key=lambda x: x.name):
+            for env_var in sorted(group_vars, key=lambda x: x.name):
                 example_value = (
                     env_var.example if env_var.example is not None else env_var.default
                 )
@@ -2078,37 +2152,37 @@ class EnhancedConfig:
         return "\n".join(lines)
 
 
-# Global instance
-__INSTANCE__ = None
 __ENHANCED_CONFIG__ = EnhancedConfig(ENV_VARS)
 
 
 class Config(FlaskConfig):
     """Flask configuration wrapper with enhanced environment variable support."""
 
-    def __init__(self, parent: FlaskConfig, app: Flask, defaults: dict = {}):
-        global __INSTANCE__
+    _instance: Config | None = None
+
+    def __init__(self, parent: FlaskConfig, app: Flask) -> None:
+        """Bind parent and environment config, then populate Redis prefixes."""
         self.parent = parent
         self.app = app
         self.enhanced = __ENHANCED_CONFIG__
         # Reset shared cache per initialization to avoid cross-app contamination
         self.enhanced._cache.clear()
         self.enhanced._validated = False
-        __INSTANCE__ = self
+        Config._instance = self
         # Validate environment on initialization
         try:
             self.enhanced.validate_environment(allow_conversion_errors=True)
             app.logger.info("Environment configuration validated successfully")
-        except EnvironmentConfigError as e:
-            app.logger.error(f"Environment configuration error: {e}")
+        except EnvironmentConfigError:
+            app.logger.exception("Environment configuration error")
             raise
         self._populate_redis_prefixes()
 
-    def __getitem__(self, key: Any) -> Any:
+    def __getitem__(self, key: str) -> object:
         """Get configuration value using enhanced config first, with fallback to parent."""
         return self.get(key)
 
-    def __getattr__(self, key: Any) -> Any:
+    def __getattr__(self, key: str) -> object:
         """Get configuration attribute using enhanced config first."""
         try:
             return self.enhanced.get(key)
@@ -2118,7 +2192,7 @@ class Config(FlaskConfig):
         except Exception:
             return getattr(self.parent, key)
 
-    def __setitem__(self, key: Any, value: Any) -> None:
+    def __setitem__(self, key: str, value: object) -> None:
         """Set configuration value."""
         self.parent.__setitem__(key, value)
         os.environ[key] = str(value)
@@ -2138,7 +2212,7 @@ class Config(FlaskConfig):
             )
             self.parent.setdefault(key, derived_value)
 
-    def get(self, key: Any, default: Any = None) -> Any:
+    def get(self, key: str, default: object = None) -> object:
         """Get configuration value with fallback to parent and optional default.
 
         This method maintains compatibility with Flask's Config.get() API.
@@ -2149,6 +2223,7 @@ class Config(FlaskConfig):
 
         Returns:
             The configuration value, or default if not found
+
         """
         # Try enhanced config first
         try:
@@ -2175,9 +2250,8 @@ class Config(FlaskConfig):
         env_value = os.environ.get(key)
         if env_value is not None:
             self.app.logger.warning(
-                f"Configuration key '{key}' not defined in ENV_VARS registry. "
-                f"Falling back to environment variable value. "
-                f"Consider adding this to ENV_VARS in config.py for proper type conversion and validation."
+                "Configuration key '%s' not defined in ENV_VARS registry. Falling back to environment variable value. Consider adding this to ENV_VARS in config.py for proper type conversion and validation.",
+                key,
             )
             return env_value
 
@@ -2200,14 +2274,15 @@ class Config(FlaskConfig):
         """Get float configuration value."""
         return self.enhanced.get_float(key)
 
-    def get_list(self, key: str) -> List[str]:
+    def get_list(self, key: str) -> list[str]:
         """Get list configuration value."""
         return self.enhanced.get_list(key)
 
-    def __call__(self, *args: Any, **kwds: Any) -> Any:
+    def __call__(self, *args: object, **kwds: object) -> object:
+        """Delegate callable compatibility behavior to the parent config."""
         return self.parent.__call__(*args, **kwds)
 
-    def setdefault(self, key: Any, default: Any = None) -> Any:
+    def setdefault(self, key: str, default: object = None) -> object:
         """Set default value if key doesn't exist.
 
         This method maintains compatibility with Flask's Config.setdefault() API.
@@ -2224,7 +2299,7 @@ class Config(FlaskConfig):
         return self.parent.setdefault(key, default)
 
 
-def get_config(key: str, default: Any = None) -> Any:
+def get_config(key: str, default: object = None) -> object:
     """Get configuration value.
 
     Args:
@@ -2233,8 +2308,9 @@ def get_config(key: str, default: Any = None) -> Any:
 
     Returns:
         Configuration value or default
+
     """
-    if __INSTANCE__ is None:
+    if Config._instance is None:
         # Before initialization, try to get from environment directly
         # This is needed for module-level calls like timezone setup
         if key in ENV_VARS:
@@ -2245,7 +2321,7 @@ def get_config(key: str, default: Any = None) -> Any:
             return value
         # For unknown keys, check environment directly
         return os.environ.get(key, default)
-    return __INSTANCE__.get(key, default)
+    return Config._instance.get(key, default)
 
 
 def has_explicit_env_override(key: str) -> bool:
@@ -2253,7 +2329,7 @@ def has_explicit_env_override(key: str) -> bool:
     return key in os.environ
 
 
-def get_explicit_env_override(key: str) -> Optional[str]:
+def get_explicit_env_override(key: str) -> str | None:
     """Return the raw environment value for a config key, or None when unset.
 
     Unlike ``get_config``, this never substitutes the registry default and

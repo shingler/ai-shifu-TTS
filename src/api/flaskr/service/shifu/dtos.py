@@ -1,5 +1,4 @@
-"""
-Shifu dtos
+"""Shifu dtos.
 
 This module contains dtos for shifu.
 
@@ -7,18 +6,20 @@ Author: yfge
 Date: 2025-08-07
 """
 
+from typing import Any
+
 from flask import Flask
 from flaskr.common.swagger import register_schema_to_swagger
 from flaskr.service.shifu.models import (
     DraftOutlineItem,
 )
-from typing import Any
 from pydantic import BaseModel, Field
 
 
 def resolve_demo_course_for_language(
     app: Flask, language: str | None
-) -> dict[str, Any]:
+) -> dict[str, object]:
+    """Resolve demo course for language."""
     from flaskr.service.shifu.demo_courses import (
         resolve_demo_course_for_language as _resolve_demo_course_for_language,
     )
@@ -28,9 +29,7 @@ def resolve_demo_course_for_language(
 
 @register_schema_to_swagger
 class ShifuDto(BaseModel):
-    """
-    Shifu dto
-    """
+    """Shifu dto."""
 
     bid: str = Field(..., description="shifu id", required=False)
     name: str = Field(..., description="shifu name", required=False)
@@ -40,10 +39,12 @@ class ShifuDto(BaseModel):
     is_favorite: bool = Field(..., description="is favorite", required=False)
     archived: bool = Field(..., description="is archived", required=False)
     can_manage_archive: bool = Field(
-        False, description="whether current user can archive/unarchive", required=False
+        default=False,
+        description="whether current user can archive/unarchive",
+        required=False,
     )
     can_manage_permissions: bool = Field(
-        False,
+        default=False,
         description="whether current user can manage shared permissions",
         required=False,
     )
@@ -51,7 +52,7 @@ class ShifuDto(BaseModel):
         "", description="owner user business id", required=False
     )
     is_guide_course: bool = Field(
-        False,
+        default=False,
         description="whether this course is the built-in guide course",
         required=False,
     )
@@ -69,8 +70,8 @@ class ShifuDto(BaseModel):
         can_manage_permissions: bool = False,
         created_user_bid: str = "",
         is_guide_course: bool = False,
-        **kwargs,
-    ):
+    ) -> None:
+        """Build the shifu payload."""
         super().__init__(
             bid=shifu_id,
             name=shifu_name,
@@ -85,7 +86,8 @@ class ShifuDto(BaseModel):
             is_guide_course=is_guide_course,
         )
 
-    def __json__(self):
+    def __json__(self) -> dict:
+        """Return the shifu as JSON-compatible data."""
         return {
             "bid": self.bid,
             "name": self.name,
@@ -103,9 +105,7 @@ class ShifuDto(BaseModel):
 
 @register_schema_to_swagger
 class ShifuDetailDto(BaseModel):
-    """
-    Shifu detail dto
-    """
+    """Shifu detail dto."""
 
     bid: str = Field(..., description="shifu id", required=False)
     name: str = Field(..., description="shifu name", required=False)
@@ -121,16 +121,18 @@ class ShifuDetailDto(BaseModel):
     readonly: bool = Field(..., description="is shifu readonly", required=False)
     archived: bool = Field(..., description="is shifu archived", required=False)
     can_manage_archive: bool = Field(
-        False, description="whether current user can archive/unarchive", required=False
+        default=False,
+        description="whether current user can archive/unarchive",
+        required=False,
     )
     can_publish: bool = Field(
-        False, description="whether current user can publish", required=False
+        default=False, description="whether current user can publish", required=False
     )
     created_user_bid: str = Field(
         "", description="owner user business id", required=False
     )
     # TTS Configuration
-    tts_enabled: bool = Field(False, description="TTS enabled", required=False)
+    tts_enabled: bool = Field(default=False, description="TTS enabled", required=False)
     tts_provider: str = Field(
         "",
         description="TTS provider: minimax, volcengine, volcengine_http, baidu, aliyun",
@@ -147,8 +149,13 @@ class ShifuDetailDto(BaseModel):
         required=False,
     )
     tts_emotion: str = Field("", description="TTS emotion setting", required=False)
+    default_listen_mode_enabled: bool = Field(
+        default=False,
+        description="Default learner mode to listen when TTS is enabled",
+        required=False,
+    )
     use_learner_language: bool = Field(
-        False,
+        default=False,
         description="Use learner language for AI output",
         required=False,
     )
@@ -203,13 +210,15 @@ class ShifuDetailDto(BaseModel):
         tts_speed: float = 1.0,
         tts_pitch: int = 0,
         tts_emotion: str = "",
+        default_listen_mode_enabled: bool = False,
         use_learner_language: bool = False,
         ask_enabled_status: int = 5101,
         ask_model: str = "",
         ask_temperature: float = 0.0,
         ask_system_prompt: str = "",
-        ask_provider_config: dict[str, Any] | None = None,
-    ):
+        ask_provider_config: dict[str, object] | None = None,
+    ) -> None:
+        """Build the shifu detail payload."""
         super().__init__(
             bid=shifu_id,
             name=shifu_name,
@@ -234,6 +243,7 @@ class ShifuDetailDto(BaseModel):
             tts_speed=tts_speed,
             tts_pitch=tts_pitch,
             tts_emotion=tts_emotion,
+            default_listen_mode_enabled=default_listen_mode_enabled,
             use_learner_language=use_learner_language,
             ask_enabled_status=ask_enabled_status,
             ask_model=ask_model,
@@ -242,7 +252,8 @@ class ShifuDetailDto(BaseModel):
             ask_provider_config=ask_provider_config or {},
         )
 
-    def __json__(self):
+    def __json__(self) -> dict:
+        """Return the shifu detail as JSON-compatible data."""
         return {
             "bid": self.bid,
             "name": self.name,
@@ -267,6 +278,7 @@ class ShifuDetailDto(BaseModel):
             "tts_speed": self.tts_speed,
             "tts_pitch": self.tts_pitch,
             "tts_emotion": self.tts_emotion,
+            "default_listen_mode_enabled": self.default_listen_mode_enabled,
             "use_learner_language": self.use_learner_language,
             "ask_enabled_status": self.ask_enabled_status,
             "ask_model": self.ask_model,
@@ -278,9 +290,7 @@ class ShifuDetailDto(BaseModel):
 
 @register_schema_to_swagger
 class SimpleOutlineDto(BaseModel):
-    """
-    Simple outline dto
-    """
+    """Simple outline dto."""
 
     bid: str = Field(..., description="outline id", required=False)
     position: str = Field(..., description="outline position", required=False)
@@ -301,10 +311,11 @@ class SimpleOutlineDto(BaseModel):
         position: str,
         name: str,
         children: list,
-        type: str | None = None,
+        type: str | None = None,  # noqa: A002 - serialized DTO field name
         is_hidden: bool | None = None,
-    ):
-        normalized_children: list["SimpleOutlineDto"] = []
+    ) -> None:
+        """Build the simple outline payload."""
+        normalized_children: list[SimpleOutlineDto] = []
         if children:
             for child in children:
                 if isinstance(child, SimpleOutlineDto):
@@ -329,7 +340,8 @@ class SimpleOutlineDto(BaseModel):
             is_hidden=is_hidden,
         )
 
-    def __json__(self):
+    def __json__(self) -> dict:
+        """Return the simple outline as JSON-compatible data."""
         return {
             "bid": self.bid,
             "position": self.position,
@@ -341,7 +353,7 @@ class SimpleOutlineDto(BaseModel):
 
 
 # new outline tree node class, for handling DraftOutlineItem
-# author: yfge
+# written by yfge
 # date: 2025-07-13
 # version: 1.0.0
 # description: this class is used to handle DraftOutlineItem
@@ -350,11 +362,10 @@ class SimpleOutlineDto(BaseModel):
 # 2. add a child to the node
 # 3. remove a child from the node
 class ShifuOutlineTreeNode:
-    """
-    Shifu outline tree node
-    """
+    """Shifu outline tree node."""
 
-    def __init__(self, outline_item: DraftOutlineItem):
+    def __init__(self, outline_item: DraftOutlineItem) -> None:
+        """Build a tree node from a draft outline item."""
         self.outline = outline_item
         self.children = []
         if outline_item:
@@ -365,38 +376,29 @@ class ShifuOutlineTreeNode:
             self.position = ""
         self.parent_node = None
 
-    def add_child(self, child: "ShifuOutlineTreeNode"):
-        """
-        add a child to the node
-        """
+    def add_child(self, child: "ShifuOutlineTreeNode") -> None:
+        """Add a child to the node."""
         self.children.append(child)
         child.parent_node = self
 
-    def remove_child(self, child: "ShifuOutlineTreeNode"):
-        """
-        remove a child from the node
-        """
+    def remove_child(self, child: "ShifuOutlineTreeNode") -> None:
+        """Remove a child from the node."""
         child.parent_node = None
         self.children.remove(child)
 
-    def get_new_position(self):
-        """
-        get the new position of the node
-        """
+    def get_new_position(self) -> str:
+        """Get the new position of the node."""
         if not self.parent_node:
             return self.position
-        else:
-            return (
-                self.parent_node.get_new_position()
-                + f"{self.parent_node.children.index(self) + 1:02d}"
-            )
+        return (
+            self.parent_node.get_new_position()
+            + f"{self.parent_node.children.index(self) + 1:02d}"
+        )
 
 
 @register_schema_to_swagger
 class OutlineDto(BaseModel):
-    """
-    Outline dto
-    """
+    """Outline dto."""
 
     bid: str = Field(..., description="outline id", required=False)
     position: str = Field(..., description="outline no", required=False)
@@ -409,15 +411,16 @@ class OutlineDto(BaseModel):
 
     def __init__(
         self,
-        bid: str = None,
-        position: str = None,
-        name: str = None,
-        description: str = None,
-        type: str = None,
-        index: int = None,
-        system_prompt: str = None,
-        is_hidden: bool = None,
-    ):
+        bid: str | None = None,
+        position: str | None = None,
+        name: str | None = None,
+        description: str | None = None,
+        type: str | None = None,  # noqa: A002 - serialized DTO field name
+        index: int | None = None,
+        system_prompt: str | None = None,
+        is_hidden: bool | None = None,
+    ) -> None:
+        """Build the outline payload."""
         super().__init__(
             bid=bid,
             position=position,
@@ -429,7 +432,8 @@ class OutlineDto(BaseModel):
             is_hidden=is_hidden,
         )
 
-    def __json__(self):
+    def __json__(self) -> dict:
+        """Return the outline as JSON-compatible data."""
         return {
             "bid": self.bid,
             "position": self.position,
@@ -444,21 +448,18 @@ class OutlineDto(BaseModel):
 
 @register_schema_to_swagger
 class ReorderOutlineItemDto:
-    """
-    Reorder outline item dto
-    """
+    """Reorder outline item dto."""
 
     bid: str
     children: list["ReorderOutlineItemDto"]
 
-    def __init__(self, bid: str, children: list["ReorderOutlineItemDto"]):
-        """
-        init reorder outline item dto
-        """
+    def __init__(self, bid: str, children: list["ReorderOutlineItemDto"]) -> None:
+        """Init reorder outline item dto."""
         self.bid = bid
         self.children = children
 
-    def __json__(self):
+    def __json__(self) -> dict:
+        """Return the reorder outline item as JSON-compatible data."""
         return {
             "bid": self.bid,
             "children": self.children,
@@ -467,22 +468,24 @@ class ReorderOutlineItemDto:
 
 @register_schema_to_swagger
 class ReorderOutlineDto:
-    """
-    Reorder outline dto
-    """
+    """Reorder outline dto."""
 
     outlines: list[ReorderOutlineItemDto]
 
 
 @register_schema_to_swagger
 class MdflowDTOParseResult(BaseModel):
+    """Represent the MarkdownFlow DTO parse result API payload."""
+
     variables: list[str] = Field(..., description="variables", required=True)
     blocks_count: int = Field(..., description="blocks count", required=True)
 
-    def __init__(self, variables: list[str], blocks_count: int):
+    def __init__(self, variables: list[str], blocks_count: int) -> None:
+        """Capture parsed MarkdownFlow variables and block count."""
         super().__init__(variables=variables, blocks_count=blocks_count)
 
-    def __json__(self):
+    def __json__(self) -> dict:
+        """Return parsed MarkdownFlow metadata as JSON-compatible data."""
         return {
             "variables": self.variables,
             "blocks_count": self.blocks_count,

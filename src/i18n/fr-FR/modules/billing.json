@@ -55,21 +55,27 @@
         "configurationSectionDescription": "Renseignez ici la configuration réelle du logo, du domaine, de WeChat et du paiement. Les valeurs enregistrées remonteront aussi dans le tableau.",
         "createdContinue": "La configuration marque et paiement a été créée pour {creator}. Vous pouvez compléter la configuration ci-dessous.",
         "creatorBidPlaceholder": "Saisissez le BID du responsable du cours",
+        "creatorEmailPlaceholder": "Saisir l’e-mail du responsable",
         "creatorMobilePlaceholder": "Saisir le téléphone du responsable",
         "description": "L’équipe opérations gère ici la marque, le domaine, WeChat et le paiement. L’enregistrement met à jour en même temps les éléments ouverts.",
         "disabled": "Non activé",
         "domainInlineDescription": "Ajoutez le domaine dédié, lancez la vérification et synchronisez l’avancement de mise en place.",
         "edit": "Modifier",
         "editTitle": "Modifier la configuration marque et paiement",
+        "emailHint": "Utilisez une adresse e-mail. Si elle n’est pas encore inscrite, le système crée le compte et active d’abord l’accès enseignant.",
         "enabled": "Activé",
         "errors": {
           "creatorBidRequired": "Saisissez le BID du responsable du cours",
+          "creatorEmailInvalid": "Saisissez une adresse e-mail valide",
+          "creatorEmailRequired": "Saisissez l’e-mail du responsable",
+          "creatorMobileInvalid": "Saisissez un numéro de téléphone valide",
           "creatorMobileRequired": "Saisissez le téléphone du responsable"
         },
         "fields": {
           "branding_enabled": "Logos de marque",
           "configStatus": "Statut de configuration",
           "creatorBid": "BID du responsable du cours",
+          "creatorEmail": "E-mail du responsable",
           "creatorMobile": "Téléphone du responsable",
           "custom_domain_enabled": "Domaine personnalisé",
           "custom_payment_enabled": "Configuration de paiement personnalisée",
@@ -156,6 +162,153 @@
     "pagination": {
       "page": "Page {page} / {pageCount} · {total} enregistrements",
       "total": "{total} enregistrements"
+    },
+    "providerPrices": {
+      "actions": {
+        "activate": "Mettre en ligne",
+        "cancel": "Annuler",
+        "configure": "Configurer",
+        "create": "Ajouter un prix",
+        "restore": "Restaurer en brouillon",
+        "retire": "Retirer",
+        "saveDraft": "Enregistrer le brouillon",
+        "validate": "Contrôler",
+        "viewIssues": "Voir problèmes"
+      },
+      "billingLabel": {
+        "monthly": "Mensuel",
+        "yearly": "Annuel"
+      },
+      "confirm": {
+        "activate": "Mettre {productName} en ligne ? Les prochains paiements de ce produit utiliseront ce prix.",
+        "restore": "Restaurer {productName} ? Le prix reviendra en brouillon et devra être contrôlé avant la remise en ligne.",
+        "retire": "Retirer {productName} ? Le produit n’aura temporairement plus de checkout à prix fixe."
+      },
+      "description": "Gérez les prix de paiement des abonnements et packs de crédits internationaux afin d’aligner affichage, paiement et droits accordés.",
+      "dialog": {
+        "autoDetectHint": "Le système vérifie automatiquement montant, devise, période et mode. Activez le prix après validation.",
+        "description": "Copiez l’ID produit et l’ID prix depuis Stripe. Le système lira automatiquement les détails du prix.",
+        "title": "Configurer le prix de paiement"
+      },
+      "empty": "Aucune offre ou recharge disponible pour configuration.",
+      "environment": {
+        "live": "Live",
+        "test": "Test"
+      },
+      "fields": {
+        "priceId": "ID prix Stripe",
+        "product": "Produit",
+        "productId": "ID produit Stripe",
+        "productPlaceholder": "Sélectionner un produit"
+      },
+      "filters": {
+        "allProducts": "Tous les produits",
+        "product": "Produit",
+        "status": "Statut"
+      },
+      "health": {
+        "active": "En ligne",
+        "draft": "Non activé",
+        "healthy": "Sain",
+        "invalid": "Échec du contrôle",
+        "missing": "Non configuré",
+        "retired": "Retiré",
+        "warning": "À vérifier"
+      },
+      "interval": {
+        "day": "Tous les {count} jours",
+        "month": "Tous les {count} mois",
+        "oneTime": "Paiement unique",
+        "year": "Tous les {count} ans"
+      },
+      "issueDrawer": {
+        "description": "Affiche les raisons lisibles par l’équipe opérations et conserve les codes bruts pour le diagnostic technique.",
+        "issues": "Raisons du problème",
+        "noIssues": "Aucun détail disponible",
+        "priceId": "ID prix Stripe",
+        "raw": "Détails bruts",
+        "title": "Problèmes de validation du prix"
+      },
+      "issueMessages": {
+        "billing_interval_count_mismatch": "Le nombre de périodes ne correspond pas à l’article local",
+        "billing_interval_mismatch": "La période de facturation ne correspond pas à l’article local",
+        "currency_mismatch": "La devise ne correspond pas à l’article local",
+        "local_plan_billing_mode_invalid": "Le mode de facturation local de l’abonnement est invalide",
+        "local_topup_billing_interval_count_invalid": "Le nombre de périodes du pack crédits doit être 0",
+        "local_topup_billing_interval_invalid": "Les packs crédits ne doivent pas utiliser de période récurrente",
+        "local_topup_billing_mode_invalid": "Le mode de facturation local du pack crédits est invalide",
+        "plan_requires_licensed_recurring_price": "Les abonnements doivent utiliser une tarification récurrente licensed",
+        "plan_requires_recurring_price": "Les abonnements doivent utiliser un prix Stripe récurrent",
+        "price_livemode_mismatch": "Le mode du prix Stripe ne correspond pas",
+        "price_metadata_billing_interval_mismatch": "La metadata de période du prix Stripe ne correspond pas",
+        "price_metadata_billing_interval_missing": "Le prix Stripe n’a pas de metadata de période",
+        "price_metadata_credit_amount_mismatch": "La metadata de crédits du prix Stripe ne correspond pas",
+        "price_metadata_credit_amount_missing": "Le prix Stripe n’a pas de metadata de crédits",
+        "price_metadata_product_code_mismatch": "La metadata de code produit du prix Stripe ne correspond pas",
+        "price_metadata_product_code_missing": "Le prix Stripe n’a pas de metadata de code produit",
+        "price_product_mismatch": "Le prix Stripe n’est pas rattaché à ce produit",
+        "product_livemode_mismatch": "Le mode du produit Stripe ne correspond pas",
+        "product_metadata_market_mismatch": "La metadata de marché du produit Stripe ne correspond pas",
+        "product_metadata_market_missing": "Le produit Stripe n’a pas de metadata de marché",
+        "product_metadata_plan_tier_mismatch": "La metadata de niveau du produit Stripe ne correspond pas",
+        "product_metadata_plan_tier_missing": "Le produit Stripe n’a pas de metadata de niveau",
+        "product_metadata_product_type_mismatch": "La metadata de type produit Stripe ne correspond pas",
+        "product_metadata_product_type_missing": "Le produit Stripe n’a pas de metadata de type produit",
+        "provider_account_mismatch": "Le compte Stripe ne correspond pas",
+        "provider_price_inactive": "Le prix Stripe est inactif",
+        "provider_price_mismatch": "L’ID prix Stripe ne correspond pas à cet article",
+        "provider_price_unit_amount_missing": "Le prix Stripe n’a pas de montant fixe",
+        "provider_product_inactive": "Le produit Stripe est inactif",
+        "provider_product_mismatch": "L’ID produit Stripe ne correspond pas à cet article",
+        "retired_mapping_cannot_be_activated": "Un prix retiré ne peut pas être remis en ligne",
+        "retired_mapping_cannot_be_validated": "Un prix retiré ne peut pas être revérifié",
+        "stripe_catalog_reference_missing": "ID produit ou prix Stripe manquant",
+        "stripe_catalog_retrieve_failed": "Impossible de lire le produit ou le prix dans Stripe",
+        "topup_requires_one_time_price": "Les packs crédits doivent utiliser un prix Stripe unique",
+        "unit_amount_mismatch": "Le montant encaissé ne correspond pas au prix affiché",
+        "unknown": "Problème inconnu",
+        "unsupported_product_type": "Ce type d’article ne peut pas être lié à un prix de paiement"
+      },
+      "loadError": "Impossible de charger les paramètres de prix pour le moment.",
+      "loading": "Chargement des prix...",
+      "menuTitle": "Gestion des offres",
+      "pageDescription": "Gérez les prix de paiement des abonnements et packs de crédits internationaux afin d’aligner affichage, paiement et rapprochement.",
+      "productCredits": "{credits} crédits",
+      "productType": {
+        "plan": "Abonnement",
+        "topup": "Pack crédits"
+      },
+      "status": {
+        "active": "En ligne",
+        "all": "Tous les statuts",
+        "draft": "Brouillon",
+        "invalid": "Invalide",
+        "missing": "Non configuré",
+        "retired": "Retiré"
+      },
+      "table": {
+        "actions": "Actions",
+        "benefit": "Droits",
+        "localPrice": "Prix affiché",
+        "product": "Produit",
+        "productType": "Type",
+        "status": "Statut",
+        "stripePrice": "Prix paiement",
+        "validatedAt": "Dernier contrôle"
+      },
+      "title": "Gestion des offres",
+      "toast": {
+        "activateFailed": "Échec de la mise en ligne du prix",
+        "activateSuccess": "Prix mis en ligne",
+        "createFailed": "Échec de l’enregistrement",
+        "createSuccess": "Prix enregistré",
+        "restoreFailed": "Échec de la restauration du prix",
+        "restoreSuccess": "Prix restauré en brouillon",
+        "retireFailed": "Échec du retrait du prix",
+        "retireSuccess": "Prix retiré",
+        "validateFailed": "Échec du contrôle",
+        "validateSuccess": "Contrôle du prix terminé"
+      }
     },
     "reports": {
       "actions": {
@@ -440,6 +593,12 @@
     "processing": "Traitement…",
     "productLabel": "Produit",
     "providerLabel": "Fournisseur de paiement",
+    "redirect": {
+      "creating": "Création de votre commande...",
+      "description": "Gardez cette page ouverte. Si la redirection ne se fait pas automatiquement, utilisez le bouton ci-dessous pour réessayer.",
+      "openingStripe": "Ouverture du paiement sécurisé Stripe...",
+      "retry": "Rouvrir la page de paiement"
+    },
     "subject": {
       "plan": {
         "day": "Forfait quotidien",
@@ -455,6 +614,13 @@
   },
   "common": {
     "empty": "Non disponible"
+  },
+  "creditInsufficient": {
+    "learner": "Ce cours ne dispose pas de suffisamment de crédits pour générer davantage de contenu. Veuillez contacter l’enseignant du cours.",
+    "purchaseActionAltText": "Ouvrir la page d’achat de crédits",
+    "teacher": "Votre solde de crédits est insuffisant. Vous ne pouvez pas continuer pour le moment.",
+    "teacherCollaborator": "Le solde de crédits du responsable du cours est insuffisant pour générer davantage de contenu. Veuillez contacter le responsable du cours.",
+    "teacherSoftlimit": "Votre solde de crédits est inférieur au seuil d’alerte. Les prévisualisations de débogage sont temporairement indisponibles."
   },
   "customization": {
     "actions": {
@@ -601,14 +767,19 @@
   "globalPricing": {
     "actions": {
       "buyCredits": "Acheter des crédits",
+      "checkoutLoading": "Ouverture du paiement...",
       "choosePlan": "Choisir ce forfait",
+      "cycleSwitchDisabled": "Changement de période indisponible",
       "viewMonthly": "Voir le forfait mensuel"
     },
     "annualSavings": "Économisez {amount} par an ({percent} %)",
     "approximatePricePrefix": "Environ",
     "audienceLabel": "Idéal pour",
-    "billedAnnually": "Facturé {price} tous les 12 mois",
-    "cancelAnytime": "Facturé mensuellement. Annulation à tout moment.",
+    "billedAnnually": "Facturation de {price} tous les 12 mois.",
+    "campaignAnnualBilling": "12 premiers mois : {price}. Renouvellement à {renewalPrice} tous les 12 mois.",
+    "campaignMonthlyBilling": "Premier mois uniquement. Renouvellement à {renewalPrice} par mois.",
+    "cancelAnytime": "Facturation mensuelle. Annulation à tout moment.",
+    "checkoutNotice": "Le paiement Stripe est disponible. Vous serez redirigé vers Stripe pour finaliser le paiement.",
     "comingSoon": {
       "close": "Compris",
       "description": "Nous développons actuellement l’expérience de paiement. Revenez bientôt.",
@@ -643,11 +814,11 @@
     },
     "featuresLabel": "Avantages inclus",
     "footnote": {
-      "intro": "Les sessions apprenant estimées reposent sur l’expérience de la plateforme et utilisent le repère suivant : un apprenant termine une fois un cours d’environ 10 sections, à raison d’environ 15 minutes d’apprentissage normal par section, avec DeepSeek et le mode écoute activé. La facturation réelle dépend de la consommation du modèle pendant l’apprentissage, l’aperçu et le débogage ; le relevé de crédits fait foi. Facteurs influençant la consommation de crédits :",
+      "intro": "Les sessions d’apprentissage estimées reposent sur l’expérience de la plateforme et utilisent la référence “un apprenant termine le cours une fois, avec un cours d’environ 10 sections, une moyenne d’environ 15 minutes d’étude régulière par section, en utilisant le modèle par défaut tout au long du cours et avec le mode écoute activé”. La facturation réelle est calculée à partir de la consommation du modèle pendant l’étude, la prévisualisation et le débogage ; le détail des crédits consommés fait foi. Facteurs influant sur la consommation de crédits :",
       "validity": "Validité des crédits : les crédits mensuels sont valables 30 jours à compter de leur attribution, jour inclus ; les crédits annuels sont valables 12 mois à compter de leur attribution. Les deux expirent à 23 h 59 le dernier jour."
     },
-    "learnerEstimateLabel": "Sessions apprenant estimées",
-    "learnerEstimateValue": "{minimum} à {maximum} sessions apprenant",
+    "learnerEstimateLabel": "Sessions d’apprentissage estimées",
+    "learnerEstimateValue": "{minimum} à {maximum} sessions d’apprentissage",
     "monthlyOnly": "Mensuel uniquement",
     "mostPopular": "Le plus populaire",
     "perMonth": "/ mois",
@@ -655,24 +826,24 @@
       "business": {
         "description": "Grandes organisations diffusant des apprentissages personnalisés à grande échelle.",
         "estimates": {
-          "annual": "5 000–15 000 sessions",
-          "monthly": "400–1 200 sessions"
+          "annual": "500–1 500 sessions d’apprentissage",
+          "monthly": "40–120 sessions d’apprentissage"
         },
         "name": "Business"
       },
       "growth": {
         "description": "Petites et moyennes organisations d’enseignement.",
         "estimates": {
-          "annual": "2 500–7 500 sessions",
-          "monthly": "200–600 sessions"
+          "annual": "250–750 sessions d’apprentissage",
+          "monthly": "20–60 sessions d’apprentissage"
         },
         "name": "Growth"
       },
       "scale": {
         "description": "Très grandes organisations gérant des programmes d’apprentissage à fort volume.",
         "estimates": {
-          "annual": "11 000–33 000 sessions",
-          "monthly": "900–2 700 sessions"
+          "annual": "1 100–3 300 sessions d’apprentissage",
+          "monthly": "90–270 sessions d’apprentissage"
         },
         "name": "Scale"
       },
@@ -680,7 +851,7 @@
         "description": "Tester un cours léger ou valider une première expérience d’apprentissage.",
         "estimates": {
           "annual": "Forfait mensuel uniquement",
-          "monthly": "50–150 sessions"
+          "monthly": "5–15 sessions d’apprentissage"
         },
         "name": "Studio"
       }
@@ -793,6 +964,7 @@
       "currentUsing": "Forfait actuel",
       "downgradeDisabled": "Rétrogradation indisponible",
       "freeTrial": "Inactif",
+      "monthlySwitchDisabled": "Passage au mensuel indisponible",
       "nonMemberTooltip": "Vous êtes actuellement sur l’offre non membre. Aucune action n’est nécessaire.",
       "preorderDowngrade": "Précommander une rétrogradation",
       "preorderLocked": "Précommande verrouillée",

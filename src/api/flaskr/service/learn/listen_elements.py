@@ -1,9 +1,9 @@
+"""Adapt learning events into listen-mode elements."""
+
 from __future__ import annotations
 
 import uuid
-from typing import Iterable
-
-from flask import Flask
+from typing import TYPE_CHECKING
 
 from flaskr.service.learn.learn_dtos import (
     GeneratedType,
@@ -12,25 +12,21 @@ from flaskr.service.learn.learn_dtos import (
     RunMarkdownFlowDTO,
 )
 from flaskr.service.learn.learn_funcs import get_learn_record
+from flaskr.service.learn.legacy_record_builder import build_legacy_record_for_progress
 from flaskr.service.learn.listen_element_history import (
     get_listen_element_record as _get_listen_element_record,
 )
-from flaskr.service.learn.listen_element_mdflow_backfill import (
-    backfill_learn_generated_elements_batch,
-)
-from flaskr.service.learn.legacy_record_builder import build_legacy_record_for_progress
 from flaskr.service.learn.listen_element_legacy import (
     build_listen_elements_from_legacy_record,
+)
+from flaskr.service.learn.listen_element_mdflow_backfill import (
+    backfill_learn_generated_elements_batch,
 )
 from flaskr.service.learn.listen_element_run_persistence import (
     ListenElementRunPersistenceMixin,
 )
 from flaskr.service.learn.listen_element_run_sidecar import (
     ListenElementRunSidecarMixin,
-)
-from flaskr.service.learn.listen_element_run_state import (
-    BlockMeta,
-    BlockState,
 )
 from flaskr.service.learn.listen_element_run_stream import (
     ListenElementRunStreamMixin,
@@ -39,6 +35,15 @@ from flaskr.service.learn.type_state_machine import (
     TypeInput,
     TypeStateMachine,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from flask import Flask
+    from flaskr.service.learn.listen_element_run_state import (
+        BlockMeta,
+        BlockState,
+    )
 
 __all__ = [
     "ListenElementRunAdapter",
@@ -63,7 +68,13 @@ class ListenElementRunAdapter(
         outline_bid: str,
         user_bid: str,
         run_session_bid: str | None = None,
-    ):
+    ) -> None:
+        """Initialize a legacy listen-mode adaptation run and ordering state.
+
+        Uses the supplied run session ID or generates one, resets event and element
+        sequence counters, and initializes the type state machine and element
+        tracking caches used by persisted and streamed events.
+        """
         self.app = app
         self.shifu_bid = shifu_bid
         self.outline_bid = outline_bid
@@ -86,6 +97,7 @@ class ListenElementRunAdapter(
     def process(
         self, events: Iterable[RunMarkdownFlowDTO]
     ) -> Iterable[RunElementSSEMessageDTO]:
+        """Adapt lesson run events into element SSE messages while advancing element state."""
         for event in events:
             if event.type == GeneratedType.CONTENT:
                 yield from self._handle_content(event)
@@ -168,6 +180,7 @@ def get_listen_element_record(
     preview_mode: bool,
     include_non_navigable: bool = False,
 ) -> LearnElementRecordDTO:
+    """Return listen element record."""
     return _get_listen_element_record(
         app=app,
         shifu_bid=shifu_bid,

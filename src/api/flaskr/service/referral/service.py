@@ -6,25 +6,24 @@ import hashlib
 import secrets
 import string
 from dataclasses import dataclass
-from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
 
 from flask import Flask, has_app_context, has_request_context, request
-from sqlalchemy import func
-
-from flaskr.util.datetime import now_utc, to_utc_iso
-from sqlalchemy.exc import IntegrityError
-
 from flaskr.common.config import get_config as get_common_config
 from flaskr.dao import db
 from flaskr.service.billing.api import (
     ReferralPlanRewardRequest,
+)
+from flaskr.service.billing.api import (
     grant_referral_plan_reward as _grant_referral_plan_reward_request,
 )
 from flaskr.service.user.models import UserInfo
+from flaskr.util.datetime import now_utc, to_utc_iso
 from flaskr.util.uuid import generate_id
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 
 from .consts import (
     REFERRAL_CAMPAIGN_STATUS_ACTIVE,
@@ -53,6 +52,9 @@ from .models import (
 )
 from .reward_queue import build_referral_reward_queue
 
+if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+    from datetime import datetime
 
 _INVITE_CODE_ALPHABET = string.ascii_uppercase + string.digits
 _INVITE_CODE_LENGTH = 8
@@ -60,6 +62,8 @@ _INVITE_CODE_LENGTH = 8
 
 @dataclass(slots=True, frozen=True)
 class InviteEventInput:
+    """Carry request context for a referral invite event."""
+
     event_type: str
     invite_code: str = ""
     landing_path: str = ""
@@ -72,6 +76,8 @@ class InviteEventInput:
 
 @dataclass(slots=True, frozen=True)
 class InviteEventResult:
+    """Capture the persisted outcome of a referral invite event."""
+
     success: bool
     session_id: str
     recognized: bool
@@ -79,6 +85,8 @@ class InviteEventResult:
 
 @dataclass(slots=True, frozen=True)
 class ReferralPostAuthResult:
+    """Capture referral work completed after authentication."""
+
     created_relation: bool = False
     created_reward: bool = False
     relation_bid: str = ""
@@ -87,6 +95,7 @@ class ReferralPostAuthResult:
 
 
 def hash_referral_context(value: object) -> str:
+    """Hash referral context."""
     normalized = str(value or "").strip()
     if not normalized:
         return ""
@@ -94,11 +103,12 @@ def hash_referral_context(value: object) -> str:
 
 
 def extract_referral_post_auth_fields(
-    payload: dict[str, Any],
+    payload: dict[str, object],
     *,
     client_ip: object = "",
     user_agent: object = "",
 ) -> dict[str, str]:
+    """Extract referral post auth fields."""
     return {
         "invite_code": str(payload.get("invite_code") or "").strip(),
         "referral_session_id": str(payload.get("referral_session_id") or "").strip(),
@@ -110,15 +120,15 @@ def extract_referral_post_auth_fields(
     }
 
 
-def _with_app_context(app: Flask):
+def _with_app_context(app: Flask) -> AbstractContextManager[None]:
     return app.app_context() if not has_app_context() else _NullContext()
 
 
 class _NullContext:
-    def __enter__(self):
+    def __enter__(self) -> None:
         return None
 
-    def __exit__(self, *_exc):
+    def __exit__(self, *_exc: object) -> bool | None:
         return False
 
 
@@ -140,9 +150,7 @@ def _within_window(
 ) -> bool:
     if starts_at is not None and starts_at > now:
         return False
-    if ends_at is not None and ends_at <= now:
-        return False
-    return True
+    return not (ends_at is not None and ends_at <= now)
 
 
 def _campaign_runtime_enabled(campaign: ReferralCampaign, *, now: datetime) -> bool:
@@ -156,6 +164,7 @@ def _campaign_runtime_enabled(campaign: ReferralCampaign, *, now: datetime) -> b
 
 
 def load_active_campaign(*, now: datetime | None = None) -> ReferralCampaign | None:
+    """Load active campaign."""
     resolved_now = now or now_utc()
     candidates = (
         ReferralCampaign.query.filter(
@@ -184,6 +193,7 @@ def load_campaign_by_bid(
     *,
     now: datetime | None = None,
 ) -> ReferralCampaign | None:
+    """Load campaign by BID."""
     campaign = (
         ReferralCampaign.query.filter(
             ReferralCampaign.deleted == 0,
@@ -205,6 +215,7 @@ def select_reward_rule(
     trigger_event: str = REFERRAL_TRIGGER_INVITED_REGISTRATION,
     now: datetime | None = None,
 ) -> ReferralCampaignRewardRule | None:
+    """Select reward rule."""
     resolved_now = now or now_utc()
     candidates = (
         ReferralCampaignRewardRule.query.filter(
@@ -271,7 +282,6 @@ def _create_invite_code_with_retry(
         db.session.add(invite_code)
         try:
             db.session.flush()
-            return invite_code
         except IntegrityError:
             db.session.rollback()
             existing = _load_active_invite_code(
@@ -280,7 +290,10 @@ def _create_invite_code_with_retry(
             )
             if existing is not None:
                 return existing
-    raise RuntimeError("unable to generate referral invite code")
+        else:
+            return invite_code
+    message = "unable to generate referral invite code"
+    raise RuntimeError(message)
 
 
 def _reward_count_for_rule(
@@ -330,7 +343,8 @@ def _resolve_public_origin() -> str:
             if normalized_origin:
                 return normalized_origin
         return _normalize_origin(f"{request.scheme}://{request.host}")
-    raise RuntimeError("HOST_URL must be configured to build referral invite URLs")
+    message = "HOST_URL must be configured to build referral invite URLs"
+    raise RuntimeError(message)
 
 
 def _normalize_origin(value: str) -> str:
@@ -339,15 +353,16 @@ def _normalize_origin(value: str) -> str:
         return ""
     parsed = urlsplit(raw_value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise RuntimeError("HOST_URL must include http(s) scheme and host")
+        message = "HOST_URL must include http(s) scheme and host"
+        raise RuntimeError(message)
     if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
-        raise RuntimeError(
-            "HOST_URL must be an origin without path, query, or fragment"
-        )
+        message = "HOST_URL must be an origin without path, query, or fragment"
+        raise RuntimeError(message)
     return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
 
 
 def mask_identifier_snapshot(value: str) -> str:
+    """Mask identifier snapshot."""
     raw_value = str(value or "").strip()
     if not raw_value:
         return ""
@@ -373,8 +388,8 @@ def mask_identifier_snapshot(value: str) -> str:
 
 
 def _mask_reward_queue_mobile_snapshots(
-    reward_queue: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+    reward_queue: list[dict[str, object]],
+) -> list[dict[str, object]]:
     masked_queue: list[dict[str, Any]] = []
     for item in reward_queue:
         next_item = dict(item)
@@ -386,10 +401,12 @@ def _mask_reward_queue_mobile_snapshots(
 
 
 def build_invite_profile(app: Flask, *, inviter_user_bid: str) -> InviteProfileDTO:
+    """Build invite profile."""
     with _with_app_context(app):
         normalized_inviter = str(inviter_user_bid or "").strip()
         if not normalized_inviter:
-            raise ValueError("inviter_user_bid is required")
+            message = "inviter_user_bid is required"
+            raise ValueError(message)
         campaign = load_active_campaign()
         if campaign is None:
             return InviteProfileDTO.unavailable()
@@ -446,6 +463,7 @@ def build_invite_profile(app: Flask, *, inviter_user_bid: str) -> InviteProfileD
 
 
 def build_invite_preview(app: Flask, *, invite_code: str) -> InvitePreviewDTO:
+    """Build invite preview."""
     with _with_app_context(app):
         normalized_code = str(invite_code or "").strip().upper()
         if not normalized_code:
@@ -491,10 +509,12 @@ def _load_invite_code(invite_code: str) -> ReferralInviteCode | None:
 
 
 def record_invite_event(app: Flask, payload: InviteEventInput) -> InviteEventResult:
+    """Record invite event."""
     with _with_app_context(app):
         event_type = str(payload.event_type or "").strip()
         if event_type not in REFERRAL_INVITE_EVENT_TYPES:
-            raise ValueError("unsupported referral invite event type")
+            message = "unsupported referral invite event type"
+            raise ValueError(message)
         normalized_code = str(payload.invite_code or "").strip().upper()
         invite_code = _load_invite_code(normalized_code) if normalized_code else None
         campaign_bid = ""
@@ -612,7 +632,8 @@ def grant_referral_plan_reward(
     app: Flask,
     *,
     reward: ReferralInviteReward,
-) -> dict[str, Any]:
+) -> dict[str, object]:
+    """Grant referral plan reward."""
     request = ReferralPlanRewardRequest(
         reward_bid=reward.reward_bid,
         inviter_user_bid=reward.inviter_user_bid,
@@ -644,7 +665,7 @@ def _mark_reward_grant_succeeded(
     *,
     relation_bid: str,
     reward_bid: str,
-    billing_artifacts: dict[str, Any],
+    billing_artifacts: dict[str, object],
 ) -> None:
     relation = ReferralInviteRelation.query.filter(
         ReferralInviteRelation.deleted == 0,
@@ -686,9 +707,8 @@ def retry_pending_referral_rewards(
     *,
     limit: int = 100,
     dry_run: bool = True,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, object]]:
     """Retry generated referral rewards that do not yet have billing artifacts."""
-
     with _with_app_context(app):
         safe_limit = max(min(int(limit or 100), 500), 1)
         rewards = (
@@ -741,7 +761,7 @@ def retry_pending_referral_rewards(
                         "bill_order_bid": billing_artifacts.get("bill_order_bid", ""),
                     }
                 )
-            except Exception as exc:  # noqa: BLE001 - repair must continue per row.
+            except Exception as exc:  # repair must continue per row.
                 db.session.rollback()
                 _mark_reward_grant_failed(reward_bid=reward.reward_bid, error=exc)
                 results.append(
@@ -757,8 +777,9 @@ def retry_pending_referral_rewards(
 
 def process_referral_post_auth(
     app: Flask,
-    context: Any,
+    context: object,
 ) -> ReferralPostAuthResult:
+    """Process referral post auth."""
     with _with_app_context(app):
         if not context.created_new_user:
             return ReferralPostAuthResult()
@@ -854,7 +875,7 @@ def process_referral_post_auth(
                 reward_bid=reward.reward_bid,
                 billing_artifacts=billing_artifacts,
             )
-        except Exception as exc:  # noqa: BLE001 - referral grant is best-effort.
+        except Exception as exc:  # referral grant is best-effort.
             db.session.rollback()
             _mark_reward_grant_failed(reward_bid=reward.reward_bid, error=exc)
             return ReferralPostAuthResult(

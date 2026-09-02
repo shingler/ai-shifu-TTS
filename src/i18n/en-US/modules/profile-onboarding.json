@@ -1,63 +1,102 @@
 {
   "__namespace__": "module.profileOnboarding",
   "admin": {
-    "allowedVariables": "Information this guide can collect",
-    "allowedVariablesHint": "This guide can collect only nickname, preferred teaching style, and work or background. Language is still detected automatically.",
-    "defaultMarkdownflow": "?[%{{sys_user_nickname}}...What should the course call you?]\n?[%{{sys_user_style}} Concise and direct | Step-by-step coaching | Vivid and lively]\n?[%{{sys_user_background}}...What is your work or background?]",
-    "description": "Configure the learning profile questions learners see the first time they enter the learning app.",
-    "emptyPreview": "No recognizable interaction questions yet.",
-    "enabled": "Enable learning profile guide",
-    "enabledHint": "When enabled, learners who have not completed or skipped this guide will see the popup once.",
-    "hidePreview": "Hide Preview",
-    "invalidVariables": "Information not supported yet: {keys}",
-    "loadFailed": "Failed to load learning profile guide configuration",
-    "markdownflow": "MarkdownFlow",
-    "preview": "Preview",
-    "publishState": "Publish State",
-    "save": "Save",
-    "saveFailed": "Failed to save learning profile guide configuration",
-    "saveSuccess": "Learning profile guide configuration saved",
-    "title": "Learning Profile Guide",
-    "updatedAt": "Updated At",
-    "updatedBy": "Updated By",
-    "version": "Version"
+    "assistantPrompt": "“Let my AI help me answer” prompt",
+    "assistantPromptEmpty": "Select “Generate My AI answer prompt” or enter a prompt directly",
+    "assistantPromptHint": "When users select “Let my AI help me answer,” they copy this prompt to the AI assistant that knows them best. You can edit it manually; regenerating replaces the current content.",
+    "assistantPromptRequired": "Generate or enter a My AI answer prompt before enabling the personalization guide.",
+    "configConflictRecovered": "Another operator saved a newer version. The latest saved version is now synced, and your current edits are preserved. Review them, then save again.",
+    "configConflictRefreshFailed": "Another operator saved a newer version, but it could not be synced yet. Your current edits are preserved. Save again later to retry.",
+    "configRevision": "Version",
+    "defaultMarkdownflow": "You are a teacher. Carry out the following tasks in a warm, friendly tone.\n\nGreet the user warmly. Then tell them that every course here can be explained using examples and approaches that are easier for them to understand, based on their background. To do that, you need to know them well enough. Naturally invite them to spend 1 minute answering 3 short questions about themselves, then ask the first question.\n\n?[%{{sys_user_nickname}}...What would you like me to call you?]\n\nDraw a picture expressing a warm welcome, include the user's preferred name, and sincerely compliment it.\n\nFor question 2, ask in words what teaching style the user prefers.\n\n?[ Natural and friendly | Relaxed and fun | Warm and patient | Professional and rational | ...Customize your preferred style ]\n\nUse this style for all subsequent output.\n\nFirst explain your understanding of this style, then create a slide in this style that demonstrates your deep understanding of it.\n\nFor the final question, ask about the user's identity and background.\n\n?[ I'd rather not say | ...What is your identity, background, and industry?]\n\nBased on the answer, offer praise and encouragement",
+    "description": "Configure the interactive questions users see in “Personalization settings” and the prompt used by “Let my AI help me answer.” When finished, users review and save their personal introduction.",
+    "documentChanged": "The interactive question flow has changed. If the answer prompt also needs updating, regenerate it or edit it manually.",
+    "documentRequired": "Add an interactive question flow before enabling the personalization guide.",
+    "enabled": "Enable personalization guide",
+    "enabledHint": "When enabled, new users see Personalization settings when they enter a course, and existing users can answer the questions again. When disabled, saved personal introductions still tailor course explanations.",
+    "generateAssistantPrompt": "Generate My AI answer prompt",
+    "generateFailed": "Could not generate the My AI answer prompt. The interactive question flow and existing prompt are still here. Try again.",
+    "generateRequiresDocument": "Add the interactive question flow before generating the My AI answer prompt.",
+    "generateSuccess": "Generated. Save the settings to make it take effect.",
+    "generatingAssistantPrompt": "Generating My AI answer prompt…",
+    "generationSuperseded": "The content changed, so this generated result did not replace your current edits. Generate it again.",
+    "hidePreview": "Hide preview",
+    "loadFailed": "Could not load the personalization guide settings",
+    "lockedSummaryHint": "After the interactive questions are answered or an answer from My AI is ready, the system prepares a “Personal introduction” for the user to edit and save. “What should your AI teacher call you?” is saved separately.",
+    "lockedSummaryTitle": "Personal introduction users will confirm",
+    "markdownflow": "Interactive question flow (MarkdownFlow)",
+    "markdownflowHint": "Defines the questions users answer in “Personalization settings” to share their background and preferences. You can preview it before generating the My AI answer prompt.",
+    "preview": "Preview interactive questions",
+    "previewDraft": "Personal introduction generated by this preview",
+    "previewFailed": "Preview failed. Check the interactive question flow and try again.",
+    "previewProfileNotice": "The preview uses the current unsaved interactive question flow and does not read or change your Personalization settings.",
+    "promptRequiresDocument": "Add an interactive question flow before saving a My AI answer prompt. To clear the configuration, clear both fields.",
+    "publishState": "Currently saved version",
+    "regenerateAssistantPrompt": "Regenerate My AI answer prompt",
+    "reload": "Reload",
+    "restartPreview": "Restart preview",
+    "save": "Save settings",
+    "saveCacheRefreshPending": "Saved, but new sessions may temporarily use the previous version. Save again later.",
+    "saveFailed": "Could not save. Your current edits are still here. Try again.",
+    "saveSuccess": "The interactive question flow and My AI answer prompt are saved. Personalization sessions opened from now on will use the latest version.",
+    "title": "Personalization Guide Settings",
+    "unsavedDialog": {
+      "cancel": "Keep editing",
+      "description": "If you leave, changes to the interactive question flow and My AI answer prompt will be lost.",
+      "discard": "Discard changes",
+      "newerEditsAfterSave": "The submitted version was saved, but newer edits were made while saving. Save again or discard those edits before leaving.",
+      "save": "Save and leave",
+      "title": "Unsaved personalization guide settings"
+    },
+    "updatedAt": "Saved at",
+    "updatedBy": "Saved by"
   },
+  "assistant": {
+    "back": "I'll answer myself",
+    "copied": "Copied",
+    "copy": "Copy prompt",
+    "copyFailed": "Could not copy. Select and copy the prompt manually.",
+    "copyShort": "Copy",
+    "entry": "Let my AI help me answer",
+    "error": "We could not organize usable information. Edit or retry the answer, or return to the questions.",
+    "instructions": "First, send the prompt below to the AI assistant that knows you best, such as ChatGPT, Claude, WorkBuddy, Doubao, Qwen, OpenClaw, Hermes Agent, and others.",
+    "limitError": "The answer cannot exceed 10,000 characters. Shorten it and try again.",
+    "process": "Organize AI's answer",
+    "processing": "Organizing AI's answer…",
+    "resultLabel": "Paste the AI answer",
+    "resultPlaceholder": "Paste your AI assistant’s answer here…",
+    "title": "Ask your AI assistant to answer"
+  },
+  "back": "Previous",
   "characterCount": "{count} / {max} characters",
   "characterCountOverLimit": "{count} characters entered; the limit is {max}. Shorten the text before saving.",
-  "complete": "Finish",
-  "description": "Answer a few questions so the course can address you naturally.",
+  "complete": "Confirm and save",
+  "completeCompact": "Save",
   "dialog": {
     "cancel": "Cancel",
-    "chips": {
-      "goals": {
-        "hint": "Current situation, goals, and questions",
-        "label": "My current situation"
-      },
-      "identity": {
-        "hint": "Identity, industry, profession, and related details",
-        "label": "My background"
-      },
-      "teaching": {
-        "hint": "Preferred tone, expression, and taboos",
-        "label": "My preferred language style"
-      }
-    },
+    "cancelResearch": "Cancel collection",
     "close": "Close",
+    "confirmTitle": "Confirm and save",
     "description": "Share your background, goals, and language preferences so your AI teacher can connect course content more closely to your situation.",
     "discard": "Discard changes",
     "discardDescription": "Anything you have not saved will be lost.",
     "discardTitle": "Discard these changes?",
     "dismissFailed": "Could not complete that action. Try again.",
     "emptyProfile": "This introduction cannot be empty. Add a few details before saving.",
+    "informationUsageEditable": "You can change this anytime in Personalization settings.",
+    "informationUsagePurpose": "Used only to help your AI teacher adapt lesson content and teaching style.",
+    "informationUsageSensitive": "Do not include sensitive details such as contact information, addresses, IDs, health information, or financial information.",
+    "informationUsageTitle": "How is this information used?",
+    "interactiveCollection": "Answer questions",
     "keepEditing": "Keep editing",
     "later": "Maybe later",
     "legacyPrefill": {
-      "background": "My background: {value}",
       "style": "My preferred language style: {value}"
     },
     "loadFailed": "Could not load these details. Try again.",
-    "loading": "Loading your learning profile…",
-    "nicknameLabel": "What should your AI teacher call you? (optional)",
+    "loading": "Loading Personalization settings…",
+    "manualFallback": "Automatic collection is unavailable right now. You can enter your introduction directly.",
+    "nicknameLabel": "What should your AI teacher call you?",
     "nicknamePlaceholder": "For example: Alex",
     "onboardingTitle": "Help your AI teacher understand you",
     "optimize": "Improve with AI",
@@ -68,10 +107,100 @@
     "optimizeInvalidResponse": "The AI returned an invalid response format. Please try again.",
     "optimizeSuccess": "Improved. You can keep editing.",
     "optimizing": "Improving…",
-    "profileLabel": "Write what you want your AI teacher to remember about you",
-    "profilePlaceholder": "Example: I work in an office in Shanghai and studied business administration at university. Recently, I have wanted to use AI to turn my ideas into articles and small tools. I prefer my AI teacher to use language that is friendly, direct, concise, and easy to understand, with little jargon.",
-    "promptHeading": "Start with any of these",
-    "reassurance": "You do not need to write everything at once; you can update it anytime. If your preferences conflict with the course design set by the human teacher, the teacher's design takes priority.",
+    "profileLabel": "Personal introduction",
+    "replaceResearchConfirm": "Answer again",
+    "replaceResearchDescription": "Answering again will overwrite unsaved personalization settings. Continue?",
+    "replaceResearchTitle": "Answer the questions again?",
+    "retention": {
+      "carouselLabel": "Personalized explanation examples",
+      "carouselRoleDescription": "carousel",
+      "continueSetup": "Finish setup",
+      "counter": "{current} / {total} · {topic}",
+      "defer": "Maybe later",
+      "description": "What you learn stays the same. AI adapts the course examples, terminology, and depth of explanation to your background.",
+      "exampleLead": "For example, the same question can be explained like this",
+      "manualAnnouncement": "Now showing {topic}, slide {current} of {total}",
+      "next": "Next explanation example",
+      "previous": "Previous explanation example",
+      "slideLabel": "{topic}, slide {current} of {total}",
+      "slideRoleDescription": "slide",
+      "slides": {
+        "blueSky": {
+          "audiences": {
+            "photographyEnthusiast": {
+              "body": "During the day, blue light scatters across the sky more easily than red light, so the scene appears blue through a lens. At sunset, blue light scatters away first, making the remaining reds and oranges stand out.",
+              "label": "For a photography enthusiast"
+            },
+            "physicsStudent": {
+              "body": "This is Rayleigh scattering, whose intensity is inversely proportional to the fourth power of wavelength. Together with the solar spectrum and the sensitivity of human vision, this makes the sky appear blue.",
+              "label": "For a physics student"
+            },
+            "primarySchoolStudent": {
+              "body": "Sunlight looks white, but it contains many colors. As it passes through the air, blue light is scattered in every direction more easily, so the sky looks blue wherever you look.",
+              "label": "For a primary school student"
+            }
+          },
+          "question": "Why is the sky blue?",
+          "topic": "Why the sky is blue"
+        },
+        "opportunityCost": {
+          "audiences": {
+            "entrepreneur": {
+              "body": "Opportunity cost is the value the best unchosen option could have created. If the team spends a week on feature A, it should also consider the value that delayed feature B might have created.",
+              "label": "For an entrepreneur"
+            },
+            "stayAtHomeParent": {
+              "body": "Time can only be used once, so opportunity cost is the best alternative you give up. If you spend two hours with your child this weekend, the cost may be the rest you needed most.",
+              "label": "For a stay-at-home parent"
+            },
+            "universityStudent": {
+              "body": "Opportunity cost is not the money you spend on a choice, but the best alternative you give up. If you study tonight, the cost may be missing the party you most wanted to attend.",
+              "label": "For a university student"
+            }
+          },
+          "question": "What is opportunity cost?",
+          "topic": "Opportunity cost"
+        },
+        "percentage": {
+          "audiences": {
+            "basketballFan": {
+              "body": "If you make 8 out of 10 shots, your shooting percentage is 80%. It means you make about 8 of every 10 shots on average.",
+              "label": "For a basketball fan"
+            },
+            "shopOwner": {
+              "body": "If 80 of 100 items sell, the sell-through rate is 80%. It helps you compare how quickly different products sell.",
+              "label": "For a shop owner"
+            },
+            "shopper": {
+              "body": "If an item is 20% off, you pay 80% of the original price. An item that originally cost $100 now costs $80.",
+              "label": "For a shopper"
+            }
+          },
+          "question": "What does 80% mean?",
+          "topic": "Percentages"
+        },
+        "warmUp": {
+          "audiences": {
+            "beginnerRunner": {
+              "body": "Starting at full pace suddenly raises your heart rate and muscle temperature. Walk briskly, then jog for a few minutes so your body can gradually match the intensity.",
+              "label": "For a beginner runner"
+            },
+            "danceTeacher": {
+              "body": "Warming up is not just about getting hot; it also activates joint mobility, stability, and movement control. Progress from small to large ranges of motion, and from basic patterns to combinations.",
+              "label": "For a dance teacher"
+            },
+            "officeWorker": {
+              "body": "After sitting all day, your muscles and joints are not ready for large movements right away. Mobilize your neck, shoulders, hips, and ankles first, then gradually increase the pace.",
+              "label": "For an office worker who sits all day"
+            }
+          },
+          "question": "Why should you warm up before exercising?",
+          "topic": "Why warming up matters"
+        }
+      },
+      "title": "Finish setup to make the course fit you better",
+      "trust": "Your information is used only to adapt explanations · Learn more"
+    },
     "retry": "Reload",
     "save": "Save profile",
     "saveAndContinue": "Save and continue",
@@ -80,20 +209,54 @@
     "saving": "Saving…",
     "settingsDescription": "Share your background, goals, and language preferences so your AI teacher can connect course content more closely to your situation.",
     "settingsTitle": "Introduce yourself to your AI teacher",
-    "undoOptimize": "Undo"
+    "undoOptimize": "Undo",
+    "unifiedDescription": "Help your AI teacher understand your background and preferences, so lessons feel more natural for you.",
+    "unifiedTitle": "Personalization settings"
   },
-  "emptyFlow": "No profile questions are configured.",
-  "inputPlaceholder": "Type your answer",
-  "loadFailed": "The learning profile guide could not be loaded, so it was skipped for now. Please try again later.",
+  "guided": {
+    "collectionComplete": "Your information is ready to review.",
+    "inputLimitError": "This answer is too long or has too many selections. Shorten it, then submit again; you can keep editing it.",
+    "missingDraft": "We could not generate your personal introduction. Please answer the questions again.",
+    "retry": "Try again",
+    "retryableError": "The connection was interrupted. Your answer is still here. Try again.",
+    "reviewCollection": "Review and confirm",
+    "streamError": "The questions stopped unexpectedly. Try again."
+  },
+  "loadFailed": "Your personalization settings could not be loaded, so the course was opened. Please try again later.",
   "next": "Next",
-  "refreshPending": "Your learning profile was saved. Personal info sync is still catching up, so please refresh shortly.",
-  "skip": "Skip",
-  "submitFailed": "Unable to save your profile. Please check your answers and try again.",
-  "title": "Set Up Your Learning Profile",
-  "variableLabels": {
-    "sys_user_background": "work or background",
-    "sys_user_nickname": "nickname",
-    "sys_user_style": "preferred teaching style"
+  "profileLabel": "Your background and preferences",
+  "profilePlaceholder": "For example: your work or study background, relevant experience, preferred explanation and slide styles, and current interests",
+  "refreshPending": "Saved. The course is updating, so please refresh the page shortly.",
+  "review": {
+    "description": "Your AI teacher will use this to adapt how and what it teaches.",
+    "profileLabel": "About you",
+    "profilePlaceholder": "Add or change anything here",
+    "title": "Check it once"
   },
-  "variablePrompt": "Please provide {variable}"
+  "settings": {
+    "cancel": "Cancel",
+    "clear": "Remove these details",
+    "clearDescription": "After you remove this introduction, future courses will no longer use it and you will not be asked to fill it in automatically again.",
+    "clearFailed": "Could not remove these details. Try again.",
+    "clearSuccess": "Removed",
+    "clearTitle": "Remove these details?",
+    "confirmClear": "Remove details",
+    "description": "Courses use the background and preferences below to choose more familiar examples and explain things in a style you prefer. You can edit, remove, or update them at any time.",
+    "emptyProfile": "This introduction cannot be empty. To remove it, use Remove these details.",
+    "loadFailed": "Could not load these details. Try again later.",
+    "loading": "Loading…",
+    "regenerateSuccess": "Updated",
+    "retry": "Retry",
+    "save": "Save changes",
+    "saveFailed": "Could not save your changes. Try again.",
+    "saveSuccess": "Saved",
+    "title": "Make courses fit you better",
+    "updatedAt": "Last updated: {time}"
+  },
+  "skip": "Maybe later",
+  "skipping": "Please wait…",
+  "stepCounter": "Step {current} of {total}",
+  "submitFailed": "We could not save your details. Your content is still here. Try again.",
+  "submitting": "Saving…",
+  "title": "Let your AI teacher get to know you"
 }

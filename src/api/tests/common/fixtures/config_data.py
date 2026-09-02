@@ -1,21 +1,20 @@
-"""
-Test data for configuration tests.
-"""
+"""Test data for configuration tests."""
 
 from flaskr.common.config import EnvVar
 
 
-def port_validator(value):
+def port_validator(value: object) -> object:
     """Validate port number is in valid range."""
     try:
         port = int(value)
-        return 1 <= port <= 65535
     except (ValueError, TypeError):
         return False
+    else:
+        return 1 <= port <= 65535
 
 
-def email_validator(value):
-    """Simple email validator for testing."""
+def email_validator(value: object) -> object:
+    """Validate an email address (test helper)."""
     import re
 
     pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"

@@ -1,25 +1,14 @@
+"""Verify streaming TTS subtitles behavior."""
+
 from flask import Flask
-from flask_sqlalchemy import SQLAlchemy
-
-import flaskr.dao as dao
-
-if dao.db is None:
-    _test_app = Flask("test-streaming-tts-subtitles")
-    _test_app.config.update(
-        SQLALCHEMY_DATABASE_URI="sqlite:///:memory:",
-        SQLALCHEMY_TRACK_MODIFICATIONS=False,
-    )
-    _db = SQLAlchemy()
-    _db.init_app(_test_app)
-    dao.db = _db
-
-if not hasattr(dao, "redis_client"):
-    dao.redis_client = None
+from flaskr import dao
 
 
 class TestStreamingTtsSubtitles:
+    """Verify streaming TTS subtitles behavior."""
+
     @classmethod
-    def setup_class(cls):
+    def setup_class(cls) -> None:
         cls.app = Flask("streaming-tts-subtitles")
         cls.app.config.update(
             SQLALCHEMY_DATABASE_URI="sqlite:///:memory:",
@@ -38,7 +27,9 @@ class TestStreamingTtsSubtitles:
         with cls.app.app_context():
             dao.db.create_all()
 
-    def test_streaming_tts_processor_persists_subtitle_cues(self, monkeypatch):
+    def test_streaming_tts_processor_persists_subtitle_cues(
+        self, monkeypatch: object
+    ) -> None:
         from types import SimpleNamespace
 
         from flaskr.dao import db
@@ -60,14 +51,14 @@ class TestStreamingTtsSubtitles:
         monkeypatch.setattr(
             "flaskr.service.tts.streaming_tts.synthesize_text",
             lambda **kwargs: SimpleNamespace(
-                audio_data=f"audio:{kwargs['text']}".encode("utf-8"),
+                audio_data=f"audio:{kwargs['text']}".encode(),
                 duration_ms=120,
                 word_count=2,
             ),
         )
         monkeypatch.setattr(
             "flaskr.service.tts.streaming_tts.concat_audio_best_effort",
-            lambda parts: b"".join(parts),
+            b"".join,
         )
         monkeypatch.setattr(
             "flaskr.service.tts.streaming_tts.get_audio_duration_ms",

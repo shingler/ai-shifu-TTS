@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from build_repo_knowledge_index import (
@@ -15,14 +15,13 @@ from build_repo_knowledge_index import (
 )
 from check_architecture_boundaries import (
     BACKEND_ROOT,
-    FRONTEND_ROOT,
     DEFAULT_BASELINE,
+    FRONTEND_ROOT,
     collect_backend_violations,
     collect_frontend_violations,
     dedupe_violations,
     load_baseline,
 )
-
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SUMMARY = ROOT / "docs" / "generated" / "harness-gardening-summary.md"
@@ -46,8 +45,9 @@ RETIRED_TERM_SCAN_PATHS = (
 
 
 def stale_review_docs() -> list[str]:
+    """Return stale review docs."""
     stale: list[str] = []
-    cutoff = datetime.now(timezone.utc).date().toordinal() - REVIEW_WINDOW_DAYS
+    cutoff = datetime.now(UTC).date().toordinal() - REVIEW_WINDOW_DAYS
     for category in ("design-docs", "product-specs"):
         for path in sorted((DOCS_ROOT / category).glob("*.md")):
             if path.name == "index.md":
@@ -58,7 +58,11 @@ def stale_review_docs() -> list[str]:
                 stale.append(f"{path.relative_to(ROOT)} (missing last_reviewed)")
                 continue
             try:
-                reviewed_date = datetime.strptime(reviewed, "%Y-%m-%d").date()
+                # Repo scripts cannot import `flaskr.util.datetime`; the doc
+                # metadata carries a bare calendar date, so naive is correct.
+                reviewed_date = datetime.strptime(  # noqa: DTZ007
+                    reviewed, "%Y-%m-%d"
+                ).date()
             except ValueError:
                 stale.append(
                     f"{path.relative_to(ROOT)} (invalid last_reviewed={reviewed})"
@@ -70,6 +74,7 @@ def stale_review_docs() -> list[str]:
 
 
 def retired_term_hits() -> list[str]:
+    """Return retired term hits."""
     hits: list[str] = []
     files: list[Path] = []
     for path in RETIRED_TERM_SCAN_PATHS:
@@ -83,16 +88,16 @@ def retired_term_hits() -> list[str]:
         for line_number, line in enumerate(text.splitlines(), start=1):
             if any(pattern.search(line) for pattern in allowed_patterns):
                 continue
-            for term in RETIRED_TERM_PATTERNS:
-                if term in line:
-                    hits.append(
-                        f"{path.relative_to(ROOT)}:{line_number} contains retired "
-                        f"term `{term}`"
-                    )
+            hits.extend(
+                f"{path.relative_to(ROOT)}:{line_number} contains retired term `{term}`"
+                for term in RETIRED_TERM_PATTERNS
+                if term in line
+            )
     return hits
 
 
 def stale_boundary_baseline() -> list[str]:
+    """Return stale boundary baseline."""
     current = dedupe_violations(
         collect_frontend_violations(FRONTEND_ROOT)
         + collect_backend_violations(BACKEND_ROOT)
@@ -109,6 +114,7 @@ def write_summary(
     retired_terms: list[str],
     stale_baseline: list[str],
 ) -> None:
+    """Write summary."""
     lines = [
         GENERATED_COMMENT,
         "",
@@ -138,6 +144,7 @@ def write_summary(
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse arguments for repository-harness gardening."""
     parser = argparse.ArgumentParser(description="Run harness gardening drift checks.")
     parser.add_argument(
         "--summary-path",
@@ -153,6 +160,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    """Report stale collaboration docs and architecture baselines."""
     args = parse_args()
     summary_path = Path(args.summary_path).resolve()
     stale_docs = stale_review_docs()
