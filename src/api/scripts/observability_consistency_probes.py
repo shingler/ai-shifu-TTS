@@ -4,17 +4,18 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timedelta
-from decimal import Decimal
 import json
 import os
-from pathlib import Path
 import sys
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
 
+from flaskr.util.datetime import now_utc, to_utc_iso
 from sqlalchemy import Numeric, bindparam, inspect, text
-
 
 API_ROOT = Path(__file__).resolve().parents[1]
 if str(API_ROOT) not in sys.path:
@@ -621,11 +622,11 @@ def summarize(probes: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def run_report(args: argparse.Namespace) -> dict[str, Any]:
-    from dotenv import load_dotenv  # noqa: WPS433
-    from flask import Flask  # noqa: WPS433
-    from flaskr.common.config import Config  # noqa: WPS433
-    from flaskr import dao  # noqa: WPS433
-    import pymysql  # noqa: WPS433
+    import pymysql
+    from dotenv import load_dotenv
+    from flask import Flask
+    from flaskr import dao
+    from flaskr.common.config import Config
 
     if not os.getenv("SKIP_LOAD_DOTENV"):
         load_dotenv()
@@ -639,7 +640,7 @@ def run_report(args: argparse.Namespace) -> dict[str, Any]:
     pymysql.install_as_MySQLdb()
     dao.init_db(app)
     db = dao.db
-    now = datetime.now()
+    now = now_utc()
     since = now - timedelta(hours=args.window_hours)
     with app.app_context():
         inspector = inspect(db.session.get_bind())
@@ -650,7 +651,7 @@ def run_report(args: argparse.Namespace) -> dict[str, Any]:
 
     return {
         "schema_version": 1,
-        "generated_at": now.isoformat(timespec="seconds"),
+        "generated_at": to_utc_iso(now.replace(microsecond=0)),
         "window_hours": args.window_hours,
         "limit": args.limit,
         "summary": summarize(probes),

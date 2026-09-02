@@ -1,15 +1,15 @@
 import json
 import uuid
-from datetime import datetime
 from decimal import Decimal
 
 from flaskr.dao import db
 from flaskr.service.shifu.models import AiCourseAuth, PublishedShifu
 from flaskr.service.user.utils import ensure_demo_course_permissions
+from flaskr.util.datetime import now_utc
 
 
 def _seed_published_shifu(shifu_bid: str) -> None:
-    now = datetime.utcnow()
+    now = now_utc()
     db.session.add(
         PublishedShifu(
             shifu_bid=shifu_bid,
@@ -18,9 +18,9 @@ def _seed_published_shifu(shifu_bid: str) -> None:
             avatar_res_bid="",
             keywords="",
             llm="",
-            llm_temperature=Decimal("0"),
+            llm_temperature=Decimal(0),
             llm_system_prompt="",
-            price=Decimal("0"),
+            price=Decimal(0),
             deleted=0,
             created_at=now,
             created_user_bid="system",

@@ -15,9 +15,9 @@ import pytest
 
 @pytest.fixture
 def adapter_app():
-    from flask import Flask
-    import flaskr.dao as dao
     import flaskr.service.learn.models  # noqa: F401
+    from flask import Flask
+    from flaskr import dao
 
     app = Flask("test-handle-ask-adapter")
     app.config.update(
@@ -38,7 +38,7 @@ def adapter_app():
 
 
 class _FollowUpDummyGeneration:
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs) -> None:
         self.kwargs = kwargs
         self.end_kwargs = {}
 
@@ -47,7 +47,7 @@ class _FollowUpDummyGeneration:
 
 
 class _FollowUpDummySpan:
-    def __init__(self):
+    def __init__(self) -> None:
         self.generations = []
         self.updated = {}
         self.output = ""
@@ -72,7 +72,7 @@ class _FollowUpDummySpan:
 
 
 class _FollowUpDummyTrace:
-    def __init__(self):
+    def __init__(self) -> None:
         self.updated = {}
 
     def span(self, **_kwargs):
@@ -83,7 +83,7 @@ class _FollowUpDummyTrace:
 
 
 class _FollowUpContext:
-    def __init__(self):
+    def __init__(self) -> None:
         self._shifu_info = types.SimpleNamespace(use_learner_language=0)
         self.langfuse_outputs = []
 
@@ -95,13 +95,13 @@ class _FollowUpContext:
 
 
 class _FollowUpInfo:
-    def __init__(self, ask_provider_config):
+    def __init__(self, ask_provider_config) -> None:
         self.ask_prompt = "ASK_PROMPT::{shifu_system_message}"
         self.ask_model = "gpt-test"
         self.model_args = {"temperature": 0.2}
         self.ask_provider_config = ask_provider_config
 
-    def __json__(self):
+    def __json__(self) -> dict:
         return {
             "ask_model": self.ask_model,
             "ask_provider_config": self.ask_provider_config,
@@ -118,12 +118,14 @@ def _setup_handle_input_ask_test_doubles(
     from flaskr.service.learn.ask_provider_adapters import AskProviderError
 
     class _DummyLLMSettings:
-        def __init__(self, model, temperature):
+        def __init__(self, model, temperature) -> None:
             self.model = model
             self.temperature = temperature
 
     class _DummyAskProviderRuntime:
-        def __init__(self, llm_stream_factory=None, llm_context_stream_factory=None):
+        def __init__(
+            self, llm_stream_factory=None, llm_context_stream_factory=None
+        ) -> None:
             self.llm_stream_factory = llm_stream_factory
             self.llm_context_stream_factory = llm_context_stream_factory
 
@@ -225,7 +227,7 @@ class TestElementType:
     def test_invalid_value_raises(self):
         from flaskr.service.learn.learn_dtos import ElementType
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="nonexistent"):
             ElementType("nonexistent")
 
     def test_element_type_codes_complete(self):
@@ -1576,6 +1578,7 @@ class TestAskContextLoading:
 
     def test_load_context_from_follow_up_elements(self):
         import types
+
         from flaskr.service.learn.handle_input_ask import _load_ask_context
         from flaskr.service.learn.learn_dtos import ElementPayloadDTO
         from flaskr.service.learn.listen_element_payloads import _serialize_payload
@@ -1612,6 +1615,7 @@ class TestAskContextLoading:
 
     def test_load_context_fallback_to_legacy_payload_asks(self):
         import types
+
         from flaskr.service.learn.handle_input_ask import _load_ask_context
         from flaskr.service.learn.learn_dtos import ElementPayloadDTO
         from flaskr.service.learn.listen_element_payloads import _serialize_payload
@@ -1640,6 +1644,7 @@ class TestAskContextLoading:
 
     def test_load_context_fallback_to_none(self):
         import types
+
         from flaskr.service.learn.handle_input_ask import _load_ask_context
         from flaskr.service.learn.learn_dtos import ElementPayloadDTO
         from flaskr.service.learn.listen_element_payloads import _serialize_payload
@@ -1659,6 +1664,7 @@ class TestAskContextLoading:
 
     def test_load_context_truncation(self):
         import types
+
         from flaskr.service.learn.handle_input_ask import _load_ask_context
         from flaskr.service.learn.learn_dtos import ElementPayloadDTO
         from flaskr.service.learn.listen_element_payloads import _serialize_payload
@@ -1689,15 +1695,16 @@ class TestHandleAskAdapter:
 
     def test_handle_ask_creates_standalone_question_element(self, adapter_app):
         import json
-        from flaskr.service.learn.listen_element_payloads import _serialize_payload
-        from flaskr.service.learn.listen_elements import ListenElementRunAdapter
+
+        from flaskr.dao import db
         from flaskr.service.learn.learn_dtos import (
+            ElementPayloadDTO,
             GeneratedType,
             RunMarkdownFlowDTO,
-            ElementPayloadDTO,
         )
+        from flaskr.service.learn.listen_element_payloads import _serialize_payload
+        from flaskr.service.learn.listen_elements import ListenElementRunAdapter
         from flaskr.service.learn.models import LearnGeneratedElement
-        from flaskr.dao import db
 
         with adapter_app.app_context():
             adapter = ListenElementRunAdapter(
@@ -1751,15 +1758,16 @@ class TestHandleAskAdapter:
 
     def test_process_ask_persists_without_streaming(self, adapter_app):
         import json
-        from flaskr.service.learn.listen_element_payloads import _serialize_payload
-        from flaskr.service.learn.listen_elements import ListenElementRunAdapter
+
+        from flaskr.dao import db
         from flaskr.service.learn.learn_dtos import (
+            ElementPayloadDTO,
             GeneratedType,
             RunMarkdownFlowDTO,
-            ElementPayloadDTO,
         )
+        from flaskr.service.learn.listen_element_payloads import _serialize_payload
+        from flaskr.service.learn.listen_elements import ListenElementRunAdapter
         from flaskr.service.learn.models import LearnGeneratedElement
-        from flaskr.dao import db
 
         with adapter_app.app_context():
             adapter = ListenElementRunAdapter(
@@ -1819,15 +1827,15 @@ class TestHandleAskAdapter:
             assert payload["anchor_element_bid"] == "anchor_elem_2"
 
     def test_handle_ask_sets_anchor_bid_state(self, adapter_app):
-        from flaskr.service.learn.listen_element_payloads import _serialize_payload
-        from flaskr.service.learn.listen_elements import ListenElementRunAdapter
+        from flaskr.dao import db
         from flaskr.service.learn.learn_dtos import (
+            ElementPayloadDTO,
             GeneratedType,
             RunMarkdownFlowDTO,
-            ElementPayloadDTO,
         )
+        from flaskr.service.learn.listen_element_payloads import _serialize_payload
+        from flaskr.service.learn.listen_elements import ListenElementRunAdapter
         from flaskr.service.learn.models import LearnGeneratedElement
-        from flaskr.dao import db
 
         with adapter_app.app_context():
             adapter = ListenElementRunAdapter(
@@ -1871,16 +1879,17 @@ class TestHandleAskAdapter:
 
     def test_process_creates_standalone_answer_element(self, adapter_app):
         import json
-        from flaskr.service.learn.listen_element_payloads import _serialize_payload
-        from flaskr.service.learn.listen_elements import ListenElementRunAdapter
+
+        from flaskr.dao import db
         from flaskr.service.learn.learn_dtos import (
             ElementPayloadDTO,
             ElementType,
             GeneratedType,
             RunMarkdownFlowDTO,
         )
+        from flaskr.service.learn.listen_element_payloads import _serialize_payload
+        from flaskr.service.learn.listen_elements import ListenElementRunAdapter
         from flaskr.service.learn.models import LearnGeneratedElement
-        from flaskr.dao import db
 
         with adapter_app.app_context():
             adapter = ListenElementRunAdapter(
@@ -1980,16 +1989,16 @@ class TestHandleAskAdapter:
     def test_process_streams_multi_chunk_follow_up_answer_but_persists_only_final_row(
         self, adapter_app
     ):
-        from flaskr.service.learn.listen_element_payloads import _serialize_payload
-        from flaskr.service.learn.listen_elements import ListenElementRunAdapter
+        from flaskr.dao import db
         from flaskr.service.learn.learn_dtos import (
             ElementPayloadDTO,
             ElementType,
             GeneratedType,
             RunMarkdownFlowDTO,
         )
+        from flaskr.service.learn.listen_element_payloads import _serialize_payload
+        from flaskr.service.learn.listen_elements import ListenElementRunAdapter
         from flaskr.service.learn.models import LearnGeneratedElement
-        from flaskr.dao import db
 
         with adapter_app.app_context():
             adapter = ListenElementRunAdapter(
@@ -2093,16 +2102,16 @@ class TestHandleAskAdapter:
             assert answer_rows[0].target_element_bid == logical_answer_bid
 
     def test_process_creates_answer_element_for_patched_anchor_bid(self, adapter_app):
-        from flaskr.service.learn.listen_element_payloads import _serialize_payload
-        from flaskr.service.learn.listen_elements import ListenElementRunAdapter
+        from flaskr.dao import db
         from flaskr.service.learn.learn_dtos import (
             ElementPayloadDTO,
             ElementType,
             GeneratedType,
             RunMarkdownFlowDTO,
         )
+        from flaskr.service.learn.listen_element_payloads import _serialize_payload
+        from flaskr.service.learn.listen_elements import ListenElementRunAdapter
         from flaskr.service.learn.models import LearnGeneratedElement
-        from flaskr.dao import db
 
         with adapter_app.app_context():
             adapter = ListenElementRunAdapter(
@@ -2209,8 +2218,7 @@ class TestHandleAskAdapter:
             assert answer_row.content_text == "answer"
 
     def test_answer_audio_events_do_not_attach_audio(self, adapter_app):
-        from flaskr.service.learn.listen_element_payloads import _serialize_payload
-        from flaskr.service.learn.listen_elements import ListenElementRunAdapter
+        from flaskr.dao import db
         from flaskr.service.learn.learn_dtos import (
             AudioCompleteDTO,
             AudioSegmentDTO,
@@ -2219,8 +2227,9 @@ class TestHandleAskAdapter:
             GeneratedType,
             RunMarkdownFlowDTO,
         )
+        from flaskr.service.learn.listen_element_payloads import _serialize_payload
+        from flaskr.service.learn.listen_elements import ListenElementRunAdapter
         from flaskr.service.learn.models import LearnGeneratedElement
-        from flaskr.dao import db
 
         with adapter_app.app_context():
             adapter = ListenElementRunAdapter(
@@ -2380,7 +2389,7 @@ class TestHandleAskAdapter:
                     context=_FollowUpContext(),
                     user_info=types.SimpleNamespace(user_id="u1"),
                     attend_id="pr1",
-                    input="hello",
+                    user_input="hello",
                     outline_item_info=types.SimpleNamespace(
                         shifu_bid="s1", bid="o1", title="Outline", position=1
                     ),
@@ -2501,7 +2510,7 @@ class TestHandleAskAdapter:
                     context=_FollowUpContext(),
                     user_info=types.SimpleNamespace(user_id="u1"),
                     attend_id="pr1",
-                    input="hello",
+                    user_input="hello",
                     outline_item_info=types.SimpleNamespace(
                         shifu_bid="s1", bid="o1", title="Outline", position=1
                     ),

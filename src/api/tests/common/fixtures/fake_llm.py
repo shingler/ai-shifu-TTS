@@ -1,5 +1,5 @@
+from collections.abc import Generator
 from types import SimpleNamespace
-from typing import Generator, List
 
 
 class FakeLLMResponse:
@@ -12,7 +12,7 @@ class FakeLLMResponse:
         is_truncated: bool = False,
         finish_reason: str = "stop",
         usage=None,
-    ):
+    ) -> None:
         self.id = chunk_id
         self.is_end = is_end
         self.is_truncated = is_truncated
@@ -22,7 +22,7 @@ class FakeLLMResponse:
         self.choices = [SimpleNamespace(delta=SimpleNamespace(content=result))]
 
 
-def _stream_chunks(stream: bool) -> List[str]:
+def _stream_chunks(stream: bool) -> list[str]:
     if stream:
         return ["mock-", "llm"]
     return ["mock-llm"]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -12,6 +12,7 @@ from flaskr.service.billing.models import (
     CreditLedgerEntry,
     CreditWalletBucket,
 )
+from flaskr.util.datetime import NAIVE_DATETIME_MAX
 
 from .consts import (
     REFERRAL_REWARD_STATUS_CANCELED,
@@ -35,8 +36,8 @@ def _serialize_dt(value: datetime | None) -> str | None:
     if value is None:
         return None
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _serialize_decimal(value: Decimal | None) -> str | None:
@@ -54,7 +55,7 @@ def _parse_metadata_datetime(value: Any) -> datetime | None:
     if not normalized:
         return None
     try:
-        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(normalized)
     except ValueError:
         return None
     return parsed.replace(tzinfo=None) if parsed.tzinfo is not None else parsed
@@ -267,8 +268,8 @@ def build_referral_reward_queue(
             ledger,
         )
         return (
-            effective_at or datetime.max,
-            reward.created_at or datetime.max,
+            effective_at or NAIVE_DATETIME_MAX,
+            reward.created_at or NAIVE_DATETIME_MAX,
             int(reward.id or 0),
         )
 

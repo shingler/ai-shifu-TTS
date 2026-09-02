@@ -1,10 +1,9 @@
 import pytest
-from sqlalchemy.exc import ResourceClosedError
-
 from flaskr.dao import db
 from flaskr.service.learn import listen_element_run_persistence
 from flaskr.service.learn.listen_elements import ListenElementRunAdapter
 from flaskr.service.learn.models import LearnGeneratedElement
+from sqlalchemy.exc import ResourceClosedError
 
 
 def _make_row(
@@ -112,7 +111,7 @@ def test_find_active_element_row_ids_invalidates_desynced_connection(app, monkey
             pass
 
     class _FakeConnection:
-        def __init__(self):
+        def __init__(self) -> None:
             self.invalidated = 0
 
         def execute(self, *_args, **_kwargs):
@@ -122,7 +121,7 @@ def test_find_active_element_row_ids_invalidates_desynced_connection(app, monkey
             self.invalidated += 1
 
     class _FakeSession:
-        def __init__(self, connection):
+        def __init__(self, connection) -> None:
             self._connection = connection
 
         def connection(self):
@@ -232,7 +231,7 @@ def test_desync_forensics_capture_fingerprints_the_stale_response():
             return 555001
 
     class _FakeConnection:
-        class connection:
+        class connection:  # noqa: N801 - mimics the SQLAlchemy attribute name
             dbapi_connection = _FakeRaw()
 
     described = _describe_desynced_connection(_FakeResult(), _FakeConnection())
@@ -281,7 +280,7 @@ def test_desync_forensics_logs_only_packet_header_not_payload():
                 return 1
 
         class _FakeConnection:
-            class connection:
+            class connection:  # noqa: N801 - mimics the SQLAlchemy attribute name
                 dbapi_connection = None
 
         _FakeConnection.connection.dbapi_connection = _FakeRaw()

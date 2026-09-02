@@ -3,6 +3,11 @@ from flask import Flask, request
 from flaskr.common.config import ENV_VARS
 from flaskr.common.public_urls import build_google_oauth_callback_url
 from flaskr.common.shifu_context import get_shifu_creator_bid, with_shifu_context
+from flaskr.service.billing.customization import (
+    build_customization_capabilities,
+    is_creator_customization_enabled,
+    resolve_creator_public_integrations,
+)
 from flaskr.service.billing.dtos import (
     RuntimeConfigDTO,
     RuntimeLegalUrlsDTO,
@@ -15,11 +20,6 @@ from flaskr.service.billing.primitives import (
 from flaskr.service.billing.runtime_config import (
     build_default_runtime_billing_context,
     build_runtime_billing_context,
-)
-from flaskr.service.billing.customization import (
-    build_customization_capabilities,
-    is_creator_customization_enabled,
-    resolve_creator_public_integrations,
 )
 from flaskr.service.config.funcs import get_config
 
@@ -223,7 +223,9 @@ def register_config_handler(app: Flask, path_prefix: str) -> Flask:
             stripeEnabled=(
                 "stripe" in custom_payment_channels
                 if custom_payment_enabled
-                else _to_bool(get_config("STRIPE_ENABLED", False), False)
+                else _to_bool(
+                    get_config("STRIPE_ENABLED", default=False), default=False
+                )
             ),
             paymentChannels=payment_channels,
             payOrderExpireSeconds=_to_int(
@@ -231,8 +233,8 @@ def register_config_handler(app: Flask, path_prefix: str) -> Flask:
                 600,
             ),
             alwaysShowLessonTree=_to_bool(
-                get_config("UI_ALWAYS_SHOW_LESSON_TREE", False),
-                False,
+                get_config("UI_ALWAYS_SHOW_LESSON_TREE", default=False),
+                default=False,
             ),
             logoWideUrl=logo_wide_url,
             logoSquareUrl=logo_square_url,
@@ -246,8 +248,8 @@ def register_config_handler(app: Flask, path_prefix: str) -> Flask:
                 "",
             ),
             enableEruda=_to_bool(
-                get_config("DEBUG_ERUDA_ENABLED", False),
-                False,
+                get_config("DEBUG_ERUDA_ENABLED", default=False),
+                default=False,
             ),
             loginMethodsEnabled=_to_list(
                 get_config("LOGIN_METHODS_ENABLED", "phone"),

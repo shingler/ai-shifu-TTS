@@ -1,18 +1,19 @@
+from flaskr.dao import db
+from flaskr.util.datetime import now_utc
 from sqlalchemy import (
-    Column,
-    String,
-    Integer,
     TIMESTAMP,
+    Column,
     Date,
-    Text,
-    SmallInteger,
     DateTime,
+    Integer,
+    SmallInteger,
+    String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.dialects.mysql import BIGINT
-from flaskr.util.datetime import now_utc
-from ...dao import db
-from .consts import USER_STATE_UNREGISTERED, CREDENTIAL_STATE_UNVERIFIED
+
+from .consts import CREDENTIAL_STATE_UNVERIFIED, USER_STATE_UNREGISTERED
 
 
 class UserConversion(db.Model):
@@ -54,7 +55,7 @@ class UserConversion(db.Model):
         conversion_status,
         conversion_uuid="",
         conversion_third_platform="",
-    ):
+    ) -> None:
         self.user_id = user_id
         self.conversion_id = conversion_id
         self.conversion_source = conversion_source
@@ -139,6 +140,17 @@ class UserInfo(db.Model):
         comment="User identifier: phone or email",
     )
     nickname = Column(String(255), nullable=False, default="", comment="User nickname")
+    learner_profile = Column(
+        Text,
+        nullable=True,
+        default="",
+        comment="User-owned learning personalization profile",
+    )
+    learner_profile_updated_at = Column(
+        DateTime,
+        nullable=True,
+        comment="Timestamp when the learner profile was last changed",
+    )
     avatar = Column(String(255), nullable=False, default="", comment="User avatar")
     birthday = Column(Date, nullable=True, comment="User birthday")
     language = Column(String(30), nullable=False, default="", comment="User language")

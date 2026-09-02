@@ -1,15 +1,14 @@
-"""
-Unit tests for environment variable fallback mechanism in Config class.
-"""
+"""Unit tests for environment variable fallback mechanism in Config class."""
 
-import pytest
 import logging
 from unittest.mock import MagicMock
+
+import pytest
 from flask import Flask
 from flaskr.common.config import (
+    ENV_VARS,
     Config,
     EnhancedConfig,
-    ENV_VARS,
 )
 
 
@@ -42,7 +41,7 @@ class TestEnvironmentVariableFallback:
 
         return app, config
 
-    def test_fallback_to_env_var_with_warning(self, setup_app, caplog):
+    def test_fallback_to_env_var_with_warning(self, setup_app):
         """Test that undefined config keys fallback to environment variables with warning."""
         app, config = setup_app
 
@@ -53,15 +52,16 @@ class TestEnvironmentVariableFallback:
         assert value == "undefined_value_1"
 
         # Check warning was logged through app.logger (which is a MagicMock)
-        app.logger.warning.assert_called()
-        warning_call_args = app.logger.warning.call_args[0][0]
-        assert "UNDEFINED_VAR_1" in warning_call_args
-        assert "not defined in ENV_VARS registry" in warning_call_args
-        assert "Falling back to" in warning_call_args
+        app.logger.warning.assert_called_once_with(
+            "Configuration key '%s' not defined in ENV_VARS registry. Falling "
+            "back to environment variable value. Consider adding this to "
+            "ENV_VARS in config.py for proper type conversion and validation.",
+            "UNDEFINED_VAR_1",
+        )
 
     def test_fallback_cached_no_repeated_warning(self, setup_app, caplog):
         """Test that cached values don't trigger repeated warnings."""
-        app, config = setup_app
+        _app, config = setup_app
 
         # First access - should log warning
         with caplog.at_level(logging.WARNING):
@@ -81,7 +81,7 @@ class TestEnvironmentVariableFallback:
 
     def test_undefined_var_not_in_env_returns_none(self, setup_app):
         """Test that undefined variables not in environment return None."""
-        app, config = setup_app
+        _app, config = setup_app
 
         # Access undefined variable that doesn't exist in environment
         value = config["NON_EXISTENT_VAR"]
@@ -91,7 +91,7 @@ class TestEnvironmentVariableFallback:
 
     def test_defined_var_no_fallback_warning(self, setup_app, caplog):
         """Test that defined variables don't trigger fallback warnings."""
-        app, config = setup_app
+        _app, config = setup_app
 
         # Access a defined variable
         with caplog.at_level(logging.WARNING):
@@ -105,7 +105,7 @@ class TestEnvironmentVariableFallback:
 
     def test_get_method_with_fallback(self, setup_app, caplog):
         """Test Config.get() method with fallback."""
-        app, config = setup_app
+        _app, config = setup_app
 
         # Test with undefined var that exists in env
         with caplog.at_level(logging.WARNING):
@@ -116,7 +116,7 @@ class TestEnvironmentVariableFallback:
 
     def test_get_method_with_default(self, setup_app):
         """Test Config.get() method with default value."""
-        app, config = setup_app
+        _app, config = setup_app
 
         # Test with non-existent var and default
         # Note: Config.get() returns the default parameter value if the key is not found

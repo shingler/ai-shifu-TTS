@@ -2,7 +2,7 @@ import uuid
 
 
 class _FakeRedis:
-    def __init__(self, values=None):
+    def __init__(self, values=None) -> None:
         self.values = dict(values or {})
         self.deleted = []
 
@@ -18,7 +18,11 @@ def _reset_user_auth_tables():
     from flaskr.dao import db
     from flaskr.service.user.models import (
         AuthCredential,
+    )
+    from flaskr.service.user.models import (
         UserInfo as UserEntity,
+    )
+    from flaskr.service.user.models import (
         UserToken as UserTokenModel,
     )
 
@@ -48,15 +52,14 @@ def _reset_shifu_tables() -> None:
 
 def test_phone_flow_marks_temp_phone_claim_as_created_new_user(tmp_path, monkeypatch):
     from flask import Flask
-    from flask_sqlalchemy import SQLAlchemy
-
     from flaskr import dao
-    import flaskr.service.user.phone_flow as phone_flow
+    from flaskr.service.user import phone_flow
     from flaskr.service.user.consts import (
         USER_STATE_REGISTERED,
         USER_STATE_UNREGISTERED,
     )
-    from flaskr.service.user.models import AuthCredential, UserInfo as UserEntity
+    from flaskr.service.user.models import AuthCredential
+    from flaskr.service.user.models import UserInfo as UserEntity
 
     app = Flask(__name__)
     db_uri = f"sqlite:///{tmp_path / 'phone-claim.db'}"
@@ -75,8 +78,6 @@ def test_phone_flow_marks_temp_phone_claim_as_created_new_user(tmp_path, monkeyp
         ADMIN_LOGIN_GRANT_CREATOR_WITH_DEMO=False,
     )
 
-    if dao.db is None:
-        dao.db = SQLAlchemy()
     dao.db.init_app(app)
 
     fake_redis = _FakeRedis()
@@ -124,7 +125,7 @@ def test_phone_flow_marks_temp_phone_claim_as_created_new_user(tmp_path, monkeyp
 
 
 def test_phone_flow_sets_user_identify(app):
-    import flaskr.service.user.phone_flow as phone_flow
+    from flaskr.service.user import phone_flow
     from flaskr.service.user.models import UserInfo as UserEntity
 
     # Bypass code storage by using universal code
@@ -153,7 +154,7 @@ def test_phone_flow_sets_user_identify(app):
 
 
 def test_email_flow_sets_user_identify(app):
-    import flaskr.service.user.email_flow as email_flow
+    from flaskr.service.user import email_flow
     from flaskr.service.user.models import UserInfo as UserEntity
 
     with app.app_context():
@@ -179,10 +180,11 @@ def test_send_email_code_stores_lowercase_identifier(app, monkeypatch):
     import flaskr.service.user.utils as user_utils
     from flaskr.dao import db
     from flaskr.service.user.models import UserVerifyCode
+
     from tests.common.fixtures.fake_redis import FakeRedis
 
     class _FakeSMTP:
-        def __init__(self, *_args, **_kwargs):
+        def __init__(self, *_args, **_kwargs) -> None:
             self.sent_to = None
 
         def starttls(self):
@@ -193,7 +195,6 @@ def test_send_email_code_stores_lowercase_identifier(app, monkeypatch):
 
         def sendmail(self, _sender, recipient, _message):
             self.sent_to = recipient
-            return None
 
         def quit(self):
             return None
@@ -201,7 +202,8 @@ def test_send_email_code_stores_lowercase_identifier(app, monkeypatch):
     fake_redis = FakeRedis()
     monkeypatch.setattr(user_utils, "redis", fake_redis, raising=False)
     monkeypatch.setattr(user_utils.smtplib, "SMTP", _FakeSMTP, raising=False)
-    monkeypatch.setattr(user_utils.random, "choices", lambda _chars, k: list("1234"))
+    fixed_digits = iter("1234")
+    monkeypatch.setattr(user_utils.secrets, "choice", lambda _chars: next(fixed_digits))
 
     with app.app_context():
         app.config.update(
@@ -244,8 +246,8 @@ def test_send_email_code_stores_lowercase_identifier(app, monkeypatch):
 
 
 def test_phone_flow_verifies_code_from_db_when_cache_missing(app):
-    import flaskr.service.user.phone_flow as phone_flow
     from flaskr.dao import db
+    from flaskr.service.user import phone_flow
     from flaskr.service.user.models import UserVerifyCode
 
     with app.app_context():
@@ -278,10 +280,10 @@ def test_phone_flow_verifies_code_from_db_when_cache_missing(app):
 
 
 def test_phone_flow_normalizes_cn_prefix_when_verifying_db_code(app):
-    import flaskr.service.user.phone_flow as phone_flow
     from flaskr.dao import db
-    from flaskr.service.user.models import AuthCredential, UserInfo as UserEntity
-    from flaskr.service.user.models import UserVerifyCode
+    from flaskr.service.user import phone_flow
+    from flaskr.service.user.models import AuthCredential, UserVerifyCode
+    from flaskr.service.user.models import UserInfo as UserEntity
 
     with app.app_context():
         app.config["UNIVERSAL_VERIFICATION_CODE"] = "9999"
@@ -326,10 +328,10 @@ def test_phone_flow_normalizes_cn_prefix_when_verifying_db_code(app):
 
 
 def test_phone_flow_accepts_prefixed_pending_db_code(app):
-    import flaskr.service.user.phone_flow as phone_flow
     from flaskr.dao import db
-    from flaskr.service.user.models import AuthCredential, UserInfo as UserEntity
-    from flaskr.service.user.models import UserVerifyCode
+    from flaskr.service.user import phone_flow
+    from flaskr.service.user.models import AuthCredential, UserVerifyCode
+    from flaskr.service.user.models import UserInfo as UserEntity
 
     with app.app_context():
         app.config["UNIVERSAL_VERIFICATION_CODE"] = "9999"
@@ -374,8 +376,8 @@ def test_phone_flow_accepts_prefixed_pending_db_code(app):
 
 
 def test_consume_verification_code_accepts_prefixed_pending_cache_key(app):
-    import flaskr.service.user.verification_codes as verification_codes
     from flaskr.dao import db
+    from flaskr.service.user import verification_codes
     from flaskr.service.user.models import UserVerifyCode
 
     with app.app_context():
@@ -412,9 +414,9 @@ def test_consume_verification_code_accepts_prefixed_pending_cache_key(app):
 
 
 def test_phone_flow_bootstrap_sets_draft_owner_for_published_demo(app):
-    import flaskr.service.user.phone_flow as phone_flow
     from flaskr.dao import db
     from flaskr.service.shifu.models import DraftShifu, PublishedShifu
+    from flaskr.service.user import phone_flow
     from flaskr.service.user.models import UserInfo as UserEntity
 
     shifu_bid = uuid.uuid4().hex[:32]
@@ -463,8 +465,8 @@ def test_phone_flow_bootstrap_sets_draft_owner_for_published_demo(app):
 
 
 def test_email_flow_verifies_code_from_db_when_cache_missing(app):
-    import flaskr.service.user.email_flow as email_flow
     from flaskr.dao import db
+    from flaskr.service.user import email_flow
     from flaskr.service.user.models import UserVerifyCode
 
     with app.app_context():

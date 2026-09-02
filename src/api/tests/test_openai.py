@@ -11,7 +11,13 @@ def _install_litellm_stub() -> None:
         return
 
     litellm_stub = types.ModuleType("litellm")
+
+    def get_model_info(*args, **kwargs):
+        _ = args, kwargs
+        raise ValueError("unknown model")
+
     litellm_stub.get_max_tokens = lambda _model: 4096
+    litellm_stub.get_model_info = get_model_info
     litellm_stub.completion = lambda *args, **kwargs: iter([])
     sys.modules["litellm"] = litellm_stub
 
@@ -54,21 +60,9 @@ def _install_openai_responses_stub() -> None:
 
     response_function_tool_call = type("ResponseFunctionToolCall", (), {})
     response_text_config = type("ResponseTextConfigParam", (), {})
-    setattr(
-        response_function_mod,
-        "ResponseFunctionToolCall",
-        response_function_tool_call,
-    )
-    setattr(
-        response_text_mod,
-        "ResponseTextConfigParam",
-        response_text_config,
-    )
-    setattr(
-        responses_pkg,
-        "ResponseFunctionToolCall",
-        response_function_tool_call,
-    )
+    response_function_mod.ResponseFunctionToolCall = response_function_tool_call
+    response_text_mod.ResponseTextConfigParam = response_text_config
+    responses_pkg.ResponseFunctionToolCall = response_function_tool_call
 
     sys.modules["openai.types.responses"] = responses_pkg
     sys.modules["openai.types.responses.response"] = response_mod
@@ -88,7 +82,7 @@ pytestmark = pytest.mark.no_mock_llm
 
 
 class DummySpan:
-    def __init__(self, trace_id="trace-1", span_id="span-1"):
+    def __init__(self, trace_id="trace-1", span_id="span-1") -> None:
         self.generation_args = None
         self.end_args = None
         self.updated = None
@@ -107,7 +101,7 @@ class DummySpan:
 
 
 class FakeResponse:
-    def __init__(self, chunk_id, content=None, finish_reason=None, usage=None):
+    def __init__(self, chunk_id, content=None, finish_reason=None, usage=None) -> None:
         self.id = chunk_id
         delta = SimpleNamespace(content=content)
         self.choices = [SimpleNamespace(delta=delta, finish_reason=finish_reason)]
@@ -115,7 +109,7 @@ class FakeResponse:
 
 
 class FakeUsage:
-    def __init__(self, prompt_tokens, completion_tokens, total_tokens):
+    def __init__(self, prompt_tokens, completion_tokens, total_tokens) -> None:
         self.prompt_tokens = prompt_tokens
         self.completion_tokens = completion_tokens
         self.total_tokens = total_tokens

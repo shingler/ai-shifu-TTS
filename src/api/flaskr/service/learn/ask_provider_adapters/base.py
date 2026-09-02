@@ -1,7 +1,8 @@
 """Base contracts and errors for ask provider adapters."""
 
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
-from typing import Any, Callable, Generator, Protocol
+from typing import Any, Protocol
 
 from flask import Flask
 
@@ -13,8 +14,7 @@ class AskProviderChunk:
 
 @dataclass
 class AskProviderRuntime:
-    """
-    Runtime-only data injected by caller.
+    """Runtime-only data injected by caller.
 
     ``llm_stream_factory`` is used by the built-in LLM adapter.
     ``llm_context_stream_factory`` lets retrieval-style adapters synthesize a
@@ -35,7 +35,7 @@ class AskProviderError(Exception):
     description safe to surface in the UI; the raw message stays for logs.
     """
 
-    def __init__(self, message: str = "", user_message: str | None = None):
+    def __init__(self, message: str = "", user_message: str | None = None) -> None:
         super().__init__(message)
         self.user_message = user_message
 

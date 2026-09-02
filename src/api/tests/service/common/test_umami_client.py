@@ -3,9 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import requests
-
-from flaskr.common.cache_provider import InMemoryCacheProvider
 from flaskr.common import umami_client
+from flaskr.common.cache_provider import InMemoryCacheProvider
 
 
 def _mock_config(monkeypatch, values: dict[str, object]) -> None:
@@ -185,7 +184,7 @@ def test_get_course_visit_count_30d_returns_fetched_value_when_cache_write_fails
     )
 
     class CacheWrapper:
-        def __init__(self):
+        def __init__(self) -> None:
             self._cache = InMemoryCacheProvider()
 
         def get(self, key):
@@ -229,7 +228,7 @@ def test_get_course_visit_count_30d_returns_zero_when_failure_cache_write_fails(
     )
 
     class CacheWrapper:
-        def __init__(self):
+        def __init__(self) -> None:
             self._cache = InMemoryCacheProvider()
 
         def get(self, key):
@@ -359,7 +358,7 @@ def test_login_for_access_token_returns_token_when_cache_write_fails(monkeypatch
     )
 
     class CacheWrapper:
-        def __init__(self):
+        def __init__(self) -> None:
             self._cache = InMemoryCacheProvider()
 
         def get(self, key):

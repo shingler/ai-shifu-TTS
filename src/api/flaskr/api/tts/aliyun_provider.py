@@ -1,5 +1,4 @@
-"""
-Aliyun TTS Provider.
+"""Aliyun TTS Provider.
 
 This module provides TTS synthesis using Aliyun's Intelligent Speech Interaction
 RESTful API.
@@ -10,24 +9,23 @@ API Reference:
 """
 
 import logging
-import requests
-from typing import Optional, List
 
-from flaskr.common.config import get_config
-from flaskr.common.log import AppLoggerProxy
-from flaskr.api.tts.base import (
-    BaseTTSProvider,
-    TTSResult,
-    VoiceSettings,
-    AudioSettings,
-    ProviderConfig,
-    ParamRange,
-)
+import requests
+
 from flaskr.api.tts.aliyun_nls_token import (
     get_aliyun_nls_token,
     is_aliyun_nls_token_configured,
 )
-
+from flaskr.api.tts.base import (
+    AudioSettings,
+    BaseTTSProvider,
+    ParamRange,
+    ProviderConfig,
+    TTSResult,
+    VoiceSettings,
+)
+from flaskr.common.config import get_config
+from flaskr.common.log import AppLoggerProxy
 
 logger = AppLoggerProxy(logging.getLogger(__name__))
 
@@ -994,7 +992,7 @@ ALIYUN_VOICES = [
         "lang": "zh",
         "desc": "直播女声",
     },
-    # 臻品音色 (Ultra-HD)
+    # 臻品音色 group (Ultra-HD)
     {
         "id": "zhiqi",
         "name": "知琪",
@@ -1182,11 +1180,11 @@ class AliyunTTSProvider(BaseTTSProvider):
         return "aliyun"
 
     def _get_settings(self) -> tuple:
-        """
-        Get Aliyun TTS settings.
+        """Get Aliyun TTS settings.
 
         Returns:
             tuple: (appkey, region)
+
         """
         appkey = get_config("ALIYUN_TTS_APPKEY") or ""
         region = get_config("ALIYUN_TTS_REGION") or "shanghai"
@@ -1205,6 +1203,7 @@ class AliyunTTSProvider(BaseTTSProvider):
         Notes:
         - Per-Shifu voice settings are stored in the database.
         - This method only provides a provider-level fallback.
+
         """
         return VoiceSettings(
             voice_id="xiaoyun",
@@ -1224,19 +1223,18 @@ class AliyunTTSProvider(BaseTTSProvider):
             channel=1,
         )
 
-    def get_supported_voices(self) -> List[dict]:
+    def get_supported_voices(self) -> list[dict]:
         """Get list of supported voices."""
         return ALIYUN_VOICES
 
     def synthesize(
         self,
         text: str,
-        voice_settings: Optional[VoiceSettings] = None,
-        audio_settings: Optional[AudioSettings] = None,
-        model: Optional[str] = None,
+        voice_settings: VoiceSettings | None = None,
+        audio_settings: AudioSettings | None = None,
+        model: str | None = None,
     ) -> TTSResult:
-        """
-        Synthesize text to speech using Aliyun TTS.
+        """Synthesize text to speech using Aliyun TTS.
 
         Args:
             text: Text to synthesize (max 300 characters)
@@ -1249,6 +1247,7 @@ class AliyunTTSProvider(BaseTTSProvider):
 
         Raises:
             ValueError: If synthesis fails
+
         """
         if not text or not text.strip():
             raise ValueError("Text cannot be empty")
@@ -1256,7 +1255,7 @@ class AliyunTTSProvider(BaseTTSProvider):
         # Check text length (300 characters limit)
         if len(text) > 300:
             logger.warning(
-                f"Text exceeds Aliyun limit ({len(text)} > 300 chars), truncating"
+                "Text exceeds Aliyun limit (%s > 300 chars), truncating", len(text)
             )
             text = text[:300]
 
@@ -1287,19 +1286,17 @@ class AliyunTTSProvider(BaseTTSProvider):
 
         # Use provider-native ranges for Aliyun
         aliyun_speed = (
-            int(round(voice_settings.speed)) if voice_settings.speed is not None else 0
+            round(voice_settings.speed) if voice_settings.speed is not None else 0
         )
         aliyun_speed = max(-500, min(500, aliyun_speed))
 
         aliyun_pitch = (
-            int(round(voice_settings.pitch)) if voice_settings.pitch is not None else 0
+            round(voice_settings.pitch) if voice_settings.pitch is not None else 0
         )
         aliyun_pitch = max(-500, min(500, aliyun_pitch))
 
         aliyun_volume = (
-            int(round(voice_settings.volume))
-            if voice_settings.volume is not None
-            else 50
+            round(voice_settings.volume) if voice_settings.volume is not None else 50
         )
         aliyun_volume = max(0, min(100, aliyun_volume))
 
@@ -1326,9 +1323,12 @@ class AliyunTTSProvider(BaseTTSProvider):
             headers["X-NLS-Token"] = token
 
         logger.debug(
-            f"Calling Aliyun TTS API: voice={voice_settings.voice_id}, "
-            f"speed={aliyun_speed}, pitch={aliyun_pitch}, vol={aliyun_volume}, "
-            f"text_len={len(text)}"
+            "Calling Aliyun TTS API: voice=%s, speed=%s, pitch=%s, vol=%s, text_len=%s",
+            voice_settings.voice_id,
+            aliyun_speed,
+            aliyun_pitch,
+            aliyun_volume,
+            len(text),
         )
 
         try:
@@ -1342,10 +1342,8 @@ class AliyunTTSProvider(BaseTTSProvider):
             # Check content type to determine if error or audio
             content_type = response.headers.get("Content-Type", "")
 
-            if (
-                "audio" in content_type
-                or response.status_code == 200
-                and "application/json" not in content_type
+            if "audio" in content_type or (
+                response.status_code == 200 and "application/json" not in content_type
             ):
                 # Success - got audio data
                 audio_data = response.content
@@ -1353,7 +1351,7 @@ class AliyunTTSProvider(BaseTTSProvider):
                 # Get request ID from header
                 request_id = response.headers.get("X-NLS-RequestId", "")
                 if request_id:
-                    logger.debug(f"Aliyun TTS request ID: {request_id}")
+                    logger.debug("Aliyun TTS request ID: %s", request_id)
 
                 # Estimate duration based on audio size
                 # For MP3 at 128kbps: ~16KB/s
@@ -1361,8 +1359,9 @@ class AliyunTTSProvider(BaseTTSProvider):
                 duration_ms = len(audio_data) // bytes_per_ms if bytes_per_ms > 0 else 0
 
                 logger.info(
-                    f"Aliyun TTS synthesis completed: "
-                    f"size={len(audio_data)} bytes, duration~={duration_ms}ms"
+                    "Aliyun TTS synthesis completed: size=%s bytes, duration~=%sms",
+                    len(audio_data),
+                    duration_ms,
                 )
 
                 return TTSResult(
@@ -1373,24 +1372,21 @@ class AliyunTTSProvider(BaseTTSProvider):
                     word_count=len(text),
                 )
 
-            else:
-                # Error response (JSON)
-                try:
-                    result = response.json()
-                    status = result.get("status", "unknown")
-                    message = result.get("message", "Unknown error")
-                    task_id = result.get("task_id", "")
-                    raise ValueError(
-                        f"Aliyun TTS API error {status}: {message} (task_id: {task_id})"
-                    )
-                except ValueError as e:
-                    if "Aliyun TTS API error" in str(e):
-                        raise
-                    raise ValueError(f"Aliyun TTS API error: {response.text[:200]}")
+            # Error response (JSON)
+            try:
+                result = response.json()
+            except ValueError as e:
+                raise ValueError(f"Aliyun TTS API error: {response.text[:200]}") from e
+            status = result.get("status", "unknown")
+            message = result.get("message", "Unknown error")
+            task_id = result.get("task_id", "")
+            raise ValueError(
+                f"Aliyun TTS API error {status}: {message} (task_id: {task_id})"
+            )
 
         except requests.RequestException as e:
-            logger.error(f"Aliyun TTS request failed: {e}")
-            raise ValueError(f"Aliyun TTS request failed: {e}")
+            logger.exception("Aliyun TTS request failed")
+            raise ValueError(f"Aliyun TTS request failed: {e}") from e
 
     def get_provider_config(self) -> ProviderConfig:
         """Get Aliyun provider configuration for frontend."""

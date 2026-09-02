@@ -7,8 +7,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
-from pydantic import BaseModel, ConfigDict, Field
+
 from flaskr.common.swagger import register_schema_to_swagger
+from pydantic import BaseModel, ConfigDict, Field
 
 
 @register_schema_to_swagger
@@ -62,7 +63,7 @@ class AdminOperationCourseSummaryDTO(BaseModel):
         updater_nickname: str,
         created_at: datetime | None,
         updated_at: datetime | None,
-    ):
+    ) -> None:
         super().__init__(
             shifu_bid=shifu_bid,
             course_name=course_name,
@@ -83,7 +84,7 @@ class AdminOperationCourseSummaryDTO(BaseModel):
             updated_at=updated_at,
         )
 
-    def __json__(self):
+    def __json__(self) -> dict:
         return {
             "shifu_bid": self.shifu_bid,
             "course_name": self.course_name,
@@ -370,7 +371,7 @@ class AdminOperationCourseDetailChapterDTO(BaseModel):
         ..., description="Last modifier nickname", required=False
     )
     updated_at: datetime | None = Field(..., description="Updated at", required=False)
-    children: list["AdminOperationCourseDetailChapterDTO"] = Field(
+    children: list[AdminOperationCourseDetailChapterDTO] = Field(
         default_factory=list,
         description="Nested children",
         required=False,

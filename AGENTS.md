@@ -32,6 +32,11 @@ to.
 - Before committing, run `python scripts/check_dev_tools.py` to confirm
   lefthook and its underlying tools are installed; the local checks are
   silently skipped if lefthook was never installed.
+- Treat a Ruff finding as a code or contract signal. Prefer an established
+  project pattern plus focused regression coverage; if the flagged construct
+  is intentional, use the narrowest coded suppression with a plain-English
+  reason. Change global Ruff selection or ignores only in a dedicated rule PR
+  tracked by the active Ruff ExecPlan.
 - For git commit message title, body, and classification requirements, use
   [Git Commit Message Requirements](#git-commit-message-requirements); keep
   agent-specific rule files pointing there instead of duplicating the policy.
@@ -88,6 +93,9 @@ to.
   vs offset-aware, or string vs string) — normalize both to UTC before
   comparing. These are exactly the drifts that reappear when new code lands in
   modules the UTC sweep has not yet reached.
+- Do not weaken `ruff.toml`, add a blanket `noqa`, or create a broad per-file
+  exception merely to make new code pass. Fix the code first; reserve global
+  ignores for documented repository-wide contract conflicts.
 
 ## Git Commit Message Requirements
 
@@ -171,11 +179,12 @@ prod**.
 ### Rule: `main` must pin RELEASE versions of both libraries
 
 dev builds are for feature-branch / cross-repo testing only. `main` must always
-pin **release** versions (`X.Y.Z`) of both libraries. Two CI checks enforce this
-on every PR into `main` and fail on a pre-release/dev pin:
+pin **release** versions (`X.Y.Z`) of both libraries. The **Static Checks** job
+in `repo-harness.yml` enforces this on every PR into `main` and fails on a
+pre-release/dev pin:
 
-- **Check markdown-flow release pin** (`check-markdown-flow-release.yml`) — backend.
-- **Check markdown-flow-ui release pin** (`check-markdown-flow-ui-release.yml`) — frontend.
+- The `markdown-flow` release pin is checked in `src/api/requirements.txt`.
+- The `markdown-flow-ui` release pin is checked in `src/cook-web/package.json`.
 
 Pin release versions of both before merging.
 
@@ -185,6 +194,9 @@ Pin release versions of both before merging.
   widen only when the change crosses a shared contract or multiple surfaces.
 - When a task touches only docs or instruction files, at minimum run
   `python scripts/check_repo_harness.py`.
+- When a Ruff-driven rewrite changes runtime behavior or a public/internal
+  contract, add or identify a focused regression test; a clean lint result is
+  not behavior coverage.
 - When a task changes shared boundaries or introduces new app/service
   dependencies, run `python scripts/check_architecture_boundaries.py`.
 - When a task touches the browser harness, run `cd src/cook-web && npm run test:e2e`.

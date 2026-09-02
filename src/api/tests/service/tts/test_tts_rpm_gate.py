@@ -1,10 +1,9 @@
 import pytest
-
 from flaskr.service.tts import rpm_gate
 
 
 class _FakeRedisLock:
-    def __init__(self):
+    def __init__(self) -> None:
         self.released = False
 
     def acquire(self, blocking=True, blocking_timeout=None):
@@ -16,7 +15,7 @@ class _FakeRedisLock:
 
 
 class _FakeRedis:
-    def __init__(self):
+    def __init__(self) -> None:
         self.values = {}
         self.locks = []
 
@@ -179,7 +178,7 @@ def test_rpm_gate_times_out_when_queue_exceeds_max_wait(monkeypatch):
         sleep_fn=sleep_fn,
     )
 
-    with pytest.raises(rpm_gate.TTSRpmQueueTimeout):
+    with pytest.raises(rpm_gate.TTSRpmQueueTimeoutError):
         rpm_gate.acquire_tts_rpm_slot(
             provider="minimax",
             api_key="api-key-a",

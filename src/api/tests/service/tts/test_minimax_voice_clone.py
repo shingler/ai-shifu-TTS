@@ -3,11 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
+from typing import Any, Self
 
-from flask import Flask
 import pytest
-
-import flaskr.dao as dao
+from flask import Flask
+from flaskr import dao
 from flaskr.service.billing.consts import (
     BILLING_METRIC_TTS_REQUEST_COUNT,
     CREDIT_BUCKET_CATEGORY_FREE,
@@ -20,7 +20,7 @@ from flaskr.service.billing.models import (
     CreditWallet,
     CreditWalletBucket,
 )
-from flaskr.service.common.models import AppException, ERROR_CODE
+from flaskr.service.common.models import ERROR_CODE, AppError
 from flaskr.service.metering.consts import BILL_USAGE_SCENE_PREVIEW, BILL_USAGE_TYPE_TTS
 from flaskr.service.metering.models import BillUsageRecord
 from flaskr.service.shifu.models import DraftShifu
@@ -64,9 +64,9 @@ def _seed_course_wallet_and_rate(app: Flask) -> None:
             wallet_bid="wallet-creator-1",
             creator_bid="creator-1",
             available_credits=Decimal("10.0000000000"),
-            reserved_credits=Decimal("0"),
+            reserved_credits=Decimal(0),
             lifetime_granted_credits=Decimal("10.0000000000"),
-            lifetime_consumed_credits=Decimal("0"),
+            lifetime_consumed_credits=Decimal(0),
             version=0,
         )
         bucket = CreditWalletBucket(
@@ -79,9 +79,9 @@ def _seed_course_wallet_and_rate(app: Flask) -> None:
             priority=10,
             original_credits=Decimal("10.0000000000"),
             available_credits=Decimal("10.0000000000"),
-            reserved_credits=Decimal("0"),
-            consumed_credits=Decimal("0"),
-            expired_credits=Decimal("0"),
+            reserved_credits=Decimal(0),
+            consumed_credits=Decimal(0),
+            expired_credits=Decimal(0),
             effective_from=datetime(2026, 1, 1, 0, 0, 0),
             status=CREDIT_BUCKET_STATUS_ACTIVE,
         )
@@ -130,7 +130,7 @@ def test_validate_minimax_custom_voice_id_rules() -> None:
 
     assert settings.voice_id == "AiShifu_voice_123"
 
-    with pytest.raises(AppException) as exc_info:
+    with pytest.raises(AppError) as exc_info:
         validate_tts_settings_strict(
             provider="baidu",
             model="",
@@ -146,17 +146,17 @@ def test_normalize_audio_blob_validates_duration_and_exports_wav(monkeypatch) ->
     from flaskr.service.tts import minimax_voice_clone
 
     class FakeSegment:
-        def __len__(self):
+        def __len__(self) -> int:
             return 12_000
 
-        def export(self, out, format="wav"):
+        def export(self, out, format="wav"):  # noqa: A002 - mirrors the pydub API
             assert format == "wav"
             out.write(b"WAV-BYTES")
 
     monkeypatch.setattr(
         minimax_voice_clone.AudioSegment,
         "from_file",
-        lambda _stream, format=None: FakeSegment(),
+        lambda _stream, **_kwargs: FakeSegment(),
         raising=False,
     )
 
@@ -271,10 +271,10 @@ def test_run_minimax_voice_clone_success_captures_credit_once(
     monkeypatch,
 ) -> None:
     from flaskr.service.tts.minimax_voice_clone import (
-        TTS_MINIMAX_CLONE_STATUS_READY,
         TTS_MINIMAX_CLONE_STATUS_QUEUED,
-        submit_minimax_voice_clone,
+        TTS_MINIMAX_CLONE_STATUS_READY,
         run_minimax_voice_clone,
+        submit_minimax_voice_clone,
     )
     from flaskr.service.tts.models import TTSMiniMaxClonedVoice
 
@@ -330,7 +330,7 @@ def test_run_minimax_voice_clone_success_captures_credit_once(
 
     monkeypatch.setattr(
         "flaskr.service.tts.minimax_voice_clone.MiniMaxVoiceCloneClient",
-        lambda: FakeClient(),
+        FakeClient,
     )
 
     submitted = submit_minimax_voice_clone(
@@ -448,7 +448,7 @@ def test_run_minimax_voice_clone_reads_persisted_storage_when_worker_cache_misse
     monkeypatch.setattr(
         minimax_voice_clone,
         "MiniMaxVoiceCloneClient",
-        lambda: FakeClient(),
+        FakeClient,
     )
 
     submitted = submit_minimax_voice_clone(
@@ -495,12 +495,12 @@ def test_execute_clone_processing_uses_row_values_inside_app_context(monkeypatch
     class FakeApp:
         def app_context(self):
             class Context:
-                def __enter__(self):
+                def __enter__(self) -> Self:
                     nonlocal in_context
                     in_context = True
                     return self
 
-                def __exit__(self, *_args):
+                def __exit__(self, *_args) -> bool | None:
                     nonlocal in_context
                     in_context = False
                     return False
@@ -508,7 +508,7 @@ def test_execute_clone_processing_uses_row_values_inside_app_context(monkeypatch
             return Context()
 
     class DetachedSensitiveRow:
-        def __init__(self):
+        def __init__(self) -> None:
             self.voice_bid = "voice-detached"
             self.voice_id = "AiShifu_detached_1"
             self.owner_user_bid = "creator-1"
@@ -518,9 +518,9 @@ def test_execute_clone_processing_uses_row_values_inside_app_context(monkeypatch
             self.source_audio_filename = "source.webm"
             self.prompt_audio_filename = ""
             self.billing_reservation_bid = ""
-            self.estimated_credits = Decimal("0")
+            self.estimated_credits = Decimal(0)
 
-        def __getattribute__(self, name):
+        def __getattribute__(self, name) -> Any:
             protected = {
                 "voice_bid",
                 "voice_id",
@@ -612,7 +612,7 @@ def test_execute_clone_processing_uses_row_values_inside_app_context(monkeypatch
     monkeypatch.setattr(
         minimax_voice_clone,
         "MiniMaxVoiceCloneClient",
-        lambda: FakeClient(),
+        FakeClient,
     )
 
     result = minimax_voice_clone._execute_clone_processing(
@@ -689,8 +689,8 @@ def test_run_minimax_voice_clone_releases_credit_on_normalization_failure(
 ) -> None:
     from flaskr.service.tts.minimax_voice_clone import (
         TTS_MINIMAX_CLONE_STATUS_FAILED,
-        submit_minimax_voice_clone,
         run_minimax_voice_clone,
+        submit_minimax_voice_clone,
     )
     from flaskr.service.tts.models import TTSMiniMaxClonedVoice
 

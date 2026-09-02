@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-from decimal import Decimal
 from datetime import datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-
 from flaskr.dao import db
 from flaskr.service.common.models import ERROR_CODE
 from flaskr.service.order.consts import ORDER_STATUS_SUCCESS
 from flaskr.service.order.models import Order
+from flaskr.service.promo.admin_dtos import (
+    AdminPromotionCampaignItemDTO,
+    AdminPromotionSummaryDTO,
+)
 from flaskr.service.promo.consts import (
     COUPON_APPLY_TYPE_ALL,
     COUPON_APPLY_TYPE_SPECIFIC,
@@ -22,10 +25,6 @@ from flaskr.service.promo.consts import (
     PROMO_CAMPAIGN_JOIN_TYPE_EVENT,
     PROMO_CAMPAIGN_JOIN_TYPE_MANUAL,
 )
-from flaskr.service.promo.admin_dtos import (
-    AdminPromotionCampaignItemDTO,
-    AdminPromotionSummaryDTO,
-)
 from flaskr.service.promo.creator_redemption import (
     list_creator_course_redemption_coupons,
 )
@@ -36,7 +35,9 @@ from flaskr.service.promo.models import (
     PromoRedemption,
 )
 from flaskr.service.shifu.models import AiCourseAuth, DraftShifu, PublishedShifu
-from flaskr.service.user.models import AuthCredential, UserInfo as UserEntity
+from flaskr.service.user.models import AuthCredential
+from flaskr.service.user.models import UserInfo as UserEntity
+from flaskr.util.datetime import now_utc, parse_naive_utc
 
 
 @pytest.fixture(autouse=True)
@@ -505,7 +506,7 @@ def test_admin_promotions_coupon_list_returns_empty_ops_states_by_default(
         coupon.code = "STABLE"
         coupon.usage_type = COUPON_APPLY_TYPE_ALL
         coupon.discount_type = COUPON_TYPE_FIXED
-        coupon.value = Decimal("20")
+        coupon.value = Decimal(20)
         coupon.filter = '{"course_id": "course-1"}'
         coupon.total_count = 10
         coupon.used_count = 1
@@ -655,7 +656,7 @@ def test_creator_redemption_code_list_shows_only_owned_course_batches(
         other_coupon.code = "OTHERCODE"
         other_coupon.usage_type = COUPON_APPLY_TYPE_ALL
         other_coupon.discount_type = COUPON_TYPE_FIXED
-        other_coupon.value = Decimal("20")
+        other_coupon.value = Decimal(20)
         other_coupon.filter = '{"course_id": "course-2"}'
         other_coupon.total_count = 1
         other_coupon.used_count = 0
@@ -790,7 +791,7 @@ def test_creator_redemption_code_usage_route_requires_owned_course_coupon(
         other_coupon.code = "OTHERCODE"
         other_coupon.usage_type = COUPON_APPLY_TYPE_ALL
         other_coupon.discount_type = COUPON_TYPE_FIXED
-        other_coupon.value = Decimal("20")
+        other_coupon.value = Decimal(20)
         other_coupon.filter = '{"course_id": "course-2"}'
         other_coupon.total_count = 1
         other_coupon.used_count = 0
@@ -968,7 +969,7 @@ def test_creator_redemption_code_detail_update_and_status_require_owned_course_c
         other_coupon.code = "OTHERCODE"
         other_coupon.usage_type = COUPON_APPLY_TYPE_ALL
         other_coupon.discount_type = COUPON_TYPE_FIXED
-        other_coupon.value = Decimal("20")
+        other_coupon.value = Decimal(20)
         other_coupon.filter = '{"course_id": "course-2"}'
         other_coupon.total_count = 1
         other_coupon.used_count = 0
@@ -1258,7 +1259,7 @@ def test_admin_promotions_coupon_usage_falls_back_to_order_course(
         usage.order_bid = "order-1"
         usage.code = "TONGYONG"
         usage.discount_type = COUPON_TYPE_FIXED
-        usage.value = Decimal("20")
+        usage.value = Decimal(20)
         usage.status = COUPON_STATUS_USED
         usage.shifu_bid = ""
         db.session.add(usage)
@@ -1320,7 +1321,7 @@ def test_admin_promotions_coupon_usage_list_supports_keyword_filter(
                     order_bid="order-1",
                     code="TONGYONG-A",
                     discount_type=COUPON_TYPE_FIXED,
-                    value=Decimal("20"),
+                    value=Decimal(20),
                     status=COUPON_STATUS_USED,
                     shifu_bid="course-1",
                 ),
@@ -1331,7 +1332,7 @@ def test_admin_promotions_coupon_usage_list_supports_keyword_filter(
                     order_bid="order-2",
                     code="TONGYONG-B",
                     discount_type=COUPON_TYPE_FIXED,
-                    value=Decimal("20"),
+                    value=Decimal(20),
                     status=COUPON_STATUS_USED,
                     shifu_bid="course-1",
                 ),
@@ -1370,7 +1371,7 @@ def test_admin_promotions_coupon_usage_list_rejects_invalid_status(
             code="INVALIDSTATUS",
             usage_type=COUPON_APPLY_TYPE_ALL,
             discount_type=COUPON_TYPE_FIXED,
-            value=Decimal("10"),
+            value=Decimal(10),
             total_count=1,
             used_count=0,
             filter="{}",
@@ -1595,7 +1596,7 @@ def test_admin_promotions_campaign_routes_round_trip(app, test_client, monkeypat
         redemption.shifu_bid = "course-2"
         redemption.promo_name = "Early Bird"
         redemption.discount_type = COUPON_TYPE_PERCENT
-        redemption.value = Decimal("15")
+        redemption.value = Decimal(15)
         redemption.discount_amount = Decimal("14.85")
         redemption.status = PROMO_CAMPAIGN_APPLICATION_STATUS_APPLIED
         db.session.add(redemption)
@@ -1748,7 +1749,7 @@ def test_admin_promotions_campaign_redemptions_support_keyword_filter(
                     shifu_bid="course-2",
                     promo_name="Early Bird",
                     discount_type=COUPON_TYPE_PERCENT,
-                    value=Decimal("15"),
+                    value=Decimal(15),
                     discount_amount=Decimal("14.85"),
                     status=PROMO_CAMPAIGN_APPLICATION_STATUS_APPLIED,
                 ),
@@ -1760,7 +1761,7 @@ def test_admin_promotions_campaign_redemptions_support_keyword_filter(
                     shifu_bid="course-2",
                     promo_name="Early Bird",
                     discount_type=COUPON_TYPE_PERCENT,
-                    value=Decimal("15"),
+                    value=Decimal(15),
                     discount_amount=Decimal("13.35"),
                     status=PROMO_CAMPAIGN_APPLICATION_STATUS_APPLIED,
                 ),
@@ -1829,7 +1830,7 @@ def test_admin_promotions_campaign_redemptions_summary_only_counts_applied(
                     shifu_bid="course-2",
                     promo_name="Early Bird",
                     discount_type=COUPON_TYPE_PERCENT,
-                    value=Decimal("15"),
+                    value=Decimal(15),
                     discount_amount=Decimal("14.85"),
                     status=PROMO_CAMPAIGN_APPLICATION_STATUS_APPLIED,
                 ),
@@ -1841,7 +1842,7 @@ def test_admin_promotions_campaign_redemptions_summary_only_counts_applied(
                     shifu_bid="course-2",
                     promo_name="Early Bird",
                     discount_type=COUPON_TYPE_PERCENT,
-                    value=Decimal("15"),
+                    value=Decimal(15),
                     discount_amount=Decimal("13.35"),
                     status=PROMO_CAMPAIGN_APPLICATION_STATUS_VOIDED,
                 ),
@@ -1923,10 +1924,10 @@ def test_admin_promotions_campaign_route_rejects_overlap_with_legacy_enabled_cam
                 description="Legacy overlap campaign",
                 apply_type=PROMO_CAMPAIGN_JOIN_TYPE_AUTO,
                 status=0,
-                start_at=datetime.strptime("2026-04-24 10:00:00", "%Y-%m-%d %H:%M:%S"),
-                end_at=datetime.strptime("2026-05-24 10:00:00", "%Y-%m-%d %H:%M:%S"),
+                start_at=parse_naive_utc("2026-04-24 10:00:00", "%Y-%m-%d %H:%M:%S"),
+                end_at=parse_naive_utc("2026-05-24 10:00:00", "%Y-%m-%d %H:%M:%S"),
                 discount_type=COUPON_TYPE_FIXED,
-                value=Decimal("10"),
+                value=Decimal(10),
                 channel="app",
                 filter="{}",
                 created_user_bid="",
@@ -1963,7 +1964,7 @@ def test_admin_promotions_coupon_list_compatibly_displays_legacy_status_rows(
     with app.app_context():
         _seed_user("operator-1", "operator@example.com", "Operator", is_operator=True)
         _seed_course("legacy-course-1", "Legacy Coupon Course")
-        now = datetime.now()
+        now = now_utc()
         db.session.add_all(
             [
                 Coupon(
@@ -1972,7 +1973,7 @@ def test_admin_promotions_coupon_list_compatibly_displays_legacy_status_rows(
                     code="LEGACYACTIVE",
                     discount_type=COUPON_TYPE_FIXED,
                     usage_type=801,
-                    value=Decimal("10"),
+                    value=Decimal(10),
                     start=now - timedelta(days=1),
                     end=now + timedelta(days=1),
                     filter='{"course_id":"legacy-course-1"}',
@@ -1988,7 +1989,7 @@ def test_admin_promotions_coupon_list_compatibly_displays_legacy_status_rows(
                     code="LEGACYFUTURE",
                     discount_type=COUPON_TYPE_FIXED,
                     usage_type=801,
-                    value=Decimal("10"),
+                    value=Decimal(10),
                     start=now + timedelta(days=1),
                     end=now + timedelta(days=2),
                     filter='{"course_id":"legacy-course-1"}',
@@ -2004,7 +2005,7 @@ def test_admin_promotions_coupon_list_compatibly_displays_legacy_status_rows(
                     code="LEGACYEXPIRED",
                     discount_type=COUPON_TYPE_FIXED,
                     usage_type=801,
-                    value=Decimal("10"),
+                    value=Decimal(10),
                     start=now - timedelta(days=3),
                     end=now - timedelta(days=1),
                     filter='{"course_id":"legacy-course-1"}',
@@ -2020,7 +2021,7 @@ def test_admin_promotions_coupon_list_compatibly_displays_legacy_status_rows(
                     code="OPINACTIVE",
                     discount_type=COUPON_TYPE_FIXED,
                     usage_type=801,
-                    value=Decimal("10"),
+                    value=Decimal(10),
                     start=now - timedelta(days=1),
                     end=now + timedelta(days=1),
                     filter='{"course_id":"legacy-course-1"}',
@@ -2082,7 +2083,7 @@ def test_admin_promotions_campaign_list_compatibly_displays_legacy_status_rows(
     with app.app_context():
         _seed_user("operator-1", "operator@example.com", "Operator", is_operator=True)
         _seed_course("legacy-course-2", "Legacy Campaign Course")
-        now = datetime.now()
+        now = now_utc()
         db.session.add_all(
             [
                 PromoCampaign(
@@ -2095,7 +2096,7 @@ def test_admin_promotions_campaign_list_compatibly_displays_legacy_status_rows(
                     start_at=now - timedelta(days=1),
                     end_at=now + timedelta(days=1),
                     discount_type=COUPON_TYPE_FIXED,
-                    value=Decimal("20"),
+                    value=Decimal(20),
                     channel="app",
                     filter="{}",
                     created_user_bid=" ",
@@ -2111,7 +2112,7 @@ def test_admin_promotions_campaign_list_compatibly_displays_legacy_status_rows(
                     start_at=now + timedelta(days=1),
                     end_at=now + timedelta(days=2),
                     discount_type=COUPON_TYPE_FIXED,
-                    value=Decimal("20"),
+                    value=Decimal(20),
                     channel="app",
                     filter="{}",
                     created_user_bid="",
@@ -2127,7 +2128,7 @@ def test_admin_promotions_campaign_list_compatibly_displays_legacy_status_rows(
                     start_at=now - timedelta(days=3),
                     end_at=now - timedelta(days=1),
                     discount_type=COUPON_TYPE_FIXED,
-                    value=Decimal("20"),
+                    value=Decimal(20),
                     channel="app",
                     filter="{}",
                     created_user_bid="",
@@ -2143,7 +2144,7 @@ def test_admin_promotions_campaign_list_compatibly_displays_legacy_status_rows(
                     start_at=now - timedelta(days=1),
                     end_at=now + timedelta(days=1),
                     discount_type=COUPON_TYPE_FIXED,
-                    value=Decimal("20"),
+                    value=Decimal(20),
                     channel="app",
                     filter="{}",
                     created_user_bid="operator-1",
@@ -2295,12 +2296,10 @@ def test_admin_promotions_coupon_update_allows_changing_only_end_time(
     with app.app_context():
         coupon = Coupon.query.filter(Coupon.coupon_bid == coupon_bid).first()
         assert coupon is not None
-        assert coupon.start == datetime.strptime(
+        assert coupon.start == parse_naive_utc(
             "2026-04-24 10:00:00", "%Y-%m-%d %H:%M:%S"
         )
-        assert coupon.end == datetime.strptime(
-            "2026-05-30 23:59:00", "%Y-%m-%d %H:%M:%S"
-        )
+        assert coupon.end == parse_naive_utc("2026-05-30 23:59:00", "%Y-%m-%d %H:%M:%S")
 
 
 def test_admin_promotions_coupon_update_ignores_empty_start_time(
@@ -2355,12 +2354,10 @@ def test_admin_promotions_coupon_update_ignores_empty_start_time(
     with app.app_context():
         coupon = Coupon.query.filter(Coupon.coupon_bid == coupon_bid).first()
         assert coupon is not None
-        assert coupon.start == datetime.strptime(
+        assert coupon.start == parse_naive_utc(
             "2026-04-24 10:00:00", "%Y-%m-%d %H:%M:%S"
         )
-        assert coupon.end == datetime.strptime(
-            "2026-05-30 23:59:00", "%Y-%m-%d %H:%M:%S"
-        )
+        assert coupon.end == parse_naive_utc("2026-05-30 23:59:00", "%Y-%m-%d %H:%M:%S")
 
 
 def test_admin_promotions_coupon_status_rejects_enabling_expired_coupon(
@@ -2559,10 +2556,10 @@ def test_admin_promotions_campaign_update_allows_changing_only_start_time(
             PromoCampaign.promo_bid == promo_bid
         ).first()
         assert campaign is not None
-        assert campaign.start_at == datetime.strptime(
+        assert campaign.start_at == parse_naive_utc(
             "2099-04-25 10:30:00", "%Y-%m-%d %H:%M:%S"
         )
-        assert campaign.end_at == datetime.strptime(
+        assert campaign.end_at == parse_naive_utc(
             "2099-05-24 10:00:00", "%Y-%m-%d %H:%M:%S"
         )
 
@@ -2619,10 +2616,10 @@ def test_admin_promotions_campaign_update_ignores_null_end_time(
             PromoCampaign.promo_bid == promo_bid
         ).first()
         assert campaign is not None
-        assert campaign.start_at == datetime.strptime(
+        assert campaign.start_at == parse_naive_utc(
             "2099-04-25 10:30:00", "%Y-%m-%d %H:%M:%S"
         )
-        assert campaign.end_at == datetime.strptime(
+        assert campaign.end_at == parse_naive_utc(
             "2099-05-24 10:00:00", "%Y-%m-%d %H:%M:%S"
         )
 
@@ -2666,8 +2663,8 @@ def test_admin_promotions_campaign_update_rejects_apply_type_change_after_redemp
         redemption.shifu_bid = "course-5"
         redemption.promo_name = "Locked Campaign"
         redemption.discount_type = COUPON_TYPE_FIXED
-        redemption.value = Decimal("20")
-        redemption.discount_amount = Decimal("20")
+        redemption.value = Decimal(20)
+        redemption.discount_amount = Decimal(20)
         redemption.status = PROMO_CAMPAIGN_APPLICATION_STATUS_APPLIED
         db.session.add(redemption)
         db.session.commit()
@@ -2731,8 +2728,8 @@ def test_admin_promotions_campaign_update_rejects_channel_and_value_change_after
         redemption.shifu_bid = "course-7"
         redemption.promo_name = "Partially Locked Campaign"
         redemption.discount_type = COUPON_TYPE_FIXED
-        redemption.value = Decimal("20")
-        redemption.discount_amount = Decimal("20")
+        redemption.value = Decimal(20)
+        redemption.discount_amount = Decimal(20)
         redemption.status = PROMO_CAMPAIGN_APPLICATION_STATUS_APPLIED
         db.session.add(redemption)
         db.session.commit()

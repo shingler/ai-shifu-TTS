@@ -4,11 +4,10 @@ import unittest
 import unittest.mock
 
 from flask import Flask
-from flask_sqlalchemy import SQLAlchemy
 
 # Provide a lightweight Redis stub if the dependency is missing in the test env.
 try:
-    import redis as _redis  # type: ignore  # noqa: F401
+    import redis as _redis  # type: ignore[import-untyped]  # noqa: F401
 except ImportError:  # pragma: no cover - optional dependency
     redis_stub = types.ModuleType("redis")
 
@@ -18,33 +17,20 @@ except ImportError:  # pragma: no cover - optional dependency
     redis_stub.Redis = _RedisStub
     sys.modules["redis"] = redis_stub
 
-import flaskr.dao as dao
-
-# Ensure SQLAlchemy is available for model declarations.
-if dao.db is None:
-    _test_app = Flask("test-learn-funcs")
-    _test_app.config.update(
-        SQLALCHEMY_DATABASE_URI="sqlite:///:memory:",
-        SQLALCHEMY_TRACK_MODIFICATIONS=False,
-    )
-    _db = SQLAlchemy()
-    _db.init_app(_test_app)
-    dao.db = _db
-
-if not hasattr(dao, "redis_client"):
-    dao.redis_client = None
-
+from flaskr import dao
 from flaskr.service.learn.const import LEARN_STATUS_IN_PROGRESS
-from flaskr.service.learn.learn_dtos import BlockType, GeneratedType, LikeStatus
-from flaskr.service.learn.learn_funcs import get_learn_record
 from flaskr.service.learn.context_v2 import (
     BlockType as MarkdownFlowBlockType,
+)
+from flaskr.service.learn.context_v2 import (
     RunScriptContextV2,
     RunScriptInfo,
     RunType,
 )
-from flaskr.service.learn.models import LearnGeneratedBlock, LearnProgressRecord
+from flaskr.service.learn.learn_dtos import BlockType, GeneratedType, LikeStatus
+from flaskr.service.learn.learn_funcs import get_learn_record
 from flaskr.service.learn.llmsetting import LLMSettings
+from flaskr.service.learn.models import LearnGeneratedBlock, LearnProgressRecord
 from flaskr.service.shifu.consts import (
     BLOCK_TYPE_MDCONTENT_VALUE,
     BLOCK_TYPE_MDERRORMESSAGE_VALUE,
@@ -54,7 +40,7 @@ from flaskr.service.shifu.consts import (
 
 class LearnRecordLoadTests(unittest.TestCase):
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         cls.app = Flask("learn-record-tests")
         cls.app.config.update(
             SQLALCHEMY_DATABASE_URI="sqlite:///:memory:",
@@ -141,32 +127,28 @@ class LearnRecordLoadTests(unittest.TestCase):
             preview_mode=False,
         )
 
-        self.assertEqual(len(record.records), 3)
+        assert len(record.records) == 3
 
         content_record = record.records[0]
-        self.assertEqual(content_record.block_type, BlockType.CONTENT)
-        self.assertEqual(content_record.content, content_block.generated_content)
-        self.assertNotEqual(content_record.content, content_block.block_content_conf)
-        self.assertEqual(content_record.user_input, "")
-        self.assertEqual(content_record.like_status, LikeStatus.NONE)
+        assert content_record.block_type == BlockType.CONTENT
+        assert content_record.content == content_block.generated_content
+        assert content_record.content != content_block.block_content_conf
+        assert content_record.user_input == ""
+        assert content_record.like_status == LikeStatus.NONE
 
         error_record = record.records[1]
-        self.assertEqual(error_record.block_type, BlockType.ERROR_MESSAGE)
-        self.assertEqual(error_record.content, error_block.generated_content)
-        self.assertEqual(error_record.user_input, "")
-        self.assertEqual(error_record.like_status, LikeStatus.NONE)
+        assert error_record.block_type == BlockType.ERROR_MESSAGE
+        assert error_record.content == error_block.generated_content
+        assert error_record.user_input == ""
+        assert error_record.like_status == LikeStatus.NONE
 
         interaction_record = record.records[2]
-        self.assertEqual(interaction_record.block_type, BlockType.INTERACTION)
-        self.assertEqual(
-            interaction_record.content, interaction_block.block_content_conf
-        )
-        self.assertEqual(
-            interaction_record.user_input, interaction_block.generated_content
-        )
-        self.assertNotEqual(interaction_record.content, interaction_record.user_input)
+        assert interaction_record.block_type == BlockType.INTERACTION
+        assert interaction_record.content == interaction_block.block_content_conf
+        assert interaction_record.user_input == interaction_block.generated_content
+        assert interaction_record.content != interaction_record.user_input
         # Interaction blocks should not carry like status in API responses.
-        self.assertEqual(interaction_record.like_status, LikeStatus.NONE)
+        assert interaction_record.like_status == LikeStatus.NONE
 
     def test_mdflow_context_loads_generated_and_user_inputs(self):
         """Verify mdflow run uses generated content for context and real user input values."""
@@ -250,19 +232,19 @@ class LearnRecordLoadTests(unittest.TestCase):
         )
 
         class DummyBlock:
-            def __init__(self, block_type, content, index):
+            def __init__(self, block_type, content, index) -> None:
                 self.block_type = block_type
                 self.content = content
                 self.index = index
 
         class DummyLLMResult:
-            def __init__(self, content: str):
+            def __init__(self, content: str) -> None:
                 self.content = content
 
         class FakeMarkdownFlow:
             last_context = None
 
-            def __init__(self, *args, **kwargs):
+            def __init__(self, *args, **kwargs) -> None:
                 self.blocks = [DummyBlock(BlockType.CONTENT, "md content", 0)]
 
             def set_visual_mode(self, *_args, **_kwargs):
@@ -301,20 +283,17 @@ class LearnRecordLoadTests(unittest.TestCase):
         ):
             list(ctx.run_inner(self.app))
 
-        self.assertEqual(
-            FakeMarkdownFlow.last_context,
-            [
-                {"role": "user", "content": "md content"},
-                {"role": "assistant", "content": teacher_block.generated_content},
-            ],
+        assert FakeMarkdownFlow.last_context == [
+            {"role": "user", "content": "md content"},
+            {"role": "assistant", "content": teacher_block.generated_content},
+        ]
+        assert (
+            teacher_block.block_content_conf
+            not in FakeMarkdownFlow.last_context[0]["content"]
         )
-        self.assertNotIn(
-            teacher_block.block_content_conf,
-            FakeMarkdownFlow.last_context[0]["content"],
-        )
-        self.assertNotIn(
-            student_block.block_content_conf,
-            FakeMarkdownFlow.last_context[1]["content"],
+        assert (
+            student_block.block_content_conf
+            not in FakeMarkdownFlow.last_context[1]["content"]
         )
 
     def test_run_progresses_across_content_blocks_until_interaction(self):
@@ -372,17 +351,17 @@ class LearnRecordLoadTests(unittest.TestCase):
         )
 
         class DummyBlock:
-            def __init__(self, block_type, content, index):
+            def __init__(self, block_type, content, index) -> None:
                 self.block_type = block_type
                 self.content = content
                 self.index = index
 
         class DummyLLMResult:
-            def __init__(self, content: str):
+            def __init__(self, content: str) -> None:
                 self.content = content
 
         class FakeMarkdownFlow:
-            def __init__(self, *args, **kwargs):
+            def __init__(self, *args, **kwargs) -> None:
                 self.blocks = [
                     DummyBlock(MarkdownFlowBlockType.CONTENT, "first content", 0),
                     DummyBlock(MarkdownFlowBlockType.CONTENT, "second content", 1),
@@ -436,23 +415,20 @@ class LearnRecordLoadTests(unittest.TestCase):
             while ctx.has_next():
                 events.extend(list(ctx.run(self.app)))
 
-        self.assertEqual(
-            [event.type for event in events],
-            [
-                GeneratedType.CONTENT,
-                GeneratedType.BREAK,
-                GeneratedType.CONTENT,
-                GeneratedType.BREAK,
-                GeneratedType.INTERACTION,
-            ],
-        )
-        self.assertEqual(
-            [event.content for event in events[:4:2]],
-            ["first content", "second content"],
-        )
-        self.assertEqual(events[-1].content, "?[Continue//continue]")
-        self.assertEqual(progress.block_position, 2)
-        self.assertFalse(ctx._can_continue)
+        assert [event.type for event in events] == [
+            GeneratedType.CONTENT,
+            GeneratedType.BREAK,
+            GeneratedType.CONTENT,
+            GeneratedType.BREAK,
+            GeneratedType.INTERACTION,
+        ]
+        assert [event.content for event in events[:4:2]] == [
+            "first content",
+            "second content",
+        ]
+        assert events[-1].content == "?[Continue//continue]"
+        assert progress.block_position == 2
+        assert not ctx._can_continue
 
     def test_run_inner_skips_duplicate_fixed_output_after_interaction_input(self):
         """Avoid replaying an already generated fixed output after interaction submit."""
@@ -522,7 +498,7 @@ class LearnRecordLoadTests(unittest.TestCase):
         )
 
         class DummyBlock:
-            def __init__(self, block_type, content, index):
+            def __init__(self, block_type, content, index) -> None:
                 self.block_type = block_type
                 self.content = content
                 self.index = index
@@ -530,7 +506,7 @@ class LearnRecordLoadTests(unittest.TestCase):
         class FakeMarkdownFlow:
             process_called = False
 
-            def __init__(self, *args, **kwargs):
+            def __init__(self, *args, **kwargs) -> None:
                 self.blocks = [DummyBlock(BlockType.CONTENT, "===fixed output===", 0)]
 
             def set_visual_mode(self, *_args, **_kwargs):
@@ -565,17 +541,17 @@ class LearnRecordLoadTests(unittest.TestCase):
         ):
             events = list(ctx.run_inner(self.app))
 
-        self.assertEqual(events, [])
-        self.assertFalse(FakeMarkdownFlow.process_called)
-        self.assertEqual(progress.block_position, 1)
-        self.assertTrue(ctx._can_continue)
-        self.assertEqual(
+        assert events == []
+        assert not FakeMarkdownFlow.process_called
+        assert progress.block_position == 1
+        assert ctx._can_continue
+        assert (
             LearnGeneratedBlock.query.filter(
                 LearnGeneratedBlock.progress_record_bid == progress.progress_record_bid,
                 LearnGeneratedBlock.type == BLOCK_TYPE_MDCONTENT_VALUE,
                 LearnGeneratedBlock.status == 1,
-            ).count(),
-            1,
+            ).count()
+            == 1
         )
 
     def test_run_inner_realigns_index_to_pending_interaction_after_submit(self):
@@ -646,7 +622,7 @@ class LearnRecordLoadTests(unittest.TestCase):
         )
 
         class DummyBlock:
-            def __init__(self, block_type, content, index):
+            def __init__(self, block_type, content, index) -> None:
                 self.block_type = block_type
                 self.content = content
                 self.index = index
@@ -654,7 +630,7 @@ class LearnRecordLoadTests(unittest.TestCase):
         class FakeMarkdownFlow:
             process_called = False
 
-            def __init__(self, *args, **kwargs):
+            def __init__(self, *args, **kwargs) -> None:
                 self.blocks = [
                     DummyBlock(BlockType.CONTENT, "===fixed output===", 0),
                     DummyBlock(BlockType.INTERACTION, "?[%{{v}} A|B]", 1),
@@ -692,11 +668,11 @@ class LearnRecordLoadTests(unittest.TestCase):
         ):
             events = list(ctx.run_inner(self.app))
 
-        self.assertEqual(events, [])
-        self.assertFalse(FakeMarkdownFlow.process_called)
-        self.assertEqual(progress.block_position, 1)
-        self.assertEqual(ctx._run_type, RunType.INPUT)
-        self.assertTrue(ctx._can_continue)
+        assert events == []
+        assert not FakeMarkdownFlow.process_called
+        assert progress.block_position == 1
+        assert ctx._run_type == RunType.INPUT
+        assert ctx._can_continue
 
     def test_run_inner_does_not_realign_on_empty_auto_input(self):
         """Empty auto-run input should not be treated as a real interaction submit."""
@@ -766,7 +742,7 @@ class LearnRecordLoadTests(unittest.TestCase):
         )
 
         class DummyBlock:
-            def __init__(self, block_type, content, index):
+            def __init__(self, block_type, content, index) -> None:
                 self.block_type = block_type
                 self.content = content
                 self.index = index
@@ -774,7 +750,7 @@ class LearnRecordLoadTests(unittest.TestCase):
         class FakeMarkdownFlow:
             process_called = False
 
-            def __init__(self, *args, **kwargs):
+            def __init__(self, *args, **kwargs) -> None:
                 self.blocks = [
                     DummyBlock(BlockType.CONTENT, "===fixed output===", 0),
                     DummyBlock(BlockType.INTERACTION, "?[%{{v}} A|B]", 1),
@@ -812,11 +788,11 @@ class LearnRecordLoadTests(unittest.TestCase):
         ):
             events = list(ctx.run_inner(self.app))
 
-        self.assertEqual(events, [])
-        self.assertFalse(FakeMarkdownFlow.process_called)
-        self.assertEqual(progress.block_position, 0)
-        self.assertEqual(ctx._run_type, RunType.OUTPUT)
-        self.assertTrue(ctx._can_continue)
+        assert events == []
+        assert not FakeMarkdownFlow.process_called
+        assert progress.block_position == 0
+        assert ctx._run_type == RunType.OUTPUT
+        assert ctx._can_continue
 
 
 if __name__ == "__main__":

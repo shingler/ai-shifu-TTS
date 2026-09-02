@@ -4,10 +4,9 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
-from flask import Flask
 import pytest
-
-import flaskr.dao as dao
+from flask import Flask
+from flaskr import dao
 from flaskr.service.billing.consts import (
     BILLING_METRIC_LLM_INPUT_TOKENS,
     BILLING_SUBSCRIPTION_STATUS_ACTIVE,
@@ -31,6 +30,7 @@ from flaskr.service.billing.models import (
 )
 from flaskr.service.metering.consts import BILL_USAGE_SCENE_PROD, BILL_USAGE_TYPE_LLM
 from flaskr.service.metering.models import BillUsageRecord
+
 from tests.common.fixtures.bill_products import build_billing_product
 
 _API_ROOT = Path(__file__).resolve().parents[3]
@@ -240,7 +240,7 @@ def _add_ledger(
             source_bid=source_bid,
             idempotency_key=f"idempotency-{ledger_bid}",
             amount=amount,
-            balance_after=Decimal("0"),
+            balance_after=Decimal(0),
             metadata_json={
                 "metric_breakdown": [
                     {

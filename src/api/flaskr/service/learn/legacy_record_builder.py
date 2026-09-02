@@ -14,8 +14,8 @@ from flaskr.service.learn.learn_dtos import (
     LikeStatus,
 )
 from flaskr.service.learn.models import LearnGeneratedBlock, LearnProgressRecord
-from flaskr.service.tts.subtitle_utils import normalize_subtitle_cues
 from flaskr.service.tts.models import AUDIO_STATUS_COMPLETED, LearnGeneratedAudio
+from flaskr.service.tts.subtitle_utils import normalize_subtitle_cues
 
 
 @dataclass
@@ -28,7 +28,7 @@ class LegacyGeneratedBlockRecord:
     audio_url: str | None = None
     audios: list[AudioCompleteDTO] | None = None
 
-    def __json__(self):
+    def __json__(self) -> dict:
         ret = {
             "generated_block_bid": self.generated_block_bid,
             "content": self.content,
@@ -51,7 +51,7 @@ class LegacyGeneratedBlockRecord:
 class LegacyLearnRecord:
     records: list[LegacyGeneratedBlockRecord]
 
-    def __json__(self):
+    def __json__(self) -> dict:
         return {
             "records": self.records,
         }

@@ -17,7 +17,7 @@ from flaskr.service.billing.consts import (
 )
 from flaskr.service.billing.models import CreditUsageRate
 from flaskr.service.common import credit_rate_references
-from flaskr.service.common.models import ERROR_CODE, AppException
+from flaskr.service.common.models import ERROR_CODE, AppError
 from flaskr.service.metering.consts import (
     BILL_USAGE_SCENE_PROD,
     BILL_USAGE_TYPE_LLM,
@@ -36,7 +36,7 @@ def _credit_rate(
     unit_size: int = 1,
     usage_type: int = BILL_USAGE_TYPE_LLM,
     provider: str = "qwen",
-    effective_from: datetime = datetime(2026, 1, 1, 0, 0, 0),  # noqa: DTZ001
+    effective_from: datetime = datetime(2026, 1, 1, 0, 0, 0),
     effective_to: datetime | None = None,
     status: int = CREDIT_USAGE_RATE_STATUS_ACTIVE,
     deleted: int = 0,
@@ -108,7 +108,7 @@ def test_update_llm_rate_uses_rate_model_and_keeps_metric_ratios(monkeypatch, ap
             }
         ],
     )
-    fixed_now = datetime(2026, 7, 20, 13, 30, 43, 990000)  # noqa: DTZ001
+    fixed_now = datetime(2026, 7, 20, 13, 30, 43, 990000)
     monkeypatch.setattr(config_rates, "now_utc", lambda: fixed_now)
     monkeypatch.setattr(
         config_rates,
@@ -168,7 +168,7 @@ def test_update_llm_rate_uses_rate_model_and_keeps_metric_ratios(monkeypatch, ap
             CreditUsageRate.status == CREDIT_USAGE_RATE_STATUS_ACTIVE,
             CreditUsageRate.provider == "qwen",
             CreditUsageRate.model == "deepseek-v4-flash",
-            CreditUsageRate.effective_from == datetime(2026, 1, 1, 0, 0, 0),  # noqa: DTZ001
+            CreditUsageRate.effective_from == datetime(2026, 1, 1, 0, 0, 0),
         ).all()
 
         assert result["rate_model"] == "deepseek-v4-flash"
@@ -235,7 +235,7 @@ def test_update_llm_rate_uses_rate_model_and_keeps_metric_ratios(monkeypatch, ap
 
 
 def test_update_db_only_llm_alias_only_supersedes_explicit_alias(monkeypatch, app):
-    fixed_now = datetime(2026, 7, 20, 13, 30, 43, 990000)  # noqa: DTZ001
+    fixed_now = datetime(2026, 7, 20, 13, 30, 43, 990000)
     monkeypatch.setattr(config_rates, "now_utc", lambda: fixed_now)
     monkeypatch.setattr(
         config_rates, "_load_llm_credit_1x_reference_cost", lambda: Decimal(3)
@@ -448,7 +448,7 @@ def test_update_rate_rejects_missing_credit_1x_anchor(monkeypatch, app):
         db.session.query(CreditUsageRate).delete()
         _seed_default_llm_rates()
 
-        with pytest.raises(AppException) as exc_info:
+        with pytest.raises(AppError) as exc_info:
             config_rates.update_operator_rate_config(
                 app,
                 payload={
@@ -477,7 +477,7 @@ def test_update_rate_rejects_missing_credit_1x_anchor(monkeypatch, app):
 def test_operator_rate_config_appends_only_current_exact_db_identities(
     monkeypatch, app
 ):
-    fixed_now = datetime(2026, 7, 21, 12, 0, 0)  # noqa: DTZ001
+    fixed_now = datetime(2026, 7, 21, 12, 0, 0)
     monkeypatch.setattr(config_rates, "now_utc", lambda: fixed_now)
     monkeypatch.setattr(
         config_rates, "_load_llm_credit_1x_reference_cost", lambda: Decimal(1)
@@ -707,7 +707,7 @@ def test_operator_rate_config_appends_only_current_exact_db_identities(
 def test_create_only_llm_uses_raw_rate_model_without_superseding_alias(
     monkeypatch, app, credits_per_unit, expected_input, expected_cache
 ):
-    fixed_now = datetime(2026, 7, 21, 12, 0, 0)  # noqa: DTZ001
+    fixed_now = datetime(2026, 7, 21, 12, 0, 0)
     monkeypatch.setattr(config_rates, "now_utc", lambda: fixed_now)
     monkeypatch.setattr(
         config_rates, "_load_llm_credit_1x_reference_cost", lambda: Decimal(3)
@@ -779,7 +779,7 @@ def test_create_only_llm_uses_raw_rate_model_without_superseding_alias(
 
 
 def test_create_only_rejects_duplicate_active_exact_identity(monkeypatch, app):
-    fixed_now = datetime(2026, 7, 21, 12, 0, 0)  # noqa: DTZ001
+    fixed_now = datetime(2026, 7, 21, 12, 0, 0)
     monkeypatch.setattr(config_rates, "now_utc", lambda: fixed_now)
     monkeypatch.setattr(
         config_rates, "_load_llm_credit_1x_reference_cost", lambda: Decimal(3)
@@ -803,7 +803,7 @@ def test_create_only_rejects_duplicate_active_exact_identity(monkeypatch, app):
         )
         db.session.commit()
 
-        with pytest.raises(AppException) as exc_info:
+        with pytest.raises(AppError) as exc_info:
             config_rates.update_operator_rate_config(
                 app,
                 payload={
@@ -878,7 +878,7 @@ def test_create_only_rejects_invalid_identity_and_fixed_fields(
     }
     payload.update(overrides)
 
-    with app.app_context(), pytest.raises(AppException) as exc_info:
+    with app.app_context(), pytest.raises(AppError) as exc_info:
         config_rates.update_operator_rate_config(
             app,
             payload=payload,
@@ -894,7 +894,7 @@ def test_create_only_rejects_invalid_identity_and_fixed_fields(
     ids=["regular", "numeric-max"],
 )
 def test_create_only_tts_allows_empty_default_model(monkeypatch, app, credits_per_unit):
-    fixed_now = datetime(2026, 7, 21, 12, 0, 0)  # noqa: DTZ001
+    fixed_now = datetime(2026, 7, 21, 12, 0, 0)
     monkeypatch.setattr(config_rates, "now_utc", lambda: fixed_now)
     monkeypatch.setattr(
         config_rates, "_load_llm_credit_1x_reference_cost", lambda: Decimal(3)

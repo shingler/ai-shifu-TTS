@@ -1,19 +1,20 @@
 from __future__ import annotations
 
-import json
-import os
-import re
 import base64
-from functools import wraps
+import json
+import re
 import threading
-from typing import Dict, Any
+from dataclasses import dataclass, field
+from functools import wraps
+from pathlib import Path
+from typing import Any
 
-from flask import Flask
-
-from flaskr.service.config import get_config
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
+from flask import Flask
+from flaskr.service.config import get_config
 
+from . import register_payment_provider
 from .base import (
     PaymentCreationResult,
     PaymentNotificationResult,
@@ -21,12 +22,18 @@ from .base import (
     PaymentRequest,
     SubscriptionUpdateResult,
 )
-from . import register_payment_provider
 
-
-_PINGPP_CLIENT: Any | None = None
-_PINGPP_IMPORT_ERROR: Exception | None = None
 _PINGPP_CONFIG_LOCK = threading.RLock()
+
+
+@dataclass(slots=True)
+class _PingppClientState:
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    client: Any | None = None
+    import_error: Exception | None = None
+
+
+_pingpp_client_state = _PingppClientState()
 
 
 def _serialized_pingpp_config(func):
@@ -39,19 +46,20 @@ def _serialized_pingpp_config(func):
 
 
 def _get_pingpp_client() -> Any:
-    global _PINGPP_CLIENT, _PINGPP_IMPORT_ERROR
-    if _PINGPP_CLIENT is not None:
-        return _PINGPP_CLIENT
-    if _PINGPP_IMPORT_ERROR is not None:
-        raise _PINGPP_IMPORT_ERROR
-    try:
-        import pingpp  # type: ignore
+    with _pingpp_client_state.lock:
+        if _pingpp_client_state.client is not None:
+            return _pingpp_client_state.client
+        if _pingpp_client_state.import_error is not None:
+            raise _pingpp_client_state.import_error
+        try:
+            import pingpp  # type: ignore[import-untyped]
 
-        _PINGPP_CLIENT = pingpp
-        return pingpp
-    except Exception as exc:  # pragma: no cover
-        _PINGPP_IMPORT_ERROR = exc
-        raise
+            _pingpp_client_state.client = pingpp
+        except Exception as exc:  # pragma: no cover
+            _pingpp_client_state.import_error = exc
+            raise
+        else:
+            return pingpp
 
 
 class PingxxProvider(PaymentProvider):
@@ -64,7 +72,7 @@ class PingxxProvider(PaymentProvider):
         try:
             client = _get_pingpp_client()
         except Exception as exc:  # pragma: no cover
-            app.logger.error("Pingxx dependency is not available: %s", exc)
+            app.logger.exception("Pingxx dependency is not available")
             raise RuntimeError("Pingxx dependency is not available") from exc
 
         api_key = get_config("PINGXX_SECRET_KEY")
@@ -72,7 +80,7 @@ class PingxxProvider(PaymentProvider):
         private_key_path = get_config("PINGXX_PRIVATE_KEY_PATH")
         if not private_key and not private_key_path:
             raise RuntimeError("Pingxx private key is not configured")
-        if not private_key and not os.path.exists(private_key_path):
+        if not private_key and not Path(private_key_path).exists():
             app.logger.error("Pingxx private key not found at %s", private_key_path)
             raise FileNotFoundError(private_key_path)
 
@@ -102,9 +110,9 @@ class PingxxProvider(PaymentProvider):
             return text
         return cls._NON_BMP_RE.sub("", text).strip()
 
-    def _sanitize_extra(self, extra: Dict[str, Any]) -> Dict[str, Any]:
+    def _sanitize_extra(self, extra: dict[str, Any]) -> dict[str, Any]:
         """Recursively sanitize string values in charge extra dict."""
-        sanitized: Dict[str, Any] = {}
+        sanitized: dict[str, Any] = {}
         for k, v in extra.items():
             if isinstance(v, str):
                 sanitized[k] = self._sanitize_str(v)
@@ -119,13 +127,13 @@ class PingxxProvider(PaymentProvider):
         self, *, request: PaymentRequest, app: Flask
     ) -> PaymentCreationResult:
         client = self._ensure_client(app)
-        provider_options: Dict[str, Any] = request.extra or {}
+        provider_options: dict[str, Any] = request.extra or {}
         app_id = provider_options.get("app_id") or get_config("PINGXX_APP_ID")
         charge_extra = provider_options.get("charge_extra", {})
 
         charge = client.Charge.create(
             order_no=request.order_bid,
-            app=dict(id=app_id),
+            app={"id": app_id},
             channel=request.channel,
             amount=request.amount,
             client_ip=request.client_ip,
@@ -164,7 +172,7 @@ class PingxxProvider(PaymentProvider):
         raise RuntimeError("Pingxx does not support subscriptions")
 
     def verify_webhook(
-        self, *, headers: Dict[str, str], raw_body: bytes | str, app: Flask
+        self, *, headers: dict[str, str], raw_body: bytes | str, app: Flask
     ) -> PaymentNotificationResult:
         normalized_headers = {
             str(key).lower(): str(value) for key, value in (headers or {}).items()
@@ -190,7 +198,7 @@ class PingxxProvider(PaymentProvider):
                 hashes.SHA256(),
             )
         if not raw_body_str:
-            payload: Dict[str, Any] = {}
+            payload: dict[str, Any] = {}
         else:
             payload = json.loads(raw_body_str)
 
@@ -203,7 +211,7 @@ class PingxxProvider(PaymentProvider):
         )
 
     def handle_notification(
-        self, *, payload: Dict[str, Any], app: Flask
+        self, *, payload: dict[str, Any], app: Flask
     ) -> PaymentNotificationResult:
         if "raw_body" in payload:
             return self.verify_webhook(

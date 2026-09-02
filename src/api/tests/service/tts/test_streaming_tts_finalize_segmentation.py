@@ -1,14 +1,13 @@
-"""
-Tests for TTS streaming finalize segmentation improvements.
+"""Tests for TTS streaming finalize segmentation improvements.
 
 Verifies that the finalize() method properly segments remaining text
 instead of submitting it all at once, preventing burst delivery of
 final segments.
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
 from flaskr.api.tts import TTSResult
 from flaskr.service.learn.learn_dtos import GeneratedType
 from flaskr.service.tts.streaming_tts import StreamingTTSProcessor, TTSSegment
@@ -23,7 +22,7 @@ def mock_app():
 
 
 def create_test_processor(mock_app, **kwargs):
-    """Helper to create a StreamingTTSProcessor with test defaults."""
+    """Create a StreamingTTSProcessor with test defaults."""
     defaults = {
         "app": mock_app,
         "generated_block_bid": "test-block",
@@ -40,7 +39,7 @@ def create_test_processor(mock_app, **kwargs):
 class TestFinalizeSegmentation:
     """Tests for finalize segmentation improvements."""
 
-    @patch("flaskr.service.tts.streaming_tts._tts_executor")
+    @patch("flaskr.service.tts.streaming_tts._tts_executor_state.executor")
     @patch("flaskr.service.tts.streaming_tts.is_tts_configured")
     def test_process_chunk_submits_only_after_sentence_boundary(
         self, mock_is_configured, mock_executor, mock_app
@@ -71,7 +70,7 @@ class TestFinalizeSegmentation:
         list(processor.process_chunk("!"))
         assert submitted_texts == ["Hello without ending still no ending!"]
 
-    @patch("flaskr.service.tts.streaming_tts._tts_executor")
+    @patch("flaskr.service.tts.streaming_tts._tts_executor_state.executor")
     @patch("flaskr.service.tts.streaming_tts.is_tts_configured")
     def test_submit_remaining_text_in_segments_splits_at_sentence_boundaries(
         self, mock_is_configured, mock_executor, mock_app
@@ -92,7 +91,8 @@ class TestFinalizeSegmentation:
         submitted_texts = []
 
         def mock_submit(*args, **kwargs):
-            # Args: (_synthesize_in_thread, segment, voice_settings, audio_settings, provider, model)
+            # Positional args are the thread target followed by segment,
+            # voice settings, audio settings, provider and model.
             # Capture the segment text from args[1]
             if len(args) > 1:
                 segment = args[1]
@@ -110,10 +110,10 @@ class TestFinalizeSegmentation:
         # Verify multiple segments were submitted
         assert len(submitted_texts) > 0
         # Each segment should end at a sentence boundary (except possibly the last)
-        for i, text in enumerate(submitted_texts[:-1]):
+        for _i, text in enumerate(submitted_texts[:-1]):
             assert text.rstrip().endswith((".", "!", "?", "。", "！", "？"))
 
-    @patch("flaskr.service.tts.streaming_tts._tts_executor")
+    @patch("flaskr.service.tts.streaming_tts._tts_executor_state.executor")
     @patch("flaskr.service.tts.streaming_tts.is_tts_configured")
     def test_submit_remaining_text_does_not_split_by_char_count_without_sentence(
         self, mock_is_configured, mock_executor, mock_app
@@ -132,7 +132,8 @@ class TestFinalizeSegmentation:
         submitted_texts = []
 
         def mock_submit(*args, **kwargs):
-            # Args: (_synthesize_in_thread, segment, voice_settings, audio_settings, provider, model)
+            # Positional args are the thread target followed by segment,
+            # voice settings, audio settings, provider and model.
             if len(args) > 1:
                 segment = args[1]
                 if hasattr(segment, "text"):
@@ -147,7 +148,7 @@ class TestFinalizeSegmentation:
 
         assert submitted_texts == [remaining_text]
 
-    @patch("flaskr.service.tts.streaming_tts._tts_executor")
+    @patch("flaskr.service.tts.streaming_tts._tts_executor_state.executor")
     @patch("flaskr.service.tts.streaming_tts.is_tts_configured")
     def test_submit_remaining_text_handles_short_text(
         self, mock_is_configured, mock_executor, mock_app
@@ -163,7 +164,8 @@ class TestFinalizeSegmentation:
         submitted_texts = []
 
         def mock_submit(*args, **kwargs):
-            # Args: (_synthesize_in_thread, segment, voice_settings, audio_settings, provider, model)
+            # Positional args are the thread target followed by segment,
+            # voice settings, audio settings, provider and model.
             if len(args) > 1:
                 segment = args[1]
                 if hasattr(segment, "text"):
@@ -180,7 +182,7 @@ class TestFinalizeSegmentation:
         assert len(submitted_texts) == 1
         assert submitted_texts[0] == "Hi"
 
-    @patch("flaskr.service.tts.streaming_tts._tts_executor")
+    @patch("flaskr.service.tts.streaming_tts._tts_executor_state.executor")
     @patch("flaskr.service.tts.streaming_tts.is_tts_configured")
     def test_submit_remaining_text_handles_empty_string(
         self, mock_is_configured, mock_executor, mock_app
@@ -196,7 +198,7 @@ class TestFinalizeSegmentation:
         # Should not submit anything
         assert mock_executor.submit.call_count == 0
 
-    @patch("flaskr.service.tts.streaming_tts._tts_executor")
+    @patch("flaskr.service.tts.streaming_tts._tts_executor_state.executor")
     @patch("flaskr.service.tts.streaming_tts.is_tts_configured")
     def test_submit_remaining_text_handles_whitespace_only(
         self, mock_is_configured, mock_executor, mock_app
@@ -212,7 +214,7 @@ class TestFinalizeSegmentation:
         # Should not submit anything
         assert mock_executor.submit.call_count == 0
 
-    @patch("flaskr.service.tts.streaming_tts._tts_executor")
+    @patch("flaskr.service.tts.streaming_tts._tts_executor_state.executor")
     @patch("flaskr.service.tts.streaming_tts.is_tts_configured")
     def test_submit_remaining_text_logs_segment_info(
         self, mock_is_configured, mock_executor, mock_app, caplog
@@ -326,7 +328,7 @@ class TestStreamingSynthesisRetries:
         assert result.error == "No audio data received from Tencent TTS"
         assert result.is_ready is True
         warning_args = mock_logger.warning.call_args.args
-        error_args = mock_logger.error.call_args.args
+        error_args = mock_logger.exception.call_args.args
         assert "text_preview=%r" in warning_args[0]
         assert "这句有文字但腾讯没返回。" in warning_args
         assert "text_preview=%r" in error_args[0]
@@ -525,7 +527,7 @@ class TestStreamingSynthesisRetries:
                 }
             ],
         )
-        mock_concat_audio.side_effect = lambda parts: b"".join(parts)
+        mock_concat_audio.side_effect = b"".join
         mock_get_duration.return_value = 500
         mock_upload.return_value = ("https://example.com/audio.mp3", "bucket")
 
@@ -605,7 +607,7 @@ class TestStreamingSynthesisRetries:
                 ],
             ),
         ]
-        mock_concat_audio.side_effect = lambda parts: b"".join(parts)
+        mock_concat_audio.side_effect = b"".join
         mock_get_duration.return_value = 400
         mock_upload.return_value = ("https://example.com/retry.mp3", "bucket")
 
@@ -630,7 +632,7 @@ class TestStreamingSynthesisRetries:
 class TestOffsetDriftRegression:
     """Regression tests for offset drift when markdown becomes complete across chunks."""
 
-    @patch("flaskr.service.tts.streaming_tts._tts_executor")
+    @patch("flaskr.service.tts.streaming_tts._tts_executor_state.executor")
     @patch("flaskr.service.tts.streaming_tts.is_tts_configured")
     def test_bold_spanning_chunks_no_text_loss(
         self, mock_is_configured, mock_executor, mock_app
@@ -676,7 +678,7 @@ class TestOffsetDriftRegression:
             f"Text 'Third' was lost. Submitted: {submitted_texts}"
         )
 
-    @patch("flaskr.service.tts.streaming_tts._tts_executor")
+    @patch("flaskr.service.tts.streaming_tts._tts_executor_state.executor")
     @patch("flaskr.service.tts.streaming_tts.is_tts_configured")
     def test_link_spanning_chunks_no_text_loss(
         self, mock_is_configured, mock_executor, mock_app
@@ -764,7 +766,7 @@ class TestFinalizeDelayManagement:
             (500, 1000),
         ]
 
-    @patch("flaskr.service.tts.streaming_tts._tts_executor")
+    @patch("flaskr.service.tts.streaming_tts._tts_executor_state.executor")
     @patch("flaskr.service.tts.streaming_tts.is_tts_configured")
     @patch("flaskr.service.tts.streaming_tts.time.sleep")
     def test_yield_ready_segments_adds_delay_between_segments(

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-import flaskr.dao as dao
+from flaskr import dao
 from flaskr.service.billing.consts import (
     BILLING_ORDER_TYPE_SUBSCRIPTION_RENEWAL,
     BILLING_SUBSCRIPTION_STATUS_ACTIVE,
@@ -24,6 +24,7 @@ from flaskr.service.billing.models import (
     CreditLedgerEntry,
     CreditWalletBucket,
 )
+
 from tests.service.billing.cycle_state_test_helpers import build_cycle_state_app
 
 
@@ -48,9 +49,9 @@ def test_realign_active_topup_bucket_effective_to_updates_bucket_and_grant_ledge
             priority=30,
             original_credits=Decimal("20.0000000000"),
             available_credits=Decimal("20.0000000000"),
-            reserved_credits=Decimal("0"),
-            consumed_credits=Decimal("0"),
-            expired_credits=Decimal("0"),
+            reserved_credits=Decimal(0),
+            consumed_credits=Decimal(0),
+            expired_credits=Decimal(0),
             effective_from=datetime(2026, 4, 1, 0, 0, 0),
             effective_to=old_topup_end,
             status=CREDIT_BUCKET_STATUS_ACTIVE,
@@ -65,9 +66,9 @@ def test_realign_active_topup_bucket_effective_to_updates_bucket_and_grant_ledge
             priority=30,
             original_credits=Decimal("5.0000000000"),
             available_credits=Decimal("5.0000000000"),
-            reserved_credits=Decimal("0"),
-            consumed_credits=Decimal("0"),
-            expired_credits=Decimal("0"),
+            reserved_credits=Decimal(0),
+            consumed_credits=Decimal(0),
+            expired_credits=Decimal(0),
             effective_from=cycle_start + timedelta(days=1),
             effective_to=old_topup_end,
             status=CREDIT_BUCKET_STATUS_ACTIVE,
@@ -82,9 +83,9 @@ def test_realign_active_topup_bucket_effective_to_updates_bucket_and_grant_ledge
             priority=20,
             original_credits=Decimal("50.0000000000"),
             available_credits=Decimal("50.0000000000"),
-            reserved_credits=Decimal("0"),
-            consumed_credits=Decimal("0"),
-            expired_credits=Decimal("0"),
+            reserved_credits=Decimal(0),
+            consumed_credits=Decimal(0),
+            expired_credits=Decimal(0),
             effective_from=datetime(2026, 4, 1, 0, 0, 0),
             effective_to=old_topup_end,
             status=CREDIT_BUCKET_STATUS_ACTIVE,
@@ -173,9 +174,9 @@ def test_apply_paid_subscription_cycle_state_advances_renewal_and_realigns_topup
             priority=30,
             original_credits=Decimal("20.0000000000"),
             available_credits=Decimal("20.0000000000"),
-            reserved_credits=Decimal("0"),
-            consumed_credits=Decimal("0"),
-            expired_credits=Decimal("0"),
+            reserved_credits=Decimal(0),
+            consumed_credits=Decimal(0),
+            expired_credits=Decimal(0),
             effective_from=datetime(2026, 5, 1, 0, 0, 0),
             effective_to=old_topup_end,
             status=CREDIT_BUCKET_STATUS_ACTIVE,

@@ -1,8 +1,6 @@
 import datetime
 
 from flask import Flask, request
-from sqlalchemy import func
-
 from flaskr.framework.plugin.inject import inject
 from flaskr.route.common import make_common_response
 from flaskr.service.common.models import raise_param_error
@@ -12,11 +10,13 @@ from flaskr.service.metering.consts import (
     normalize_usage_scene,
 )
 from flaskr.service.metering.models import BillUsageRecord
+from flaskr.util.datetime import parse_naive_utc
+from sqlalchemy import func
 
 
 def _parse_date(value: str, *, field_name: str) -> datetime.datetime:
     try:
-        return datetime.datetime.strptime(value, "%Y-%m-%d")
+        return parse_naive_utc(value, "%Y-%m-%d")
     except (TypeError, ValueError):
         raise_param_error(f"Invalid {field_name} format, expected YYYY-MM-DD")
 

@@ -1,16 +1,13 @@
-"""
-Unit tests for config service functions.
-"""
+"""Unit tests for config service functions."""
+
+import importlib
+import sys
+from unittest.mock import MagicMock, patch
 
 import flaskr
 import flaskr.plugins as flaskr_plugins
-import importlib
 import pytest
-import sys
-from unittest.mock import MagicMock, patch
-from datetime import datetime
 from flask import Flask
-from sqlalchemy.exc import SQLAlchemyError
 from flaskr.route import config as config_route
 from flaskr.service.billing.dtos import (
     RuntimeBillingBrandingDTO,
@@ -19,19 +16,21 @@ from flaskr.service.billing.dtos import (
     RuntimeBillingEntitlementsDTO,
 )
 from flaskr.service.config.funcs import (
-    _get_fernet_key,
-    _get_fernet,
-    _encrypt_config,
+    ConfigCache,
     _decrypt_config,
+    _encrypt_config,
     _get_config_cache_key,
     _get_config_lock_key,
+    _get_fernet,
+    _get_fernet_key,
+    add_config,
     config_overrides,
     get_config,
     has_config_override,
-    add_config,
     update_config,
-    ConfigCache,
 )
+from flaskr.util.datetime import now_utc
+from sqlalchemy.exc import SQLAlchemyError
 
 
 @pytest.fixture
@@ -53,7 +52,7 @@ def app():
     db.init_app(flask_app)
     with flask_app.app_context():
         db.create_all()
-    yield flask_app
+    return flask_app
 
 
 @pytest.fixture(autouse=True)
@@ -69,7 +68,11 @@ def test_service_config_package_exports_override_helpers(app):
     """The package-level config API should expose override helpers for plugins."""
     from flaskr.service.config import (
         config_overrides as package_config_overrides,
+    )
+    from flaskr.service.config import (
         get_config as package_get_config,
+    )
+    from flaskr.service.config import (
         has_config_override as package_has_config_override,
     )
 
@@ -375,16 +378,18 @@ class TestGetConfig:
 
     def test_config_overrides_override_get_config(self, app):
         """Config overrides should win over env and DB-backed lookups."""
-        with app.app_context():
-            with patch(
+        with (
+            app.app_context(),
+            patch(
                 "flaskr.service.config.funcs.get_config_from_common"
-            ) as mock_get_config_from_common:
-                with config_overrides({"test_key": "override-value"}):
-                    assert has_config_override("test_key") is True
-                    assert get_config("test_key", "default-value") == "override-value"
+            ) as mock_get_config_from_common,
+        ):
+            with config_overrides({"test_key": "override-value"}):
+                assert has_config_override("test_key") is True
+                assert get_config("test_key", "default-value") == "override-value"
 
-                assert has_config_override("test_key") is False
-                mock_get_config_from_common.assert_not_called()
+            assert has_config_override("test_key") is False
+            mock_get_config_from_common.assert_not_called()
 
     def test_config_overrides_restore_previous_values(self, app):
         """Nested overrides restore the outer and original values correctly."""
@@ -491,7 +496,7 @@ class TestGetConfig:
             mock_config_instance = MagicMock()
             mock_config_instance.value = "db-value"
             mock_config_instance.is_encrypted = 0
-            mock_config_instance.created_at = datetime.now()
+            mock_config_instance.created_at = now_utc()
             mock_query = MagicMock()
             mock_query.filter.return_value.order_by.return_value.first.return_value = (
                 mock_config_instance
@@ -521,7 +526,7 @@ class TestGetConfig:
             mock_config_instance = MagicMock()
             mock_config_instance.value = '{"enabled":1}'
             mock_config_instance.is_encrypted = 0
-            mock_config_instance.created_at = datetime.now()
+            mock_config_instance.created_at = now_utc()
             mock_query = MagicMock()
             mock_query.filter.return_value.order_by.return_value.first.return_value = (
                 mock_config_instance
@@ -559,7 +564,7 @@ class TestGetConfig:
             mock_config_instance = MagicMock()
             mock_config_instance.value = "encrypted-db-value"
             mock_config_instance.is_encrypted = 1
-            mock_config_instance.created_at = datetime.now()
+            mock_config_instance.created_at = now_utc()
             mock_query = MagicMock()
             mock_query.filter.return_value.order_by.return_value.first.return_value = (
                 mock_config_instance
@@ -938,7 +943,7 @@ class TestUpdateConfig:
             mock_config_instance.value = "old-value"
             mock_config_instance.is_secret = False
             mock_config_instance.remark = "old remark"
-            mock_config_instance.created_at = datetime.now()
+            mock_config_instance.created_at = now_utc()
             mock_query = MagicMock()
             mock_query.filter.return_value.order_by.return_value.first.return_value = (
                 mock_config_instance
@@ -983,7 +988,7 @@ class TestUpdateConfig:
             mock_config_instance.value = "old-encrypted-value"
             mock_config_instance.is_secret = False
             mock_config_instance.remark = "old remark"
-            mock_config_instance.created_at = datetime.now()
+            mock_config_instance.created_at = now_utc()
             mock_query = MagicMock()
             mock_query.filter.return_value.order_by.return_value.first.return_value = (
                 mock_config_instance
@@ -1017,7 +1022,8 @@ class TestUpdateConfig:
     ):
         """update_config must persist the caller's new value, not a stale cached
         one, even when the cache is warm (regression: a warm cache used to
-        overwrite the new value and re-persist the old one)."""
+        overwrite the new value and re-persist the old one).
+        """
         with app.app_context():
             app.config["REDIS_KEY_PREFIX"] = "test:"
             app.config["SECRET_KEY"] = "test-secret-key-12345"
@@ -1033,7 +1039,7 @@ class TestUpdateConfig:
             mock_config_record.value = "old-value"
             mock_config_record.is_secret = False
             mock_config_record.remark = ""
-            mock_config_record.created_at = datetime.now()
+            mock_config_record.created_at = now_utc()
             mock_query = MagicMock()
             mock_query.filter.return_value.order_by.return_value.first.return_value = (
                 mock_config_record
@@ -1063,7 +1069,8 @@ class TestUpdateConfig:
         app,
     ):
         """update_config must persist the caller's new plain value, not a stale
-        cached one, even when the cache is warm."""
+        cached one, even when the cache is warm.
+        """
         with app.app_context():
             app.config["REDIS_KEY_PREFIX"] = "test:"
             mock_get_config_from_common.return_value = None
@@ -1077,7 +1084,7 @@ class TestUpdateConfig:
             mock_config_record.value = "old-value"
             mock_config_record.is_secret = False
             mock_config_record.remark = ""
-            mock_config_record.created_at = datetime.now()
+            mock_config_record.created_at = now_utc()
             mock_query = MagicMock()
             mock_query.filter.return_value.order_by.return_value.first.return_value = (
                 mock_config_record

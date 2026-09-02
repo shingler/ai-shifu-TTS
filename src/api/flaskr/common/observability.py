@@ -13,7 +13,6 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 
 from .request_context import thread_local
 
-
 HTTP_REQUEST_COUNT = Counter(
     "ai_shifu_http_requests_total",
     "Total HTTP requests handled by the backend.",
@@ -54,7 +53,7 @@ def init_observability(app: Flask) -> Flask:
     health_path = app.config.get(
         "INTERNAL_OBSERVABILITY_HEALTH_PATH", "/internal/observability/health"
     )
-    traces_enabled = _bool_config(app, "OBSERVABILITY_TRACES_ENABLED", False)
+    traces_enabled = _bool_config(app, "OBSERVABILITY_TRACES_ENABLED", default=False)
     sample_rate = _float_config(app, "OTEL_TRACE_SAMPLE_RATE", 1.0)
 
     if traces_enabled:

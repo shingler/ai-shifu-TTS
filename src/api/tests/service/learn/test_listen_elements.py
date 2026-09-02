@@ -1311,6 +1311,8 @@ def test_listen_run_persists_content_block_before_element_rows(app):
     from flaskr.dao import db
     from flaskr.service.learn.context_v2 import (
         BlockType as MarkdownFlowBlockType,
+    )
+    from flaskr.service.learn.context_v2 import (
         RunScriptContextV2,
         RunScriptInfo,
         RunType,
@@ -1395,17 +1397,17 @@ def test_listen_run_persists_content_block_before_element_rows(app):
         )
 
         class DummyBlock:
-            def __init__(self, block_type, content, index):
+            def __init__(self, block_type, content, index) -> None:
                 self.block_type = block_type
                 self.content = content
                 self.index = index
 
         class DummyLLMResult:
-            def __init__(self, content):
+            def __init__(self, content) -> None:
                 self.content = content
 
         class FakeMarkdownFlow:
-            def __init__(self, *args, **kwargs):
+            def __init__(self, *args, **kwargs) -> None:
                 self.blocks = [
                     DummyBlock(
                         MarkdownFlowBlockType.CONTENT,
@@ -1489,6 +1491,8 @@ def test_listen_run_emits_visual_before_blocking_tts_finalize(app):
     from flaskr.dao import db
     from flaskr.service.learn.context_v2 import (
         BlockType as MarkdownFlowBlockType,
+    )
+    from flaskr.service.learn.context_v2 import (
         RunScriptContextV2,
         RunScriptInfo,
         RunType,
@@ -1577,23 +1581,23 @@ def test_listen_run_emits_visual_before_blocking_tts_finalize(app):
         ctx._should_stream_tts = types.MethodType(lambda self: True, ctx)
 
         class DummyBlock:
-            def __init__(self, block_type, content, index):
+            def __init__(self, block_type, content, index) -> None:
                 self.block_type = block_type
                 self.content = content
                 self.index = index
 
         class DummyFormattedElement:
-            def __init__(self, content, element_type, number):
+            def __init__(self, content, element_type, number) -> None:
                 self.content = content
                 self.type = element_type
                 self.number = number
 
         class DummyLLMResult:
-            def __init__(self, formatted_elements):
+            def __init__(self, formatted_elements) -> None:
                 self.formatted_elements = formatted_elements
 
         class FakeMarkdownFlow:
-            def __init__(self, *args, **kwargs):
+            def __init__(self, *args, **kwargs) -> None:
                 self.blocks = [
                     DummyBlock(
                         MarkdownFlowBlockType.CONTENT,
@@ -1643,7 +1647,7 @@ def test_listen_run_emits_visual_before_blocking_tts_finalize(app):
                 position,
                 stream_element_number,
                 stream_element_type,
-            ):
+            ) -> None:
                 self.generated_block_bid = generated_block_bid
                 self.position = position
                 self.stream_element_number = stream_element_number
@@ -1795,7 +1799,7 @@ def test_listen_run_persists_exception_gate_block_before_element_rows(app):
 
     from flaskr.dao import db
     from flaskr.service.learn.context_v2 import RunScriptContextV2
-    from flaskr.service.learn.exceptions import PaidException
+    from flaskr.service.learn.exceptions import PaidError
     from flaskr.service.learn.listen_elements import ListenElementRunAdapter
     from flaskr.service.learn.models import (
         LearnGeneratedBlock,
@@ -1841,7 +1845,7 @@ def test_listen_run_persists_exception_gate_block_before_element_rows(app):
         )
 
         def _raise_paid(self, current_app):
-            raise PaidException()
+            raise PaidError
             yield  # pragma: no cover
 
         ctx.run_inner = types.MethodType(_raise_paid, ctx)
@@ -1889,7 +1893,6 @@ def test_get_record_api_returns_element_payload_by_default(app):
     _require_app(app)
 
     from flask import request
-
     from flaskr.dao import db
     from flaskr.service.learn.models import LearnGeneratedElement, LearnProgressRecord
     from flaskr.service.order.consts import LEARN_STATUS_IN_PROGRESS

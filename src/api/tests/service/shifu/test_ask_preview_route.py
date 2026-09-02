@@ -1,14 +1,16 @@
 from types import SimpleNamespace
 
 from flaskr.service.common.models import ERROR_CODE
-from flaskr.service.metering.consts import BILL_USAGE_SCENE_DEBUG
 from flaskr.service.learn.ask_provider_adapters import AskProviderError
+from flaskr.service.metering.consts import BILL_USAGE_SCENE_DEBUG
+
+_PREVIEW_TOKEN = "preview-token"  # stub session token, `validate_user` is mocked
 
 
 class _FakeObservation:
     """Mimics a Langfuse SDK v3 span/generation object."""
 
-    def __init__(self, kind: str = "span", **kwargs):
+    def __init__(self, kind: str = "span", **kwargs) -> None:
         self.kind = kind
         self.kwargs = kwargs
         self.updates = []
@@ -57,7 +59,7 @@ class _FakeObservation:
 
 
 class _FakeLangfuseClient:
-    def __init__(self):
+    def __init__(self) -> None:
         self.traces = []
 
     def start_span(self, trace_context=None, **kwargs):
@@ -87,7 +89,7 @@ def _mock_authenticated_user(
     return user
 
 
-def _auth_headers(token: str = "preview-token") -> dict[str, str]:
+def _auth_headers(token: str = _PREVIEW_TOKEN) -> dict[str, str]:
     return {"Token": token}
 
 

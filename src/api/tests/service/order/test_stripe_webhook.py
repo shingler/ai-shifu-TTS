@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
 import importlib
+from datetime import datetime
 
-from flask import Flask
 import pytest
-
-import flaskr.dao as dao
+from flask import Flask
+from flaskr import dao
 from flaskr.service.billing.consts import (
     BILLING_ORDER_STATUS_PAID,
     BILLING_ORDER_STATUS_PENDING,
@@ -17,8 +16,6 @@ from flaskr.service.billing.consts import (
 from flaskr.service.billing.models import (
     BillingOrder,
     BillingSubscription,
-)
-from flaskr.service.billing.models import (
     CreditLedgerEntry,
     CreditWallet,
     CreditWalletBucket,
@@ -27,6 +24,7 @@ from flaskr.service.order.consts import ORDER_STATUS_SUCCESS, ORDER_STATUS_TO_BE
 from flaskr.service.order.funs import handle_stripe_webhook
 from flaskr.service.order.models import Order, StripeOrder
 from flaskr.service.order.payment_providers.base import PaymentNotificationResult
+
 from tests.common.fixtures.bill_products import build_bill_products
 
 
@@ -35,7 +33,7 @@ def _load_route_module(module_name: str):
 
 
 class DummyStripeProvider:
-    def __init__(self, notification: PaymentNotificationResult):
+    def __init__(self, notification: PaymentNotificationResult) -> None:
         self._notification = notification
 
     def verify_webhook(self, *, headers, raw_body, app):

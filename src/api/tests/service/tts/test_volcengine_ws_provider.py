@@ -1,7 +1,7 @@
 import threading
 from types import SimpleNamespace
 
-import flaskr.api.tts.volcengine_provider as volcengine_provider
+from flaskr.api.tts import volcengine_provider
 
 
 def test_volcengine_ws_get_credentials_prefers_volcengine_tts_keys(monkeypatch):
@@ -131,7 +131,9 @@ def test_volcengine_ws_waits_for_session_started_before_task_request(monkeypatch
             raise AssertionError(f"unexpected frame: {message!r}")
 
     class FakeWebSocketApp:
-        def __init__(self, url, header, on_message, on_error, on_close, on_open):
+        def __init__(
+            self, url, header, on_message, on_error, on_close, on_open
+        ) -> None:
             self.on_message = on_message
             self.on_close = on_close
             self.on_open = on_open

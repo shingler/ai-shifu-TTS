@@ -1,19 +1,19 @@
-"""
-Integration tests for the complete configuration system.
-"""
+"""Integration tests for the complete configuration system."""
 
 import os
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 from flask import Flask
 from flaskr.common.config import (
+    ENV_VARS,
     Config,
     EnhancedConfig,
-    EnvVar,
-    ENV_VARS,
     EnvironmentConfigError,
+    EnvVar,
     get_config,
 )
+
 from tests.common.fixtures.config_data import (
     DOCKER_ENV_CONFIG,
     PRODUCTION_ENV_CONFIG,
@@ -304,7 +304,7 @@ class TestMultiEnvironmentSupport:
         # Clear instance for new environment
         import flaskr.common.config as config_module
 
-        config_module.__INSTANCE__ = None
+        config_module.Config._instance = None
 
         # Switch to production environment
         for key, value in PRODUCTION_ENV_CONFIG.items():
@@ -369,8 +369,8 @@ class TestBackwardCompatibility:
         # Clear global instance to test uninitialized state
         import flaskr.common.config as config_module
 
-        original_instance = config_module.__INSTANCE__
-        config_module.__INSTANCE__ = None
+        original_instance = config_module.Config._instance
+        config_module.Config._instance = None
 
         try:
             # Test with a known ENV_VAR key - should get from environment or default
@@ -392,11 +392,11 @@ class TestBackwardCompatibility:
             value = get_config("REDIS_HOST")
             assert value == ""  # Default value from ENV_VARS
         finally:
-            config_module.__INSTANCE__ = original_instance
+            config_module.Config._instance = original_instance
 
     def test_required_means_no_default(self):
         """Test that required=True prevents having defaults."""
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValueError, match="marked as required") as exc_info:
             EnvVar(name="TEST", required=True, default="should-fail")
 
         assert "marked as required" in str(exc_info.value)

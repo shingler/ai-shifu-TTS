@@ -4,14 +4,13 @@ import argparse
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
+from scripts.observability_consistency_probes import probe_wallet_snapshot
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 
-from scripts.observability_consistency_probes import probe_wallet_snapshot
-
 
 class _Db:
-    def __init__(self, session):
+    def __init__(self, session) -> None:
         self.session = session
 
 

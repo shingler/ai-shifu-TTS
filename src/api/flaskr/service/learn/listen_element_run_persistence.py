@@ -7,10 +7,6 @@ import socket as socket_module
 
 from flask import current_app
 from flaskr.dao import db, invalidate_session
-from sqlalchemy import bindparam, text
-from sqlalchemy.exc import ResourceClosedError
-
-
 from flaskr.service.learn.learn_dtos import (
     AudioCompleteDTO,
     AudioSegmentDTO,
@@ -41,6 +37,8 @@ from flaskr.service.learn.models import (
     LearnGeneratedElement,
 )
 from flaskr.service.learn.type_state_machine import TypeInput
+from sqlalchemy import bindparam, text
+from sqlalchemy.exc import ResourceClosedError
 
 
 def _describe_desynced_connection(result, connection) -> str:
@@ -99,7 +97,7 @@ def _describe_desynced_connection(result, connection) -> str:
                 parts.append(f"socket_pending_header_hex={pending[:5].hex()}")
             else:
                 parts.append("socket_pending=none")
-        except Exception as probe_error:  # noqa: BLE001 - forensics only
+        except Exception as probe_error:  # forensics only
             parts.append(f"socket_probe_error={probe_error!r}")
     return " ".join(parts)
 
@@ -221,7 +219,7 @@ class ListenElementRunPersistenceMixin:
             # later request that checks it out; the caller's rollback then
             # completes on session state alone.
             with contextlib.suppress(Exception):
-                current_app.logger.error(
+                current_app.logger.exception(
                     "Listen element SELECT hit a desynced connection; forensics: %s",
                     _describe_desynced_connection(result, connection),
                 )

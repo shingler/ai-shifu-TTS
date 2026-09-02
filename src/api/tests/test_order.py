@@ -1,15 +1,15 @@
+from datetime import timedelta
 from decimal import Decimal
-from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from flaskr.dao import db
-from flaskr.service.order.funs import init_buy_record
 from flaskr.service.order.consts import ORDER_STATUS_INIT
+from flaskr.service.order.funs import init_buy_record
 from flaskr.service.order.models import Order
 from flaskr.service.promo.consts import (
-    PROMO_CAMPAIGN_APPLICATION_STATUS_APPLIED,
     COUPON_STATUS_USED,
     COUPON_TYPE_FIXED,
+    PROMO_CAMPAIGN_APPLICATION_STATUS_APPLIED,
     PROMO_CAMPAIGN_APPLICATION_STATUS_VOIDED,
     PROMO_CAMPAIGN_JOIN_TYPE_AUTO,
     PROMO_CAMPAIGN_STATUS_ACTIVE,
@@ -20,6 +20,7 @@ from flaskr.service.promo.models import (
     PromoCampaign,
     PromoRedemption,
 )
+from flaskr.util.datetime import now_utc
 
 
 def test_init_buy_record_creates_order(app, monkeypatch):
@@ -30,7 +31,7 @@ def test_init_buy_record_creates_order(app, monkeypatch):
     monkeypatch.setattr(
         order_funs,
         "get_shifu_info",
-        lambda _app, _bid, _preview: SimpleNamespace(price=Decimal("100.00")),
+        lambda _app, _bid, preview_mode: SimpleNamespace(price=Decimal("100.00")),
     )
     monkeypatch.setattr(
         order_funs, "apply_promo_campaigns", lambda *_args, **_kwargs: []
@@ -59,7 +60,7 @@ def test_init_buy_record_refreshes_existing_unpaid_order_promotions(app, monkeyp
     monkeypatch.setattr(
         order_funs,
         "get_shifu_info",
-        lambda _app, _bid, _preview: SimpleNamespace(price=Decimal("100.00")),
+        lambda _app, _bid, preview_mode: SimpleNamespace(price=Decimal("100.00")),
     )
 
     promo_application = SimpleNamespace(
@@ -74,7 +75,7 @@ def test_init_buy_record_refreshes_existing_unpaid_order_promotions(app, monkeyp
             return []
         return [promo_application]
 
-    def fake_query_promo_campaign_applications(_app, _order_id, _recalc_discount):
+    def fake_query_promo_campaign_applications(_app, _order_id, recalc_discount):
         if apply_calls["count"] >= 2:
             return [promo_application]
         return []
@@ -117,10 +118,10 @@ def test_init_buy_record_reactivates_voided_promo_redemption(app, monkeypatch):
     monkeypatch.setattr(
         order_funs,
         "get_shifu_info",
-        lambda _app, _bid, _preview: SimpleNamespace(price=Decimal("500.00")),
+        lambda _app, _bid, preview_mode: SimpleNamespace(price=Decimal("500.00")),
     )
 
-    now = datetime.now()
+    now = now_utc()
 
     with app.app_context():
         order = Order(
@@ -185,10 +186,10 @@ def test_init_buy_record_applies_legacy_campaign(app, monkeypatch):
     monkeypatch.setattr(
         order_funs,
         "get_shifu_info",
-        lambda _app, _bid, _preview: SimpleNamespace(price=Decimal("500.00")),
+        lambda _app, _bid, preview_mode: SimpleNamespace(price=Decimal("500.00")),
     )
 
-    now = datetime.now()
+    now = now_utc()
 
     with app.app_context():
         campaign = PromoCampaign(
@@ -228,7 +229,7 @@ def test_query_promo_campaign_applications_keeps_legacy_campaign_when_recalculat
 ):
     from flaskr.service.promo.funcs import query_promo_campaign_applications
 
-    now = datetime.now()
+    now = now_utc()
 
     with app.app_context():
         campaign = PromoCampaign(
@@ -278,7 +279,7 @@ def test_init_buy_record_refresh_keeps_existing_coupon_discount(app, monkeypatch
     monkeypatch.setattr(
         order_funs,
         "get_shifu_info",
-        lambda _app, _bid, _preview: SimpleNamespace(price=Decimal("500.00")),
+        lambda _app, _bid, preview_mode: SimpleNamespace(price=Decimal("500.00")),
     )
 
     promo_application = SimpleNamespace(
@@ -294,7 +295,7 @@ def test_init_buy_record_refresh_keeps_existing_coupon_discount(app, monkeypatch
     monkeypatch.setattr(
         order_funs,
         "query_promo_campaign_applications",
-        lambda _app, _order_id, _recalc_discount: [promo_application],
+        lambda _app, _order_id, recalc_discount: [promo_application],
     )
 
     with app.app_context():

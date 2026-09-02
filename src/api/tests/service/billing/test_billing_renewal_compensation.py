@@ -1,19 +1,18 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from flask import Flask
 import pytest
-
-import flaskr.dao as dao
+from flask import Flask
+from flaskr import dao
+from flaskr.service.billing.checkout import sync_billing_order
 from flaskr.service.billing.consts import (
     BILLING_ORDER_STATUS_PAID,
     BILLING_ORDER_STATUS_PENDING,
     BILLING_ORDER_TYPE_SUBSCRIPTION_RENEWAL,
     BILLING_SUBSCRIPTION_STATUS_ACTIVE,
 )
-from flaskr.service.billing.checkout import sync_billing_order
 from flaskr.service.billing.models import (
     BillingOrder,
     BillingSubscription,
@@ -23,13 +22,14 @@ from flaskr.service.billing.models import (
 )
 from flaskr.service.billing.webhooks import apply_billing_stripe_notification
 from flaskr.service.order.payment_providers.base import PaymentNotificationResult
+
 from tests.common.fixtures.bill_products import build_bill_products
 
 _MONTHLY_PLAN_CREDITS = Decimal("5.0000000000")
 
 
 def _utc_epoch(value: datetime) -> int:
-    return int(value.replace(tzinfo=timezone.utc).timestamp())
+    return int(value.replace(tzinfo=UTC).timestamp())
 
 
 @pytest.fixture

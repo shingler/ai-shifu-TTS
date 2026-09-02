@@ -1,10 +1,11 @@
 from flask import Flask
-from ...dao import db
-from .models import RiskControlResult
-from flaskr.api.check import check_text, CHECK_RESULT_REJECT, CHECK_RESULT_PASS
-from flaskr.service.common.models import raise_error
-from datetime import datetime
+from flaskr.api.check import CHECK_RESULT_PASS, CHECK_RESULT_REJECT, check_text
 from flaskr.api.check.dto import CheckResultDTO
+from flaskr.dao import db
+from flaskr.service.common.models import raise_error
+from flaskr.util.datetime import now_utc
+
+from .models import RiskControlResult
 
 
 def add_risk_control_result(
@@ -46,7 +47,7 @@ def check_text_with_risk_control(
             raw_data={"reason": "empty_text"},
         )
 
-    log_id = check_id + datetime.now().strftime("%Y%m%d%H%M%S")
+    log_id = check_id + now_utc().strftime("%Y%m%d%H%M%S")
 
     res = check_text(app, log_id, text, user_id)
     add_risk_control_result(
@@ -62,3 +63,4 @@ def check_text_with_risk_control(
     )
     if res.check_result == CHECK_RESULT_REJECT:
         raise_error("server.check.checkRiskControlReject")
+    return None

@@ -1,25 +1,10 @@
 from flask import Flask
-from flask_sqlalchemy import SQLAlchemy
-
-import flaskr.dao as dao
-
-if dao.db is None:
-    _test_app = Flask("test-listen-elements-legacy-record")
-    _test_app.config.update(
-        SQLALCHEMY_DATABASE_URI="sqlite:///:memory:",
-        SQLALCHEMY_TRACK_MODIFICATIONS=False,
-    )
-    _db = SQLAlchemy()
-    _db.init_app(_test_app)
-    dao.db = _db
-
-if not hasattr(dao, "redis_client"):
-    dao.redis_client = None
+from flaskr import dao
 
 
 class TestBuildListenElementsFromLegacyRecord:
     @classmethod
-    def setup_class(cls):
+    def setup_class(cls) -> None:
         cls.app = Flask("listen-elements-legacy-record")
         cls.app.config.update(
             SQLALCHEMY_DATABASE_URI="sqlite:///:memory:",

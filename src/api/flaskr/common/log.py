@@ -1,38 +1,42 @@
 import logging
-import os
-from flask import Flask, request
-import uuid
-from logging.handlers import TimedRotatingFileHandler
 import socket
 import threading
 import time
+import uuid
 from datetime import datetime
-import pytz
+from logging.handlers import TimedRotatingFileHandler
+from pathlib import Path
+from typing import Any
+
 import colorlog
+import pytz
 import requests
+from flask import Flask, request
 
 from .observability import current_trace_ids
 from .request_context import thread_local
 
 
 class AppLoggerProxy:
-    def __init__(self, fallback: logging.Logger):
+    def __init__(self, fallback: logging.Logger) -> None:
         self._fallback = fallback
 
     def _resolve(self) -> logging.Logger:
         try:
             from flask import current_app
 
-            return current_app.logger
+            # Resolved inside the try: attribute access on current_app raises
+            # outside an application context.
+            return current_app.logger  # noqa: TRY300
         except Exception:
             return self._fallback
 
-    def __getattr__(self, name: str):
+    def __getattr__(self, name: str) -> Any:
         return getattr(self._resolve(), name)
 
 
 class RequestFormatter(logging.Formatter):
-    def formatTime(self, record, datefmt=None):
+    def formatTime(self, record, datefmt=None):  # noqa: N802 - logging.Formatter hook name
         # create time zone info
         bj_time = pytz.timezone("Asia/Shanghai")
         # convert record.created (a float timestamp) to beijing time
@@ -79,7 +83,7 @@ class RequestFormatter(logging.Formatter):
 class FeishuLogHandler(logging.Handler):
     MAX_TEXT_LENGTH = 18000
 
-    def __init__(self, webhook_url):
+    def __init__(self, webhook_url) -> None:
         super().__init__(level=logging.ERROR)
         self.webhook_url = webhook_url
         # This handler is attached to app.logger, so reporting a webhook
@@ -103,7 +107,7 @@ class FeishuLogHandler(logging.Handler):
         try:
             from flask import current_app
 
-            current_app.logger.warning(message, exc, exc_info=True)
+            current_app.logger.warning(message, exc, exc_info=exc)
         except Exception:
             logging.getLogger(__name__).warning(message, exc, exc_info=True)
 
@@ -128,7 +132,7 @@ class FeishuLogHandler(logging.Handler):
 
 
 class ColoredRequestFormatter(RequestFormatter, colorlog.ColoredFormatter):
-    def __init__(self, fmt, **kwargs):
+    def __init__(self, fmt, **kwargs) -> None:
         super().__init__(fmt, **kwargs)
 
 
@@ -172,11 +176,11 @@ def init_log(app: Flask) -> Flask:
                     request_body["Form"] = request.form.to_dict()
                 else:
                     request_body["Raw"] = request.get_data(as_text=True)
-                app.logger.info(f"Request body: {request_body}")
-            except Exception as e:
-                app.logger.error(f"Failed to get request body: {e}")
+                app.logger.info("Request body: %s", request_body)
+            except Exception:
+                app.logger.exception("Failed to get request body")
         else:
-            app.logger.info(f"Request method: {request.method}")
+            app.logger.info("Request method: %s", request.method)
 
     @app.after_request
     def after_request(response):
@@ -196,9 +200,9 @@ def init_log(app: Flask) -> Flask:
                 app.logger.info("Response: <streaming response omitted>")
                 return response
             response_data = response.get_data(as_text=True)
-            app.logger.info(f"Response: {response_data}")
-        except Exception as e:
-            app.logger.error(f"Error logging response: {str(e)}")
+            app.logger.info("Response: %s", response_data)
+        except Exception:
+            app.logger.exception("Error logging response")
         return response
 
     host_name = socket.gethostname()
@@ -229,9 +233,9 @@ def init_log(app: Flask) -> Flask:
         },
     )
     log_file = app.config.get("LOGGING_PATH", "logs/ai-shifu.log")
-    log_dir = os.path.dirname(log_file)
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
+    log_dir = str(Path(log_file).parent)
+    if not Path(log_dir).exists():
+        Path(log_dir).mkdir(parents=True)
     file_handler = TimedRotatingFileHandler(log_file, when="midnight", backupCount=7)
     file_handler.setFormatter(formatter)
     console_handler = logging.StreamHandler()

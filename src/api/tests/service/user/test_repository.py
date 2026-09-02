@@ -1,17 +1,17 @@
 import uuid
 from datetime import datetime
 
-from flask import Flask
 import pytest
-
-import flaskr.dao as dao
+from flask import Flask
+from flaskr import dao
 from flaskr.dao import db
 from flaskr.service.user.consts import (
     CREDENTIAL_STATE_UNVERIFIED,
     CREDENTIAL_STATE_VERIFIED,
     USER_STATE_REGISTERED,
 )
-from flaskr.service.user.models import AuthCredential, UserInfo as UserEntity
+from flaskr.service.user.models import AuthCredential
+from flaskr.service.user.models import UserInfo as UserEntity
 from flaskr.service.user.repository import (
     build_user_info_from_aggregate,
     create_user_entity,
@@ -20,6 +20,7 @@ from flaskr.service.user.repository import (
     load_user_aggregate_by_identifier,
     upsert_user_entity,
 )
+from flaskr.util.datetime import now_utc
 
 
 @pytest.fixture
@@ -55,7 +56,7 @@ def _insert_email_credential(
     state: int = CREDENTIAL_STATE_VERIFIED,
     created_at: datetime | None = None,
 ) -> AuthCredential:
-    credential_created_at = created_at or datetime.now()
+    credential_created_at = created_at or now_utc()
     credential = AuthCredential(
         credential_bid=uuid.uuid4().hex[:32],
         user_bid=user_bid,
@@ -109,8 +110,8 @@ def _create_user(
         state=USER_STATE_REGISTERED,
     )
     entity.is_operator = 1 if is_operator else 0
-    entity.created_at = datetime.now()
-    entity.updated_at = datetime.now()
+    entity.created_at = now_utc()
+    entity.updated_at = now_utc()
     db.session.flush()
     _insert_email_credential(user_bid, email)
     db.session.commit()

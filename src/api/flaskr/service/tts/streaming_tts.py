@@ -1,5 +1,4 @@
-"""
-Streaming TTS Processor with async synthesis.
+"""Streaming TTS Processor with async synthesis.
 
 This module provides real-time TTS synthesis during content streaming.
 - Generic providers synthesize sentence-by-sentence as boundaries appear
@@ -10,30 +9,43 @@ This module provides real-time TTS synthesis during content streaming.
 import base64
 import logging
 import os
-import traceback
-import uuid
 import threading
 import time
-from typing import Any, Generator, Optional, List, Dict
+import uuid
+from collections.abc import Generator
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
-from concurrent.futures import ThreadPoolExecutor, Future
+from typing import Any
 
 from flask import Flask
-
-from flaskr.dao import cleanup_session_after
 from flaskr.api.tts import (
-    synthesize_text,
-    is_tts_configured,
-    VoiceSettings,
     AudioSettings,
-    get_default_voice_settings,
+    VoiceSettings,
     get_default_audio_settings,
+    get_default_voice_settings,
+    is_tts_configured,
+    synthesize_text,
 )
 from flaskr.api.tts.minimax_provider import MinimaxTTSProvider
+from flaskr.common.log import AppLoggerProxy
+from flaskr.dao import cleanup_session_after
+from flaskr.service.learn.learn_dtos import (
+    AudioCompleteDTO,
+    AudioSegmentDTO,
+    GeneratedType,
+    RunMarkdownFlowDTO,
+)
+from flaskr.service.learn.listen_slide_builder import build_visual_segments_for_block
+from flaskr.service.metering import UsageContext
+from flaskr.service.metering.consts import BILL_USAGE_SCENE_PROD
 from flaskr.service.tts import (
     has_speakable_text,
     preprocess_for_tts,
     resolve_tts_billable_chars,
+)
+from flaskr.service.tts.audio_record_utils import (
+    build_completed_audio_record,
+    save_audio_record,
 )
 from flaskr.service.tts.audio_utils import (
     concat_audio_best_effort,
@@ -41,65 +53,60 @@ from flaskr.service.tts.audio_utils import (
     get_audio_duration_ms,
     try_get_audio_duration_ms,
 )
-from flaskr.common.log import AppLoggerProxy
-from flaskr.service.tts.audio_record_utils import (
-    build_completed_audio_record,
-    save_audio_record,
-)
-from flaskr.service.tts.subtitle_utils import (
-    append_subtitle_cue,
-    normalize_subtitle_cues,
-)
-from flaskr.service.metering import UsageContext
-from flaskr.service.metering.consts import BILL_USAGE_SCENE_PROD
-from flaskr.util.uuid import generate_id
-from flaskr.service.learn.learn_dtos import (
-    RunMarkdownFlowDTO,
-    GeneratedType,
-    AudioSegmentDTO,
-    AudioCompleteDTO,
-)
-from flaskr.service.learn.listen_slide_builder import build_visual_segments_for_block
 from flaskr.service.tts.boundary_strategies import find_boundary_end
+from flaskr.service.tts.minimax_run_tts import (
+    should_use_minimax_http_stream,
+)
 from flaskr.service.tts.patterns import (
     SENTENCE_ENDINGS,
 )
 from flaskr.service.tts.pipeline import (
-    build_av_segmentation_contract,
     _find_next_av_boundary,
+    build_av_segmentation_contract,
 )
-from flaskr.service.tts.minimax_run_tts import (
-    should_use_minimax_http_stream,
+from flaskr.service.tts.rpm_gate import TTSRpmQueueTimeoutError
+from flaskr.service.tts.subtitle_utils import (
+    append_subtitle_cue,
+    normalize_subtitle_cues,
 )
-from flaskr.service.tts.rpm_gate import TTSRpmQueueTimeout
-
+from flaskr.util.uuid import generate_id
 
 logger = AppLoggerProxy(logging.getLogger(__name__))
 
-# Global thread pool for TTS synthesis, created lazily per process. A
+
+# Process-local thread pool for TTS synthesis, created lazily. A
 # module-level instance would be created during the gunicorn master's
 # preload import and inherited by every forked worker; its gevent-patched
 # internals then carry wakeup links bound to the parent's hub, which can
 # crash in AbstractLinkable._notify_links and silently interrupt unrelated
 # greenlets (observed as DB protocol desync). The pid guard hands each
 # process its own executor.
-_tts_executor: ThreadPoolExecutor | None = None
-_tts_executor_pid: int | None = None
+@dataclass(slots=True)
+class _TTSExecutorState:
+    executor: ThreadPoolExecutor | None = None
+    pid: int | None = None
+
+
+_tts_executor_state = _TTSExecutorState()
 
 
 def _get_tts_executor() -> ThreadPoolExecutor:
-    global _tts_executor, _tts_executor_pid
     current_pid = os.getpid()
     # Rebuild only when there is no executor or the recorded pid is STALE.
     # An executor with no recorded pid was injected directly (tests patch
-    # `_tts_executor` with a mock) and must be honored as-is; production
-    # code always records the pid alongside the instance it creates.
-    if _tts_executor is None or (
-        _tts_executor_pid is not None and _tts_executor_pid != current_pid
+    # `_tts_executor_state.executor` with a mock) and must be honored as-is;
+    # production code always records the pid alongside the instance it creates.
+    if _tts_executor_state.executor is None or (
+        _tts_executor_state.pid is not None and _tts_executor_state.pid != current_pid
     ):
-        _tts_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="tts_")
-        _tts_executor_pid = current_pid
-    return _tts_executor
+        _tts_executor_state.executor = ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="tts_"
+        )
+        _tts_executor_state.pid = current_pid
+    executor = _tts_executor_state.executor
+    if executor is None:  # pragma: no cover - guarded by the branch above
+        raise RuntimeError("TTS executor initialization failed")
+    return executor
 
 
 _EMPTY_AUDIO_ERROR_MESSAGE = "No audio data received"
@@ -236,12 +243,12 @@ class TTSSegment:
 
     index: int
     text: str
-    audio_data: Optional[bytes] = None
+    audio_data: bytes | None = None
     duration_ms: int = 0
     word_count: int = 0
     usage_characters: int = 0
     latency_ms: int = 0
-    error: Optional[str] = None
+    error: str | None = None
     is_ready: bool = False
     subtitle_cues: list[dict[str, Any]] = field(default_factory=list)
 
@@ -256,8 +263,7 @@ class _MinimaxFallbackAudio:
 
 
 class StreamingTTSProcessor:
-    """
-    Processes text for TTS in real-time during content streaming.
+    """Processes text for TTS in real-time during content streaming.
 
     Uses background threads for TTS synthesis to avoid blocking content streaming.
     """
@@ -280,9 +286,9 @@ class StreamingTTSProcessor:
         tts_model: str = "",
         stream_element_number: int | None = None,
         stream_element_type: str | None = None,
-        av_contract: Optional[Dict[str, Any]] = None,
+        av_contract: dict[str, Any] | None = None,
         usage_scene: int = BILL_USAGE_SCENE_PROD,
-    ):
+    ) -> None:
         self.app = app
         self.generated_block_bid = generated_block_bid
         self.outline_bid = outline_bid
@@ -336,26 +342,26 @@ class StreamingTTSProcessor:
         )
 
         # Thread-safe queue for completed segments
-        self._completed_segments: Dict[int, TTSSegment] = {}
-        self._pending_futures: List[Future] = []
+        self._completed_segments: dict[int, TTSSegment] = {}
+        self._pending_futures: list[Future] = []
         self._next_yield_index = 0
         self._lock = threading.Lock()
 
         # Storage for all yielded audio data and text (for final concatenation/subtitles)
         # List of (index, audio_data, duration_ms, text)
-        self._all_audio_data: List[tuple] = []
-        self._segment_subtitle_cues: Dict[int, list[dict[str, Any]]] = {}
+        self._all_audio_data: list[tuple] = []
+        self._segment_subtitle_cues: dict[int, list[dict[str, Any]]] = {}
 
         # Check if TTS is configured for the specified provider
         self._enabled = is_tts_configured(tts_provider)
         if not self._enabled:
             logger.warning(
-                f"TTS is not configured for provider '{tts_provider or '(unset)'}', streaming TTS disabled"
+                "TTS is not configured for provider '%s', streaming TTS disabled",
+                tts_provider or "(unset)",
             )
 
     def process_chunk(self, chunk: str) -> Generator[RunMarkdownFlowDTO, None, None]:
-        """
-        Process a chunk of streaming content.
+        """Process a chunk of streaming content.
 
         Submits TTS tasks to background threads and yields completed segments.
         """
@@ -444,6 +450,7 @@ class StreamingTTSProcessor:
 
         Returns:
             Number of characters to consume from *raw_text*.
+
         """
         target = processed_text[:processed_end]
         # raw text is always >= preprocessed text in length (preprocessing
@@ -469,7 +476,10 @@ class StreamingTTSProcessor:
         segment = TTSSegment(index=segment_index, text=text)
 
         logger.debug(
-            f"Submitting TTS task {segment_index}: {len(text)} chars, provider={self.tts_provider or '(unset)'}"
+            "Submitting TTS task %s: %s chars, provider=%s",
+            segment_index,
+            len(text),
+            self.tts_provider or "(unset)",
         )
 
         future = _get_tts_executor().submit(
@@ -488,8 +498,7 @@ class StreamingTTSProcessor:
         *,
         include_trailing_fragment: bool = True,
     ):
-        """
-        Submit text sentence-by-sentence.
+        """Submit text sentence-by-sentence.
 
         When ``include_trailing_fragment`` is True, any trailing text without
         sentence-ending punctuation is submitted as one final segment.
@@ -498,12 +507,13 @@ class StreamingTTSProcessor:
             remaining_text: The text to be synthesized
             include_trailing_fragment: Whether to submit trailing text that does
                 not end with sentence punctuation.
+
         """
         if not remaining_text or len(remaining_text) < 2:
             return
 
         logger.debug(
-            f"Submitting remaining text in segments: {len(remaining_text)} chars"
+            "Submitting remaining text in segments: %s chars", len(remaining_text)
         )
 
         cursor = 0
@@ -513,8 +523,9 @@ class StreamingTTSProcessor:
             if segment_text and len(segment_text) >= 2:
                 self._submit_tts_task(segment_text)
                 logger.debug(
-                    f"Submitted finalize segment: {len(segment_text)} chars, "
-                    f"remaining: {len(remaining_text) - split_pos} chars"
+                    "Submitted finalize segment: %s chars, remaining: %s chars",
+                    len(segment_text),
+                    len(remaining_text) - split_pos,
                 )
             cursor = split_pos
 
@@ -523,7 +534,7 @@ class StreamingTTSProcessor:
             if tail_text and len(tail_text) >= 2:
                 self._submit_tts_task(tail_text)
                 logger.debug(
-                    f"Submitted finalize trailing fragment: {len(tail_text)} chars"
+                    "Submitted finalize trailing fragment: %s chars", len(tail_text)
                 )
 
     def _synthesize_text_with_retry(
@@ -665,10 +676,12 @@ class StreamingTTSProcessor:
                     )
 
                 logger.debug(
-                    f"TTS segment {segment.index} synthesized: "
-                    f"text_len={len(segment.text)}, duration={segment.duration_ms}ms"
+                    "TTS segment %s synthesized: text_len=%s, duration=%sms",
+                    segment.index,
+                    len(segment.text),
+                    segment.duration_ms,
                 )
-            except TTSRpmQueueTimeout as e:
+            except TTSRpmQueueTimeoutError as e:
                 self._enabled = False
                 logger.warning(
                     "TTS segment %s skipped after RPM queue timeout: %s",
@@ -678,11 +691,10 @@ class StreamingTTSProcessor:
                 segment.error = str(e)
                 segment.is_ready = True
             except Exception as e:
-                logger.error(
-                    "TTS segment %s failed: %s provider=%s model=%s "
+                logger.exception(
+                    "TTS segment %s failed: provider=%s model=%s "
                     "text_len=%s text_preview=%r",
                     segment.index,
-                    e,
                     tts_provider or "(auto)",
                     tts_model or "(unset)",
                     len(segment.text or ""),
@@ -727,8 +739,9 @@ class StreamingTTSProcessor:
                             provider_subtitle_cues
                         )
                     logger.debug(
-                        f"TTS stored segment {segment.index} for concatenation, "
-                        f"total stored: {len(self._all_audio_data)}"
+                        "TTS stored segment %s for concatenation, total stored: %s",
+                        segment.index,
+                        len(self._all_audio_data),
                     )
 
             if segment.audio_data and not segment.error:
@@ -769,7 +782,7 @@ class StreamingTTSProcessor:
         audio_data: bytes,
         duration_ms: int,
         is_final: bool = False,
-        subtitle_cues: Optional[list[dict[str, Any]]] = None,
+        subtitle_cues: list[dict[str, Any]] | None = None,
     ) -> RunMarkdownFlowDTO:
         base64_audio = base64.b64encode(audio_data).decode("utf-8")
         return RunMarkdownFlowDTO(
@@ -825,8 +838,8 @@ class StreamingTTSProcessor:
                 int(cue.get("end_ms", source_start_ms) or source_start_ms),
                 source_start_ms,
             )
-            start_ms = timeline_start_ms + int(round(source_start_ms * scale))
-            end_ms = timeline_start_ms + int(round(source_cue_end_ms * scale))
+            start_ms = timeline_start_ms + round(source_start_ms * scale)
+            end_ms = timeline_start_ms + round(source_cue_end_ms * scale)
             start_ms = min(max(start_ms, last_end_ms), timeline_end_ms)
             if start_ms >= timeline_end_ms:
                 continue
@@ -934,7 +947,7 @@ class StreamingTTSProcessor:
             if raw_value is None or raw_value == "":
                 continue
             try:
-                return int(round(float(raw_value)))
+                return round(float(raw_value))
             except (TypeError, ValueError):
                 continue
         return int(default_ms or 0)
@@ -1038,8 +1051,8 @@ class StreamingTTSProcessor:
             if index == len(units) - 1:
                 unit_duration_ms = remaining_duration_ms
             elif safe_duration_ms > 0:
-                unit_duration_ms = int(
-                    round(remaining_duration_ms * weights[index] / remaining_weight)
+                unit_duration_ms = round(
+                    remaining_duration_ms * weights[index] / remaining_weight
                 )
                 unit_duration_ms = max(min(unit_duration_ms, remaining_duration_ms), 0)
             else:
@@ -1165,11 +1178,11 @@ class StreamingTTSProcessor:
                 source_start_ms,
             )
             start_ms = min(
-                int(round(source_start_ms * scale)),
+                round(source_start_ms * scale),
                 safe_live_request_end_ms,
             )
             end_ms = min(
-                int(round(source_cue_end_ms * scale)),
+                round(source_cue_end_ms * scale),
                 safe_live_request_end_ms,
             )
             live_cues.append(
@@ -1231,7 +1244,7 @@ class StreamingTTSProcessor:
             int(tail_candidate.get("end_ms", 0) or 0),
         )
         remaining = [dict(cue) for cue in incoming[incoming_tail_index + 1 :]]
-        return frozen_prefix + [previous_tail] + remaining
+        return [*frozen_prefix, previous_tail, *remaining]
 
     def _normalize_minimax_live_request_cues(
         self,
@@ -1287,7 +1300,7 @@ class StreamingTTSProcessor:
         provider_offset_ms: int,
         live_offset_ms: int,
         live_request_end_ms: int,
-        previous_live_cues: Optional[list[dict[str, Any]]] = None,
+        previous_live_cues: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         incoming_live_cues = self._scale_minimax_cues_to_live_request(
             subtitle_cues,
@@ -1311,7 +1324,7 @@ class StreamingTTSProcessor:
         audio_data: bytes,
         duration_ms: int,
         text: str,
-        subtitle_cues: Optional[list[dict[str, Any]]] = None,
+        subtitle_cues: list[dict[str, Any]] | None = None,
     ) -> tuple[int, RunMarkdownFlowDTO]:
         with self._lock:
             segment_index = self._segment_index
@@ -1338,8 +1351,8 @@ class StreamingTTSProcessor:
         raw_text: str,
         cleaned_text: str,
         cleaned_text_length: int,
-        subtitle_cues: Optional[list[dict[str, Any]]] = None,
-        event_subtitle_cues: Optional[list[dict[str, Any]]] = None,
+        subtitle_cues: list[dict[str, Any]] | None = None,
+        event_subtitle_cues: list[dict[str, Any]] | None = None,
         commit: bool = True,
     ) -> Generator[RunMarkdownFlowDTO, None, None]:
         if not all_segments:
@@ -1454,7 +1467,7 @@ class StreamingTTSProcessor:
                 final_duration_ms,
             )
         except Exception as e:
-            logger.error(f"Failed to finalize TTS: {e}\n{traceback.format_exc()}")
+            logger.exception("Failed to finalize TTS")
             # The swallowed error may be a desync surfaced by the audio
             # record write; classify so an interrupted exchange discards the
             # connection instead of leaving it for the next statement.
@@ -1467,7 +1480,7 @@ class StreamingTTSProcessor:
         request_text: str,
         request_format: str,
         request_index: int,
-    ) -> Optional[_MinimaxFallbackAudio]:
+    ) -> _MinimaxFallbackAudio | None:
         try:
             result = provider.synthesize(
                 text=request_text,
@@ -1492,7 +1505,7 @@ class StreamingTTSProcessor:
         )
         decoded_duration_ms = try_get_audio_duration_ms(
             audio_data,
-            format=audio_format,
+            audio_format=audio_format,
         )
         if decoded_duration_ms is None or decoded_duration_ms <= 0:
             logger.warning(
@@ -1598,7 +1611,7 @@ class StreamingTTSProcessor:
                     if request_duration_ms <= 0:
                         decoded_duration_ms = try_get_audio_duration_ms(
                             accumulated_audio,
-                            format=request_format or "mp3",
+                            audio_format=request_format or "mp3",
                         )
                         if decoded_duration_ms is not None:
                             request_duration_ms = int(decoded_duration_ms or 0)
@@ -1670,7 +1683,7 @@ class StreamingTTSProcessor:
                 ):
                     decoded_duration_ms = try_get_audio_duration_ms(
                         accumulated_audio,
-                        format=request_format or "mp3",
+                        audio_format=request_format or "mp3",
                     )
                     if decoded_duration_ms is not None and decoded_duration_ms > 0:
                         audio_piece = accumulated_audio
@@ -1713,7 +1726,7 @@ class StreamingTTSProcessor:
                 )
                 yield event
 
-            fallback_audio: Optional[_MinimaxFallbackAudio] = None
+            fallback_audio: _MinimaxFallbackAudio | None = None
             if live_request_emitted_ms <= 0:
                 fallback_audio = self._synthesize_minimax_complete_fallback(
                     provider,
@@ -1900,7 +1913,7 @@ class StreamingTTSProcessor:
         if request_duration_ms <= 0:
             request_duration_ms = get_audio_duration_ms(
                 result.audio_data,
-                format=result.format or self.audio_settings.format or "mp3",
+                audio_format=result.format or self.audio_settings.format or "mp3",
             )
         request_word_count = int(result.word_count or 0)
         request_usage_characters = int(getattr(result, "usage_characters", 0) or 0)
@@ -1975,9 +1988,7 @@ class StreamingTTSProcessor:
     def finalize(
         self, *, commit: bool = True
     ) -> Generator[RunMarkdownFlowDTO, None, None]:
-        """
-        Finalize TTS processing after content streaming is complete.
-        """
+        """Finalize TTS processing after content streaming is complete."""
         raw_text = self._buffer
         cleaned_text = ""
         cleaned_text_length = 0
@@ -1989,11 +2000,12 @@ class StreamingTTSProcessor:
             cleaned_text_length = 0
 
         logger.debug(
-            f"TTS finalize called: enabled={self._enabled}, "
-            f"buffer_len={len(self._buffer)}, "
-            f"segment_index={self._segment_index}, "
-            f"pending_futures={len(self._pending_futures)}, "
-            f"all_audio_data={len(self._all_audio_data)}"
+            "TTS finalize called: enabled=%s, buffer_len=%s, segment_index=%s, pending_futures=%s, all_audio_data=%s",
+            self._enabled,
+            len(self._buffer),
+            self._segment_index,
+            len(self._pending_futures),
+            len(self._all_audio_data),
         )
         has_existing_work = bool(
             self._pending_futures or self._completed_segments or self._all_audio_data
@@ -2037,8 +2049,8 @@ class StreamingTTSProcessor:
         for future in self._pending_futures:
             try:
                 future.result(timeout=60)  # Max 60s per segment
-            except Exception as e:
-                logger.error(f"TTS future failed: {e}")
+            except Exception:
+                logger.exception("TTS future failed")
 
         # Yield any remaining segments
         yield from self._yield_ready_segments()
@@ -2047,15 +2059,16 @@ class StreamingTTSProcessor:
         with self._lock:
             all_segments = list(self._all_audio_data)
             logger.debug(
-                f"TTS finalize: _all_audio_data has {len(self._all_audio_data)} segments"
+                "TTS finalize: _all_audio_data has %s segments",
+                len(self._all_audio_data),
             )
 
         if not all_segments:
             logger.warning(
-                f"No audio segments to concatenate. "
-                f"segment_index={self._segment_index}, "
-                f"next_yield_index={self._next_yield_index}, "
-                f"completed_segments keys={list(self._completed_segments.keys())}"
+                "No audio segments to concatenate. segment_index=%s, next_yield_index=%s, completed_segments keys=%s",
+                self._segment_index,
+                self._next_yield_index,
+                list(self._completed_segments.keys()),
             )
             return
 
@@ -2069,8 +2082,7 @@ class StreamingTTSProcessor:
 
 
 class AVStreamingTTSProcessor:
-    """
-    Streaming TTS processor that segments audio by AV boundaries (e.g. SVG, fences).
+    """Streaming TTS processor that segments audio by AV boundaries (e.g. SVG, fences).
 
     Each speakable segment (text gap between visual elements) is synthesized as a
     separate audio track, identified by `position` (0-based) within the same
@@ -2098,7 +2110,7 @@ class AVStreamingTTSProcessor:
         tts_model: str = "",
         usage_scene: int = BILL_USAGE_SCENE_PROD,
         element_index_offset: int = 0,
-    ):
+    ) -> None:
         self.app = app
         self.generated_block_bid = generated_block_bid
         self.outline_bid = outline_bid
@@ -2116,16 +2128,16 @@ class AVStreamingTTSProcessor:
         self.element_index_offset = int(element_index_offset or 0)
 
         self._position_cursor = 0
-        self._current_processor: Optional[StreamingTTSProcessor] = None
+        self._current_processor: StreamingTTSProcessor | None = None
         self._raw_buffer = ""
         self._raw_full_content = ""
-        self._av_contract: Optional[Dict[str, Any]] = None
+        self._av_contract: dict[str, Any] | None = None
         self._next_element_index = self.element_index_offset
         self._current_segment_has_speakable_text = False
 
         # When we hit a non-speakable block boundary (e.g. `<svg>`), we may need to
         # wait for its closing marker before resuming segmentation.
-        self._skip_mode: Optional[str] = (
+        self._skip_mode: str | None = (
             None
             # 'fence' | 'svg' | 'iframe' | 'video' | 'html_table' | 'md_table' | 'sandbox' | 'md_img'
         )
@@ -2167,8 +2179,7 @@ class AVStreamingTTSProcessor:
     ) -> Generator[RunMarkdownFlowDTO, None, None]:
         if (chunk or "").strip():
             self._current_segment_has_speakable_text = True
-        for event in processor.process_chunk(chunk):
-            yield event
+        yield from processor.process_chunk(chunk)
 
     @property
     def next_element_index(self) -> int:
@@ -2189,8 +2200,7 @@ class AVStreamingTTSProcessor:
         if not segments:
             return
         self._next_element_index = max(
-            self._next_element_index,
-            max(seg.element_index + 1 for seg in segments),
+            self._next_element_index, *(seg.element_index + 1 for seg in segments)
         )
 
     def _finalize_current(
@@ -2209,7 +2219,7 @@ class AVStreamingTTSProcessor:
         if did_complete or had_speakable_text:
             self._position_cursor += 1
 
-    def _find_next_boundary(self, raw: str) -> Optional[tuple[str, int, int, bool]]:
+    def _find_next_boundary(self, raw: str) -> tuple[str, int, int, bool] | None:
         return _find_next_av_boundary(raw, include_partial_md_image=True)
 
     def process_chunk(self, chunk: str) -> Generator[RunMarkdownFlowDTO, None, None]:

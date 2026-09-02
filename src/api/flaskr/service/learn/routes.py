@@ -3,9 +3,7 @@ import sys
 import uuid
 
 from flask import Flask, Response, request, stream_with_context
-from pydantic import ValidationError
-from sqlalchemy import select
-
+from flaskr.common.shifu_context import get_shifu_context_snapshot, with_shifu_context
 from flaskr.dao import (
     db,
     invalidate_session,
@@ -14,27 +12,34 @@ from flaskr.dao import (
 )
 from flaskr.framework.plugin.inject import inject
 from flaskr.i18n import get_current_language
-from flaskr.route.common import make_common_response, bypass_token_validation
+from flaskr.route.common import bypass_token_validation, make_common_response
 from flaskr.service.billing.admission import admit_creator_usage
-from flaskr.service.common.models import AppException, raise_param_error
+from flaskr.service.common import raise_error
+from flaskr.service.common.models import AppError, raise_param_error
+from flaskr.service.learn.context_v2 import RunScriptPreviewContextV2
+from flaskr.service.learn.learn_dtos import (
+    PlaygroundPreviewRequest,
+    RunElementSSEMessageDTO,
+)
 from flaskr.service.learn.learn_funcs import (
-    get_shifu_info,
+    get_generated_content,
     get_outline_item_tree,
+    get_shifu_info,
     handle_reaction,
     reset_learn_record,
-    get_generated_content,
     stream_generated_block_audio,
     stream_preview_tts_audio,
 )
-from flaskr.service.learn.listen_elements import get_listen_element_record
 from flaskr.service.learn.lesson_feedback import (
-    submit_lesson_feedback,
     list_lesson_feedbacks,
+    submit_lesson_feedback,
 )
+from flaskr.service.learn.listen_elements import get_listen_element_record
 from flaskr.service.learn.preview_permissions import (
     require_shifu_preview_permission,
     resolve_preview_request_user,
 )
+from flaskr.service.learn.runscript_v2 import get_run_status, run_script
 from flaskr.service.metering.consts import (
     BILL_USAGE_SCENE_PREVIEW,
     BILL_USAGE_SCENE_PROD,
@@ -42,13 +47,9 @@ from flaskr.service.metering.consts import (
 from flaskr.service.shifu.demo_courses import is_builtin_demo_shifu
 from flaskr.service.shifu.models import DraftOutlineItem, PublishedOutlineItem
 from flaskr.service.shifu.utils import get_shifu_creator_bid
-from flaskr.service.common import raise_error
-from flaskr.service.learn.runscript_v2 import run_script, get_run_status
-from flaskr.service.learn.learn_dtos import PlaygroundPreviewRequest
-from flaskr.service.learn.context_v2 import RunScriptPreviewContextV2
-from flaskr.service.learn.learn_dtos import RunElementSSEMessageDTO
 from flaskr.util import generate_id
-from flaskr.common.shifu_context import with_shifu_context, get_shifu_context_snapshot
+from pydantic import ValidationError
+from sqlalchemy import select
 
 
 def _normalize_user_input(value):
@@ -115,7 +116,7 @@ def _stream_sse_response(
             # ROLLBACK on a possibly desynced stream.
             invalidate_session(source="learn stream_sse_response close")
             raise
-        except AppException as exc:
+        except AppError as exc:
             app.logger.warning("%s: %s (code: %s)", error_log, exc, exc.code)
             if error_event_factory is None:
                 raise
@@ -123,7 +124,7 @@ def _stream_sse_response(
             if terminal_event_factory is not None:
                 yield _to_sse_data_line(terminal_event_factory())
         except Exception as exc:
-            app.logger.error(error_log, exc_info=True)
+            app.logger.exception(error_log)
             if is_protocol_interrupt_error(exc):
                 invalidate_session(source="learn stream_sse_response desync")
             if error_event_factory is None:
@@ -163,10 +164,10 @@ def _stream_passthrough_response(
                 app.logger.info(close_log)
                 invalidate_session(source="learn stream_passthrough_response close")
                 return
-            app.logger.error(error_log, exc_info=True)
+            app.logger.exception(error_log)
             raise
         except Exception as exc:
-            app.logger.error(error_log, exc_info=True)
+            app.logger.exception(error_log)
             if is_protocol_interrupt_error(exc):
                 invalidate_session(source="learn stream_passthrough_response desync")
             raise
@@ -183,10 +184,8 @@ def _stream_passthrough_response(
 
 @inject
 def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
-    """
-    register learn routes
-    """
-    app.logger.info(f"register learn routes {path_prefix}")
+    """Register learn routes."""
+    app.logger.info("register learn routes %s", path_prefix)
     preview_service = RunScriptPreviewContextV2(app)
 
     def _require_shifu_owner(shifu_bid: str) -> str:
@@ -227,7 +226,7 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
 
     def _admit_creator_usage_for_shifu(shifu_bid: str, usage_scene: int) -> None:
         if is_builtin_demo_shifu(app, shifu_bid):
-            return None
+            return
         admit_creator_usage(
             app,
             shifu_bid=shifu_bid,
@@ -238,8 +237,7 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
     @bypass_token_validation
     @with_shifu_context()
     def get_shifu_api(shifu_bid: str):
-        """
-        get shifu
+        """Get shifu.
         ---
         tags:
             - learn
@@ -270,9 +268,9 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
         """
         preview_mode = request.args.get("preview_mode", "False")
         app.logger.info(
-            f"get shifu, shifu_bid: {shifu_bid}, preview_mode: {preview_mode}"
+            "get shifu, shifu_bid: %s, preview_mode: %s", shifu_bid, preview_mode
         )
-        preview_mode = True if preview_mode.lower() == "true" else False
+        preview_mode = preview_mode.lower() == "true"
         if preview_mode:
             user = resolve_preview_request_user(app)
             require_shifu_preview_permission(app, user.user_id, shifu_bid)
@@ -281,8 +279,7 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
     @app.route(path_prefix + "/shifu/<shifu_bid>/outline-item-tree", methods=["GET"])
     @with_shifu_context()
     def get_outline_item_tree_api(shifu_bid: str):
-        """
-        get outline item tree
+        """Get outline item tree.
         ---
         tags:
             - learn
@@ -311,9 +308,11 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
         """
         preview_mode = request.args.get("preview_mode", "False")
         app.logger.info(
-            f"get outline item tree, shifu_bid: {shifu_bid}, preview_mode: {preview_mode}"
+            "get outline item tree, shifu_bid: %s, preview_mode: %s",
+            shifu_bid,
+            preview_mode,
         )
-        preview_mode = True if preview_mode.lower() == "true" else False
+        preview_mode = preview_mode.lower() == "true"
         user_bid = request.user.user_id
         if preview_mode:
             require_shifu_preview_permission(app, user_bid, shifu_bid)
@@ -324,8 +323,7 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
     @app.route(path_prefix + "/shifu/<shifu_bid>/run/<outline_bid>", methods=["PUT"])
     @with_shifu_context()
     def run_outline_item_api(shifu_bid: str, outline_bid: str):
-        """
-        run the MarkdownFlow of the outline
+        """Run the MarkdownFlow of the outline.
         ---
         tags:
             - learn
@@ -373,7 +371,7 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
         """
         user_bid = request.user.user_id
         payload = request.get_json() or {}
-        input = payload.get("input", None)
+        user_input = payload.get("input", None)
         input_type = payload.get("input_type", None)
         reload_generated_block_bid = payload.get("reload_generated_block_bid", None)
         reload_element_bid = payload.get("reload_element_bid", None)
@@ -386,9 +384,13 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
             listen = bool(listen_raw)
         preview_mode = request.args.get("preview_mode", "False")
         app.logger.info(
-            f"run outline item, shifu_bid: {shifu_bid}, outline_bid: {outline_bid}, preview_mode: {preview_mode}, listen: {listen}"
+            "run outline item, shifu_bid: %s, outline_bid: %s, preview_mode: %s, listen: %s",
+            shifu_bid,
+            outline_bid,
+            preview_mode,
+            listen,
         )
-        preview_mode = True if preview_mode.lower() == "true" else False
+        preview_mode = preview_mode.lower() == "true"
         if preview_mode:
             require_shifu_preview_permission(app, user_bid, shifu_bid)
         _admit_creator_usage_for_shifu(
@@ -408,7 +410,7 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
                 shifu_bid=shifu_bid,
                 outline_bid=outline_bid,
                 user_bid=user_bid,
-                input=input,
+                user_input=user_input,
                 input_type=input_type,
                 reload_generated_block_bid=reload_generated_block_bid,
                 reload_element_bid=reload_element_bid,
@@ -427,8 +429,7 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
     )
     @with_shifu_context()
     def preview_outline_block_api(shifu_bid: str, outline_bid: str):
-        """
-        preview a specific outline block
+        """Preview a specific outline block.
         ---
         tags:
             - learn
@@ -583,8 +584,7 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
     )
     @with_shifu_context()
     def get_run_status_api(shifu_bid: str, outline_bid: str):
-        """
-        get run status
+        """Get run status.
         ---
         tags:
             - learn
@@ -622,8 +622,7 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
     )
     @with_shifu_context()
     def get_record_api(shifu_bid: str, outline_bid: str):
-        """
-        get learn records of the outline
+        """Get learn records of the outline.
         ---
         tags:
             - learn
@@ -661,12 +660,13 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
         preview_mode = request.args.get("preview_mode", "False")
         include_non_navigable = request.args.get("include_non_navigable", "False")
         app.logger.info(
-            f"get learn element record, shifu_bid: {shifu_bid}, outline_bid: {outline_bid}, preview_mode: {preview_mode}"
+            "get learn element record, shifu_bid: %s, outline_bid: %s, preview_mode: %s",
+            shifu_bid,
+            outline_bid,
+            preview_mode,
         )
-        preview_mode = True if preview_mode.lower() == "true" else False
-        include_non_navigable = (
-            True if include_non_navigable.lower() == "true" else False
-        )
+        preview_mode = preview_mode.lower() == "true"
+        include_non_navigable = include_non_navigable.lower() == "true"
         user_bid = request.user.user_id
         if preview_mode:
             require_shifu_preview_permission(app, user_bid, shifu_bid)
@@ -686,8 +686,7 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
     )
     @with_shifu_context()
     def delete_record_api(shifu_bid: str, outline_bid: str):
-        """
-        reset the record of the outline
+        """Reset the record of the outline.
         ---
         tags:
             - learn
@@ -724,8 +723,7 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
     )
     @with_shifu_context()
     def submit_lesson_feedback_api(shifu_bid: str, outline_bid: str):
-        """
-        submit lesson feedback
+        """Submit lesson feedback.
         ---
         tags:
             - learn
@@ -786,8 +784,7 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
     @app.route(path_prefix + "/shifu/<shifu_bid>/lesson-feedbacks", methods=["GET"])
     @with_shifu_context()
     def list_lesson_feedbacks_api(shifu_bid: str):
-        """
-        list lesson feedbacks for a course (teacher/authoring side)
+        """List lesson feedbacks for a course (teacher/authoring side).
         ---
         tags:
             - learn
@@ -840,8 +837,7 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
     )
     @with_shifu_context()
     def generate_content_api(shifu_bid: str, generated_block_bid: str, action: str):
-        """
-        generate the content of the generated block
+        """Generate the content of the generated block.
         ---
         tags:
             - learn
@@ -870,7 +866,10 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
         """
         user_bid = request.user.user_id
         app.logger.info(
-            f"generate content, shifu_bid: {shifu_bid}, generated_block_bid: {generated_block_bid}, action: {action}"
+            "generate content, shifu_bid: %s, generated_block_bid: %s, action: %s",
+            shifu_bid,
+            generated_block_bid,
+            action,
         )
         return make_common_response(
             handle_reaction(app, shifu_bid, user_bid, generated_block_bid, action)
@@ -882,8 +881,7 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
     )
     @with_shifu_context()
     def get_generated_content_api(shifu_bid: str, generated_block_bid: str):
-        """
-        get the content of the generated block
+        """Get the content of the generated block.
         ---
         tags:
             - learn
@@ -913,7 +911,10 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
         user_bid = request.user.user_id
         preview_mode = request.args.get("preview_mode", "False")
         app.logger.info(
-            f"get generated content, shifu_bid: {shifu_bid}, generated_block_bid: {generated_block_bid}, preview_mode: {preview_mode}"
+            "get generated content, shifu_bid: %s, generated_block_bid: %s, preview_mode: %s",
+            shifu_bid,
+            generated_block_bid,
+            preview_mode,
         )
         preview_mode = preview_mode.lower() == "true"
         if preview_mode:
@@ -930,8 +931,7 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
     )
     @with_shifu_context()
     def synthesize_generated_block_audio_api(shifu_bid: str, generated_block_bid: str):
-        """
-        Synthesize audio for a generated block (C-end, persisted)
+        """Synthesize audio for a generated block (C-end, persisted).
         ---
         tags:
             - learn
@@ -998,8 +998,7 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
     @app.route(path_prefix + "/shifu/<shifu_bid>/tts/preview", methods=["POST"])
     @with_shifu_context()
     def synthesize_preview_tts_audio_api(shifu_bid: str):
-        """
-        Synthesize audio for an arbitrary text (editor preview, not persisted)
+        """Synthesize audio for an arbitrary text (editor preview, not persisted).
         ---
         tags:
             - learn

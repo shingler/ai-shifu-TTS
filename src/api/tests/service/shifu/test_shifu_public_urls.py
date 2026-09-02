@@ -4,17 +4,17 @@ import json
 from decimal import Decimal
 from types import SimpleNamespace
 
+import flaskr.common.config as common_config
 import pytest
 from flask import Flask
-
-import flaskr.dao as dao
-import flaskr.common.config as common_config
+from flaskr import dao
 from flaskr.service.metering.consts import BILL_USAGE_SCENE_PREVIEW
+from flaskr.util.datetime import now_utc
 
 
 def _reset_config_cache(*keys: str) -> None:
     for key in keys:
-        common_config.__ENHANCED_CONFIG__._cache.pop(key, None)  # noqa: SLF001
+        common_config.__ENHANCED_CONFIG__._cache.pop(key, None)
 
 
 @pytest.fixture(autouse=True)
@@ -72,9 +72,9 @@ def _seed_preview_route_course(
                 avatar_res_bid="avatar-1",
                 keywords="test",
                 llm="gpt-test",
-                llm_temperature=Decimal("0"),
+                llm_temperature=Decimal(0),
                 llm_system_prompt="",
-                price=Decimal("0"),
+                price=Decimal(0),
                 created_user_bid=owner_bid,
                 updated_user_bid=owner_bid,
             )
@@ -154,7 +154,7 @@ def test_shifu_preview_endpoint_url_uses_public_base(monkeypatch):
     monkeypatch.setattr(
         shifu_publish_funcs,
         "get_latest_shifu_draft",
-        lambda _shifu_id: _make_draft(_shifu_id),
+        _make_draft,
         raising=False,
     )
 
@@ -243,7 +243,7 @@ def _seed_white_label(
     custom_domain_enabled: bool = True,
     binding_status: int | None = None,
 ) -> None:
-    from datetime import datetime, timedelta
+    from datetime import timedelta
 
     from flaskr.service.billing.consts import (
         BILLING_DOMAIN_BINDING_STATUS_VERIFIED,
@@ -264,7 +264,7 @@ def _seed_white_label(
     with app.app_context():
         BillingDomainBinding.query.filter_by(creator_bid=creator_bid).delete()
         BillingEntitlement.query.filter_by(creator_bid=creator_bid).delete()
-        now = datetime.now()
+        now = now_utc()
         dao.db.session.add(
             BillingEntitlement(
                 entitlement_bid=f"ent-{creator_bid}",

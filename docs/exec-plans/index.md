@@ -11,6 +11,7 @@ Active and completed ExecPlans live here. The structure and required sections ar
 - [Backend Inventory 2026-07 (Phase 1)](./active/backend-inventory-2026-07.md)
 - [Backend Overhaul Master Plan: Inventory and Optimization](./active/backend-overhaul-master.md)
 - [ExecPlan: Billing Credit Notifications](./active/billing-credit-notifications.md)
+- [Speed Up Backend Pull Request Feedback](./active/ci-backend-speed-stack.md)
 - [课程发现页「可听课」徽章 — ExecPlan](./active/course-discovery-tts-badge.md)
 - [Creator Brand Domain And Payments](./active/creator-brand-domain-payments.md)
 - [Creator Dashboard Course Ownership Optimization](./active/creator-dashboard-course-ownership-optimization.md)
@@ -19,12 +20,14 @@ Active and completed ExecPlans live here. The structure and required sections ar
 - [Creator Dashboard Ratings SQL Optimization](./active/creator-dashboard-ratings-sql-optimization.md)
 - [Creator Dashboard Request Splitting](./active/creator-dashboard-request-splitting.md)
 - [首页顶栏复用 `/c` 登录信息模块 — ExecPlan](./active/home-header-user-menu.md)
+- [Learner Profile Dialog](./active/learner-profile-dialog-redesign.md)
 - [Observability Artifacts, Consistency Probes, and Frontend Trace IDs](./active/observability-artifacts-consistency-frontend-trace.md)
 - [Existing Creator Onboarding Rollout](./active/onboarding-existing-creator-rollout.md)
 - [ExecPlan: Operator Credit Grant Package](./active/operator-credit-grant-package.md)
 - [ExecPlan: Operator Promotion Ops State Rules](./active/operator-promotion-ops-state-rules.md)
 - [ExecPlan: Package Campaigns](./active/package-campaigns.md)
 - [老带新邀请奖励实施计划](./active/referral-invitation-rewards.md)
+- [Minimize the Explicit Ruff Policy](./active/ruff-rule-minimization.md)
 
 ## Completed
 
@@ -36,6 +39,7 @@ Active and completed ExecPlans live here. The structure and required sections ar
 - [Global Billing Pricing Page](./completed/global-billing-pricing-page.md)
 - [Homepage Course Discovery — ExecPlan](./completed/homepage-course-discovery.md)
 - [ExecPlan: Learn /run Chain Decomposition (B6)](./completed/learn-run-decomposition.md)
+- [Learner Profile Foundation](./completed/learner-profile-foundation.md)
 - [Operator Course B Optimization](./completed/operator-course-b-optimization.md)
 - [Operator Course Detail Tab Splitting](./completed/operator-course-detail-tab-splitting.md)
 - [Operator User Detail Page Slimming](./completed/operator-user-detail-page-slimming.md)

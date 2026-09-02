@@ -72,21 +72,9 @@ def _install_openai_responses_stub() -> None:
 
     response_function_tool_call = type("ResponseFunctionToolCall", (), {})
     response_text_config = type("ResponseTextConfigParam", (), {})
-    setattr(
-        response_function_mod,
-        "ResponseFunctionToolCall",
-        response_function_tool_call,
-    )
-    setattr(
-        response_text_mod,
-        "ResponseTextConfigParam",
-        response_text_config,
-    )
-    setattr(
-        responses_pkg,
-        "ResponseFunctionToolCall",
-        response_function_tool_call,
-    )
+    response_function_mod.ResponseFunctionToolCall = response_function_tool_call
+    response_text_mod.ResponseTextConfigParam = response_text_config
+    responses_pkg.ResponseFunctionToolCall = response_function_tool_call
 
     sys.modules["openai.types.responses"] = responses_pkg
     sys.modules["openai.types.responses.response"] = response_mod
@@ -122,7 +110,7 @@ pytestmark = pytest.mark.no_mock_llm
 
 
 class DummySpan:
-    def __init__(self, trace_id="trace-1", span_id="span-1"):
+    def __init__(self, trace_id="trace-1", span_id="span-1") -> None:
         self.generation_args = None
         self.end_args = None
         self.trace_id = trace_id
@@ -147,7 +135,7 @@ class FakeResponse:
         finish_reason=None,
         usage=None,
         reasoning_content=None,
-    ):
+    ) -> None:
         self.id = chunk_id
         delta = SimpleNamespace(
             content=content,
@@ -158,7 +146,7 @@ class FakeResponse:
 
 
 class FakeModelsResponse:
-    def __init__(self, payload):
+    def __init__(self, payload) -> None:
         self.payload = payload
 
     def raise_for_status(self):
@@ -563,7 +551,7 @@ def test_load_and_register_model_max_output_tokens(monkeypatch):
     monkeypatch.setattr(
         llm.litellm,
         "register_model",
-        lambda model_map: captured.update(model_map),
+        captured.update,
         raising=False,
     )
 
@@ -1653,7 +1641,8 @@ def _patch_retryable_stream_errors(monkeypatch):
 
 def _patch_scripted_streams(monkeypatch, scripts):
     """Each call to _stream_litellm_completion consumes the next script;
-    a script is a list of chunks and/or exceptions raised in order."""
+    a script is a list of chunks and/or exceptions raised in order.
+    """
     calls = {"count": 0}
 
     def _factory(_app, _requested, _invoke, _messages, _params, _kwargs):
@@ -1761,7 +1750,7 @@ def test_stream_non_retryable_error_raises_immediately(monkeypatch, app):
     _patch_retryable_stream_errors(monkeypatch)
     calls = _patch_scripted_streams(monkeypatch, [[ValueError("business error")]])
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="business error"):
         _collect_retry_stream(app)
 
     assert calls["count"] == 1
@@ -1769,7 +1758,8 @@ def test_stream_non_retryable_error_raises_immediately(monkeypatch, app):
 
 def test_stream_retry_noop_when_exception_types_unavailable(monkeypatch, app):
     """The litellm test stub has no exceptions submodule; the wrapper must
-    degrade to raising instead of crashing on type resolution."""
+    degrade to raising instead of crashing on type resolution.
+    """
     monkeypatch.delattr(llm.litellm, "exceptions", raising=False)
     calls = _patch_scripted_streams(
         monkeypatch, [[_FakeAPIConnectionError("connection died")]]

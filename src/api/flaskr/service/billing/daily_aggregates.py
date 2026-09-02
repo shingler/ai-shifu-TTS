@@ -9,24 +9,24 @@ from decimal import Decimal
 from typing import Any
 
 from flask import Flask
-from sqlalchemy import select
-
 from flaskr.dao import db
 from flaskr.service.metering.models import BillUsageRecord
+from flaskr.util.datetime import now_utc, parse_naive_utc
 from flaskr.util.uuid import generate_id
+from sqlalchemy import select
 
+from .charges import build_usage_metric_charges
 from .consts import CREDIT_LEDGER_ENTRY_TYPE_CONSUME, CREDIT_SOURCE_TYPE_USAGE
 from .models import (
     BillingDailyLedgerSummary,
     BillingDailyUsageMetric,
     CreditLedgerEntry,
 )
-from .charges import build_usage_metric_charges
 from .ownership import resolve_usage_creator_bid
 from .primitives import quantize_credit_amount as _quantize_credit_amount
 from .primitives import to_decimal as _to_decimal
 
-_ZERO = Decimal("0")
+_ZERO = Decimal(0)
 
 
 @dataclass(slots=True, frozen=True)
@@ -124,7 +124,6 @@ def aggregate_daily_usage_metrics(
     now: datetime | None = None,
 ) -> DailyAggregateJobResult:
     """Rebuild one day's usage aggregates from usage and ledger details."""
-
     normalized_creator_bid = str(creator_bid or "").strip()
     normalized_shifu_bid = str(shifu_bid or "").strip()
     window_started_at, window_ended_at, normalized_stat_date = _resolve_stat_window(
@@ -283,7 +282,6 @@ def finalize_daily_usage_metrics(
     now: datetime | None = None,
 ) -> DailyAggregateJobResult:
     """Close one day's usage aggregate window by recomputing the full day."""
-
     return aggregate_daily_usage_metrics(
         app,
         stat_date=stat_date,
@@ -303,7 +301,6 @@ def aggregate_daily_ledger_summary(
     now: datetime | None = None,
 ) -> DailyAggregateJobResult:
     """Rebuild one day's ledger summary directly from ledger detail rows."""
-
     normalized_creator_bid = str(creator_bid or "").strip()
     window_started_at, window_ended_at, normalized_stat_date = _resolve_stat_window(
         stat_date=stat_date,
@@ -394,7 +391,6 @@ def finalize_daily_ledger_summary(
     now: datetime | None = None,
 ) -> DailyAggregateJobResult:
     """Close one day's ledger summary window by recomputing the full day."""
-
     return aggregate_daily_ledger_summary(
         app,
         stat_date=stat_date,
@@ -414,7 +410,6 @@ def rebuild_daily_aggregates(
     now: datetime | None = None,
 ) -> RebuildDailyAggregatesResult:
     """Rebuild usage and ledger daily aggregates across one date window."""
-
     normalized_creator_bid = str(creator_bid or "").strip()
     normalized_shifu_bid = str(shifu_bid or "").strip()
     start_date, end_date = _resolve_stat_date_range(
@@ -477,7 +472,6 @@ def detect_daily_aggregate_rebuild_range(
     shifu_bid: str = "",
 ) -> tuple[str | None, str | None]:
     """Detect the earliest and latest stat_date that currently need rebuild."""
-
     normalized_creator_bid = str(creator_bid or "").strip()
     normalized_shifu_bid = str(shifu_bid or "").strip()
 
@@ -611,9 +605,9 @@ def _resolve_stat_window(
     finalize: bool = False,
     now: datetime | None = None,
 ) -> tuple[datetime, datetime, str]:
-    anchor = now or datetime.now()
+    anchor = now or now_utc()
     normalized_stat_date = str(stat_date or "").strip() or anchor.strftime("%Y-%m-%d")
-    day_start = datetime.strptime(normalized_stat_date, "%Y-%m-%d")
+    day_start = parse_naive_utc(normalized_stat_date, "%Y-%m-%d")
     day_end = day_start + timedelta(days=1)
     if finalize:
         return day_start, day_end, normalized_stat_date
@@ -626,7 +620,7 @@ def _resolve_stat_date_range(
     date_to: str = "",
     now: datetime | None = None,
 ) -> tuple[datetime, datetime]:
-    anchor = now or datetime.now()
+    anchor = now or now_utc()
     normalized_date_from = str(date_from or "").strip()
     normalized_date_to = str(date_to or "").strip()
     start_value = (
@@ -635,8 +629,8 @@ def _resolve_stat_date_range(
     end_value = (
         normalized_date_to or normalized_date_from or anchor.strftime("%Y-%m-%d")
     )
-    start_date = datetime.strptime(start_value, "%Y-%m-%d")
-    end_date = datetime.strptime(end_value, "%Y-%m-%d")
+    start_date = parse_naive_utc(start_value, "%Y-%m-%d")
+    end_date = parse_naive_utc(end_value, "%Y-%m-%d")
     if end_date < start_date:
         raise ValueError("date_to must be greater than or equal to date_from")
     return start_date, end_date

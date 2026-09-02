@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 
 from flask import Flask
-
 from flaskr.api.sms import aliyun
 
 
@@ -9,7 +8,7 @@ def test_query_sms_template_list_caps_page_size_at_provider_limit(monkeypatch):
     captured = {}
 
     class FakeClient:
-        def __init__(self, _config):
+        def __init__(self, _config) -> None:
             pass
 
         def query_sms_template_list_with_options(self, request, _runtime):

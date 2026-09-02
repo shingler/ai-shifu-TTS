@@ -1,20 +1,20 @@
-"""
-Unit tests for Config class (Flask integration).
-"""
+"""Unit tests for Config class (Flask integration)."""
 
 import os
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 from flask import Flask
 from flaskr.common.config import (
+    __ENHANCED_CONFIG__,
     Config,
     EnvironmentConfigError,
     get_config,
     get_redis_derived_prefix,
     get_redis_key_prefix,
     has_explicit_env_override,
-    __ENHANCED_CONFIG__,
 )
+
 from tests.common.fixtures.config_data import DOCKER_ENV_CONFIG
 
 
@@ -61,8 +61,8 @@ class TestConfigInitialization:
         with pytest.raises(EnvironmentConfigError):
             Config(parent_config, app)
 
-        # Verify error was logged
-        app.logger.error.assert_called()
+        # Verify error was logged with traceback
+        app.logger.exception.assert_called()
 
     def test_global_instance_set(self, monkeypatch):
         """Test that global instance is set on initialization."""
@@ -79,12 +79,12 @@ class TestConfigInitialization:
         # Clear global instance
         import flaskr.common.config as config_module
 
-        config_module.__INSTANCE__ = None
+        config_module.Config._instance = None
 
         config = Config(parent_config, app)
 
         # Check global instance is set
-        assert config_module.__INSTANCE__ == config
+        assert config == config_module.Config._instance
 
 
 class TestConfigGetItem:
@@ -417,8 +417,8 @@ class TestGetConfigFunction:
         # Clear global instance
         import flaskr.common.config as config_module
 
-        original_instance = config_module.__INSTANCE__
-        config_module.__INSTANCE__ = None
+        original_instance = config_module.Config._instance
+        config_module.Config._instance = None
 
         try:
             # Test with a known ENV_VAR key - should get from environment or default
@@ -441,7 +441,7 @@ class TestGetConfigFunction:
             assert value == ""  # Default value from ENV_VARS
         finally:
             # Restore original instance
-            config_module.__INSTANCE__ = original_instance
+            config_module.Config._instance = original_instance
 
 
 class TestConfigIntegrationWithFlask:

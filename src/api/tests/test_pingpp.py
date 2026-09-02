@@ -5,7 +5,7 @@ def test_init_pingxx_uses_provider(app, monkeypatch):
     from flaskr.service.order import pingxx_order
 
     class FakeProvider:
-        def __init__(self):
+        def __init__(self) -> None:
             self.called = False
 
         def ensure_client(self, _app):
@@ -33,7 +33,7 @@ def test_create_pingxx_order_builds_request(app, monkeypatch):
                 provider_reference="ref", raw_response={"id": "ch"}
             )
 
-    monkeypatch.setattr(pingxx_order, "_get_provider", lambda: FakeProvider())
+    monkeypatch.setattr(pingxx_order, "_get_provider", FakeProvider)
 
     order = pingxx_order.create_pingxx_order(
         app,
