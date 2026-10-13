@@ -116,6 +116,11 @@ ENV/
 env.bak/
 venv.bak/
 
+# Env backups / secrets (never commit real keys)
+.env.bak
+.env.*.bak
+.env.pre-*
+
 # Type checking
 .mypy_cache/
 .dmypy.json
