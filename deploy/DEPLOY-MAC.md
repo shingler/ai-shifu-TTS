@@ -49,7 +49,7 @@ cd /Users/benben/ai-shifu-TTS
 cd src/api && .venv/bin/gunicorn -w 4 -b 127.0.0.1:5800 --timeout 300 'app:app'
 
 # 终端 2：前端（I18N_ROOT 同样必须显式传，原因见 trouble-shoot §13）
-cd src/cook-web
+cd src/web
 I18N_ROOT="$(pwd)/../i18n" node .next/standalone/server.js
 ```
 
@@ -63,7 +63,7 @@ sudo cp deploy/nginx/ai-shifu.conf /opt/homebrew/etc/nginx/servers/ai-shifu.conf
 
 ```nginx
 server_name _ benben.local;
-alias /Users/benben/ai-shifu-TTS/src/cook-web/.next/static/;
+alias /Users/benben/ai-shifu-TTS/src/web/.next/static/;
 ```
 
 hosts 里确认有（局域网其他设备通过 Bonjour 解析 `benben.local`）：

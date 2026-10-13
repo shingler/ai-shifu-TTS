@@ -52,7 +52,7 @@ mysql -u root -e "CREATE DATABASE IF NOT EXISTS \`ai-shifu\` CHARACTER SET utf8m
 
 ```bash
 cp docker/.env.example.full src/api/.env
-cp docker/.env.example.full src/cook-web/.env   # 两份内容相同
+cp docker/.env.example.full src/web/.env   # 两份内容相同
 ```
 
 必改项：
@@ -82,7 +82,7 @@ export FLASK_APP=app.py
 ### 4. 前端
 
 ```bash
-cd src/cook-web
+cd src/web
 npm install
 npm run build        # CentOS 7 / Node 20 机器改用变体 B，webpack 会 segfault
 ```
@@ -98,7 +98,7 @@ sudo cp deploy/nginx/ai-shifu.conf /etc/nginx/conf.d/ai-shifu.conf
 改两处再 reload：
 
 - `server_name`：域名，或保持 `_`
-- `location /_next/static/` 的 `alias`：指向 `<项目>/src/cook-web/.next/static/`
+- `location /_next/static/` 的 `alias`：指向 `<项目>/src/web/.next/static/`
 
 ```bash
 nginx -t && sudo nginx -s reload
@@ -111,7 +111,7 @@ nginx -t && sudo nginx -s reload
 cd src/api && .venv/bin/gunicorn -w 4 -b 127.0.0.1:5800 --timeout 300 'app:app'
 
 # 终端 2：前端。server.js 会 chdir，.env 读不到，I18N_ROOT 必须显式传
-cd src/cook-web
+cd src/web
 I18N_ROOT="$(pwd)/../i18n" node .next/standalone/server.js
 ```
 
@@ -181,7 +181,7 @@ sudo -u ai-shifu /usr/local/bin/uv pip install -r requirements.txt --python .ven
 sudo -u ai-shifu .venv/bin/flask db upgrade
 
 # 前端（有前端改动时）
-cd src/cook-web && sudo -u ai-shifu npm install && sudo -u ai-shifu npm run build
+cd src/web && sudo -u ai-shifu npm install && sudo -u ai-shifu npm run build
 # 变体 B 机器走变体章节的 turbopack 流程
 
 sudo systemctl restart ai-shifu-api ai-shifu-frontend
@@ -226,7 +226,7 @@ sudo systemctl restart ai-shifu-api ai-shifu-frontend
 | `/_next/static/` | Nginx alias 直读 | Next 自己 serve，**删掉 Nginx 的 alias 段** |
 | `I18N_ROOT` | 必须显式传入 | 不需要（cwd 正常，`/api/i18n` 自动回退到 `../i18n`） |
 
-1. **注释 standalone**：`src/cook-web/next.config.ts` 里 `output: 'standalone',`
+1. **注释 standalone**：`src/web/next.config.ts` 里 `output: 'standalone',`
    前加 `//`。
 2. **构建**（跨用户执行要带 PATH，原因见 trouble-shoot §4）：
 
@@ -236,7 +236,7 @@ sudo systemctl restart ai-shifu-api ai-shifu-frontend
    ```
 
    完成后还原 `next.config.ts`（不影响已构建产物）。
-3. **启动**：手动验证 `cd src/cook-web && PORT=5000 npm start`
+3. **启动**：手动验证 `cd src/web && PORT=5000 npm start`
    （`curl http://127.0.0.1:5000` 与 `/api/i18n`）；systemd 改用
    `deploy/systemd/ai-shifu-frontend-npmstart.service`（`ExecStart` 必须指向
    构建所用 Node 20 的 npm）。

@@ -22,7 +22,7 @@ Wants=ai-shifu-api.service
 Type=simple
 User=www-data
 Group=www-data
-WorkingDirectory=/home/ai-shifu-TTS/src/cook-web
+WorkingDirectory=/home/ai-shifu-TTS/src/web
 Environment=PORT=5000
 Environment=HOSTNAME=127.0.0.1
 # Under `next start` there is no chdir, so .env loads normally and the

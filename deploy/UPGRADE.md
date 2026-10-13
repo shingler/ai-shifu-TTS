@@ -42,7 +42,7 @@
 git pull
 
 # 前端依赖
-cd src/cook-web && npm ci && cd ../..
+cd src/web && npm ci && cd ../..
 
 # 后端依赖（uv venv，用 uv）
 cd src/api && uv pip install -r requirements.txt && cd ../..
@@ -51,7 +51,7 @@ cd src/api && uv pip install -r requirements.txt && cd ../..
 cd src/api && FLASK_APP=app.py .venv/Scripts/python.exe -m flask db upgrade && cd ../..
 
 # 快速验证
-cd src/cook-web && npm run type-check && cd ../..
+cd src/web && npm run type-check && cd ../..
 python scripts/check_repo_harness.py
 ```
 
@@ -110,7 +110,7 @@ sudo systemctl restart ai-shifu-frontend
 必须重新 build 时（改了前端代码/依赖）：
 
 ```bash
-cd /home/xingle/ai-shifu-TTS/src/cook-web
+cd /home/xingle/ai-shifu-TTS/src/web
 npm ci
 # 临时注释 next.config.ts 里的 output: 'standalone' 再 build（build 后还原源码）
 npx next build
@@ -123,6 +123,21 @@ sudo systemctl restart ai-shifu-frontend
 ## 合并上游新版本时
 
 比日常 pull 多做这些（参照 2026-09 合并 v2.2.12 的实战）：
+
+> **v2.3.4 特有（2026-10 首次升级到该版本时额外做）**：
+>
+> 1. **后端 `.env` 必须加 `LLM_MODEL_1_ID`**（如 `LLM_MODEL_1_ID="GLM-5-Turbo"`）。
+>    上游把课程模型改为编号槽位制，model 1 必填且无默认，缺失则 API 启动即报
+>    `EnvironmentConfigError`。旧变量 `DEFAULT_LLM_MODEL` 已废弃可删。
+>    建议参照本地做法：以 `docker/.env.example.full`（v2.3.4 版）为骨架重写，
+>    把服务器原有非空值填回去。
+> 2. **前端目录已从 `src/cook-web` 改名为 `src/web`**。首次升级要在新路径装依赖并
+>    build（`cd src/web && npm ci` + build）；`ai-shifu-frontend` 的 systemd unit
+>    里 `WorkingDirectory`/`ExecStart` 若指向旧路径，同步改成 `/home/xingle/ai-shifu-TTS/src/web`。
+>    确认服务正常后旧 `src/cook-web/` 可整目录删除。
+> 3. **alembic 新增 merge head `a8f3c2d9e1b4`**（v2.2.12 head 与 v2.3.4 head 的合并点）。
+>    迁移照旧只在 A 上执行。
+
 
 1. **解决冲突后必查 Alembic 双 head**。fork 与上游各自新增迁移时会分叉：
 

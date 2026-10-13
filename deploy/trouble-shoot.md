@@ -320,7 +320,7 @@ umask 一变（600）或运行方式从只读变读写（`next start` 要写 `.n
 
 ```nginx
 location /_next/static/ {
-    alias /home/<用户>/ai-shifu-TTS/src/cook-web/.next/static/;   # 注意：不是 standalone 子路径
+    alias /home/<用户>/ai-shifu-TTS/src/web/.next/static/;   # 注意：不是 standalone 子路径
     expires 30d;
     add_header Cache-Control "public, immutable";
 }
