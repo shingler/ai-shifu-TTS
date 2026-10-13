@@ -15,9 +15,11 @@ import uuid
 from typing import Any
 
 from flaskr.api.tts.base import (
+    REQUEST_SCOPED_STREAM_VOLCENGINE_TIMESTAMP,
     AudioSettings,
     BaseTTSProvider,
     ParamRange,
+    ProviderCapabilities,
     ProviderConfig,
     TTSResult,
     VoiceSettings,
@@ -45,14 +47,14 @@ logger = AppLoggerProxy(logging.getLogger(__name__))
 VOLCENGINE_TTS_WS_URL = "wss://openspeech.bytedance.com/api/v3/tts/bidirection"
 
 
-def _timestamp_seconds_to_ms(value: Any) -> int:
+def _timestamp_seconds_to_ms(value: object) -> int:
     try:
         return max(round(float(value) * 1000), 0)
     except (TypeError, ValueError):
         return 0
 
 
-def _volcengine_time_ms(item: dict[str, Any], keys: tuple[str, ...]) -> int:
+def _volcengine_time_ms(item: dict[str, object], keys: tuple[str, ...]) -> int:
     for key in keys:
         if key not in item:
             continue
@@ -69,11 +71,11 @@ def _volcengine_time_ms(item: dict[str, Any], keys: tuple[str, ...]) -> int:
 
 
 def _volcengine_words_to_sentence_cue(
-    words: list[Any],
+    words: list[object],
     *,
     text: str = "",
     segment_index: int = 0,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, object]]:
     normalized_words = [item for item in words if isinstance(item, dict)]
     if not normalized_words:
         return []
@@ -103,10 +105,10 @@ def _volcengine_words_to_sentence_cue(
 
 
 def _extract_volcengine_subtitle_cues(
-    payload: Any,
+    payload: object,
     *,
     segment_index: int = 0,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, object]]:
     if not isinstance(payload, dict):
         return []
 
@@ -182,6 +184,7 @@ _VOLCENGINE_CLONED_SPEAKER_RE = re.compile(r"^S_[A-Za-z0-9_-]{4,64}$")
 
 
 def is_volcengine_cloned_speaker_id(voice_id: str) -> bool:
+    """Return whether volcengine cloned speaker ID."""
     return bool(_VOLCENGINE_CLONED_SPEAKER_RE.match((voice_id or "").strip()))
 
 
@@ -323,12 +326,26 @@ VOLCENGINE_EMOTIONS = [
 class VolcengineTTSProvider(BaseTTSProvider):
     """TTS provider using Volcengine bidirectional WebSocket API."""
 
+    capabilities = ProviderCapabilities(
+        requires_model=True,
+        retry_on_empty_audio=True,
+        skip_non_speakable_text=True,
+        auto_detectable=True,
+        request_scoped_stream=REQUEST_SCOPED_STREAM_VOLCENGINE_TIMESTAMP,
+    )
+
     def __init__(self) -> None:
+        """Initialize provider-owned protocol and synchronization state.
+
+        Creates a ``VolcengineProtocol`` and a lock for the provider instance;
+        synthesis currently constructs request-local protocol objects.
+        """
         self._protocol = VolcengineProtocol()
         self._lock = threading.Lock()
 
     @property
     def provider_name(self) -> str:
+        """Return the provider's stable configuration name."""
         return "volcengine"
 
     def _infer_resource_id_for_voice(self, voice_id: str) -> str:
@@ -443,12 +460,12 @@ class VolcengineTTSProvider(BaseTTSProvider):
 
         """
         if not WEBSOCKET_AVAILABLE:
-            raise ValueError(
-                "websocket-client package is not installed. Install with: pip install websocket-client"
-            )
+            exception_message = "websocket-client package is not installed. Install with: pip install websocket-client"
+            raise ValueError(exception_message)
 
         if not text or not text.strip():
-            raise ValueError("Text cannot be empty")
+            exception_message = "Text cannot be empty"
+            raise ValueError(exception_message)
 
         if not voice_settings:
             voice_settings = self.get_default_voice_settings()
@@ -476,10 +493,11 @@ class VolcengineTTSProvider(BaseTTSProvider):
         model_version = ""
 
         if not app_key or not access_key or not resource_id:
-            raise ValueError(
+            exception_message = (
                 "Volcengine TTS credentials are not configured. "
                 "Set VOLCENGINE_TTS_APP_KEY and VOLCENGINE_TTS_ACCESS_KEY."
             )
+            raise ValueError(exception_message)
 
         # Generate unique IDs
         connect_id = str(uuid.uuid4())
@@ -504,7 +522,8 @@ class VolcengineTTSProvider(BaseTTSProvider):
 
         protocol = VolcengineProtocol()
 
-        def on_message(ws, message):
+        def on_message(ws: object, message: object) -> None:
+            _ = ws
             nonlocal error_message, total_duration_ms
 
             try:
@@ -587,7 +606,8 @@ class VolcengineTTSProvider(BaseTTSProvider):
                 session_started.set()
                 session_finished.set()
 
-        def on_error(ws, error):
+        def on_error(ws: object, error: object) -> None:
+            _ = ws
             nonlocal error_message
             error_message = str(error)
             logger.error("WebSocket error: %s", error)
@@ -595,12 +615,13 @@ class VolcengineTTSProvider(BaseTTSProvider):
             session_started.set()
             session_finished.set()
 
-        def on_close(ws, close_status_code, close_msg):
+        def on_close(ws: object, close_status_code: object, close_msg: object) -> None:
+            _ = ws
             logger.debug("WebSocket closed: %s - %s", close_status_code, close_msg)
             connection_established.set()
             session_finished.set()
 
-        def on_open(ws):
+        def on_open(ws: object) -> None:
             logger.debug("WebSocket opened, sending StartConnection")
             # Send StartConnection
             ws.send(
@@ -627,7 +648,8 @@ class VolcengineTTSProvider(BaseTTSProvider):
         try:
             # Wait for connection to be established
             if not connection_established.wait(timeout=10):
-                raise ValueError("Timeout waiting for connection")
+                exception_message = "Timeout waiting for connection"
+                raise ValueError(exception_message)
 
             if error_message:
                 raise ValueError(error_message)
@@ -654,7 +676,8 @@ class VolcengineTTSProvider(BaseTTSProvider):
             if not session_started.wait(timeout=10):
                 if error_message:
                     raise ValueError(error_message)
-                raise ValueError("Timeout waiting for TTS session to start")
+                exception_message = "Timeout waiting for TTS session to start"
+                raise ValueError(exception_message)
 
             if error_message:
                 raise ValueError(error_message)
@@ -671,7 +694,8 @@ class VolcengineTTSProvider(BaseTTSProvider):
 
             # Wait for session to finish
             if not session_finished.wait(timeout=60):
-                raise ValueError("Timeout waiting for TTS synthesis")
+                exception_message = "Timeout waiting for TTS synthesis"
+                raise ValueError(exception_message)
 
             if error_message:
                 raise ValueError(error_message)
@@ -695,7 +719,8 @@ class VolcengineTTSProvider(BaseTTSProvider):
                 session_id,
                 connect_id,
             )
-            raise ValueError("No audio data received")
+            exception_message = "No audio data received"
+            raise ValueError(exception_message)
 
         # Combine audio chunks
         audio_data = b"".join(audio_chunks)

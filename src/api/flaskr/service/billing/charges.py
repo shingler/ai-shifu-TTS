@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
-from typing import Any
+from typing import TYPE_CHECKING
 
 from flaskr.service.metering.consts import (
     BILL_USAGE_SCENE_PROD,
@@ -37,7 +36,12 @@ from .primitives import (
 )
 from .rate_references import resolve_llm_rate_identity
 
+if TYPE_CHECKING:
+    from datetime import datetime
+
 _ZERO = Decimal(0)
+
+
 _ROUNDING_LABELS = {
     CREDIT_ROUNDING_MODE_CEIL: "ceil",
     CREDIT_ROUNDING_MODE_FLOOR: "floor",
@@ -59,6 +63,8 @@ _USAGE_TYPE_RATE_METRICS = {
 
 @dataclass(slots=True, frozen=True)
 class UsageMetricCharge:
+    """Describe credits charged for one usage metric."""
+
     billing_metric: int
     metric_label: str
     raw_amount: int
@@ -68,12 +74,15 @@ class UsageMetricCharge:
     rounded_units: Decimal
     consumed_credits: Decimal
 
-    def __getitem__(self, key: str) -> Any:
+    def __getitem__(self, key: str) -> object:
+        """Return an attribute value by key."""
         return getattr(self, key)
 
 
 @dataclass(slots=True, frozen=True)
 class UsageMetricBreakdownItem:
+    """Represent one breakdown item for usage metric."""
+
     billing_metric: str
     billing_metric_code: int
     raw_amount: int
@@ -83,7 +92,8 @@ class UsageMetricBreakdownItem:
     rounding_mode: str
     consumed_credits: Decimal
 
-    def to_metadata_json(self) -> dict[str, Any]:
+    def to_metadata_json(self) -> dict[str, object]:
+        """Serialize this value as JSON-compatible metadata."""
         return {
             "billing_metric": self.billing_metric,
             "billing_metric_code": int(self.billing_metric_code),
@@ -98,11 +108,14 @@ class UsageMetricBreakdownItem:
 
 @dataclass(slots=True, frozen=True)
 class UsageBucketMetricBreakdownItem:
+    """Represent one breakdown item for usage bucket metric."""
+
     billing_metric: str
     billing_metric_code: int
     consumed_credits: Decimal
 
-    def to_metadata_json(self) -> dict[str, Any]:
+    def to_metadata_json(self) -> dict[str, object]:
+        """Serialize this value as JSON-compatible metadata."""
         return {
             "billing_metric": self.billing_metric,
             "billing_metric_code": int(self.billing_metric_code),
@@ -112,6 +125,8 @@ class UsageBucketMetricBreakdownItem:
 
 @dataclass(slots=True, frozen=True)
 class UsageBucketBreakdownItem:
+    """Represent one breakdown item for usage bucket."""
+
     wallet_bucket_bid: str
     bucket_category: str
     source_type: str
@@ -121,7 +136,8 @@ class UsageBucketBreakdownItem:
     effective_to: str | None = None
     metric_breakdown: list[UsageBucketMetricBreakdownItem] = field(default_factory=list)
 
-    def to_metadata_json(self) -> dict[str, Any]:
+    def to_metadata_json(self) -> dict[str, object]:
+        """Serialize this value as JSON-compatible metadata."""
         return {
             "wallet_bucket_bid": self.wallet_bucket_bid,
             "bucket_category": self.bucket_category,
@@ -138,6 +154,8 @@ class UsageBucketBreakdownItem:
 
 @dataclass(slots=True, frozen=True)
 class UsageEntryMetadata:
+    """Carry metadata for usage entry."""
+
     usage_bid: str
     usage_record_id: int
     usage_scene: int
@@ -147,7 +165,8 @@ class UsageEntryMetadata:
     metric_breakdown: list[UsageMetricBreakdownItem]
     bucket_breakdown: list[UsageBucketBreakdownItem] = field(default_factory=list)
 
-    def to_metadata_json(self) -> dict[str, Any]:
+    def to_metadata_json(self) -> dict[str, object]:
+        """Serialize this value as JSON-compatible metadata."""
         return {
             "usage_bid": self.usage_bid,
             "usage_record_id": self.usage_record_id,
@@ -164,20 +183,48 @@ class UsageEntryMetadata:
         }
 
 
+def has_complete_llm_rates(model: str) -> bool:
+    """Check gateway model eligibility using the existing production rate rules."""
+    usage = BillUsageRecord(
+        usage_type=BILL_USAGE_TYPE_LLM,
+        usage_scene=BILL_USAGE_SCENE_PROD,
+        provider="",
+        model=model,
+        input=2,
+        input_cache=1,
+        output=1,
+        total=3,
+    )
+    metrics = {
+        int(charge.billing_metric)
+        for charge in build_usage_metric_charges(usage, settlement_at=now_utc())
+    }
+    return {
+        BILLING_METRIC_LLM_INPUT_TOKENS,
+        BILLING_METRIC_LLM_CACHE_TOKENS,
+        BILLING_METRIC_LLM_OUTPUT_TOKENS,
+    }.issubset(metrics)
+
+
 def build_usage_metric_charges(
     usage: BillUsageRecord,
     *,
     settlement_at: datetime,
 ) -> list[UsageMetricCharge]:
+    """Build usage metric charges."""
     usage_type = int(usage.usage_type or 0)
     if usage_type == BILL_USAGE_TYPE_LLM:
+        uncached_input = max(
+            int(usage.input or 0) - int(usage.input_cache or 0),
+            0,
+        )
         return [
             charge
             for charge in (
                 build_metric_charge(
                     usage,
                     billing_metric=BILLING_METRIC_LLM_INPUT_TOKENS,
-                    raw_amount=int(usage.input or 0),
+                    raw_amount=uncached_input,
                     settlement_at=settlement_at,
                 ),
                 build_metric_charge(
@@ -259,6 +306,7 @@ def build_metric_charge(
     rate_cache: dict[tuple[int, str, str, int, int, datetime], CreditUsageRate | None]
     | None = None,
 ) -> UsageMetricCharge | None:
+    """Build metric charge."""
     if raw_amount <= 0:
         return None
     rate = _load_usage_rate_cached(
@@ -296,6 +344,7 @@ def load_usage_rate(
     billing_metric: int,
     settlement_at: datetime,
 ) -> CreditUsageRate | None:
+    """Load usage rate."""
     provider = str(usage.provider or "").strip()
     model = str(usage.model or "").strip()
     model_candidates = [model] if model else [""]
@@ -358,7 +407,11 @@ def _rate_unit_cost(rate: CreditUsageRate | None) -> Decimal:
 
 def _format_multiplier(value: Decimal) -> str:
     rounded = value.quantize(Decimal("0.01"))
-    text = format(rounded.normalize(), "f").rstrip("0").rstrip(".")
+    if rounded == rounded.to_integral_value():
+        # Whole numbers must not lose trailing zeros: stripping "30" to "3".
+        text = str(int(rounded))
+    else:
+        text = format(rounded.normalize(), "f").rstrip("0").rstrip(".")
     return f"{text or '0'}x"
 
 
@@ -373,6 +426,7 @@ def resolve_credit_multiplier_label(
     rate_cache: dict[tuple[int, str, str, int, int, datetime], CreditUsageRate | None]
     | None = None,
 ) -> str | None:
+    """Resolve credit multiplier label."""
     metrics = billing_metrics or _USAGE_TYPE_RATE_METRICS.get(int(usage_type or 0), ())
     if not metrics:
         return None
@@ -430,6 +484,7 @@ def round_usage_units(
     unit_size: int,
     rounding_mode: int,
 ) -> Decimal:
+    """Round usage units."""
     normalized_unit_size = max(int(unit_size or 1), 1)
     quotient = Decimal(str(raw_amount)) / Decimal(str(normalized_unit_size))
     if rounding_mode == CREDIT_ROUNDING_MODE_FLOOR:
@@ -445,6 +500,7 @@ def build_usage_entry_metadata(
     charges: list[UsageMetricCharge],
     bucket_breakdown: list[UsageBucketBreakdownItem] | None = None,
 ) -> UsageEntryMetadata:
+    """Build usage entry metadata."""
     return UsageEntryMetadata(
         usage_bid=usage.usage_bid,
         usage_record_id=int(usage.id or 0),

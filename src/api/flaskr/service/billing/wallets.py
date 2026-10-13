@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from flask import Flask
 from flaskr.dao import db
-from flaskr.dao.uow import unit_of_work
+from flaskr.dao.uow import (
+    app_context_scope,
+    require_transaction_owner,
+    unit_of_work,
+)
 from flaskr.service.common.models import raise_error
 from flaskr.util.datetime import NAIVE_DATETIME_MIN, now_utc, to_utc_iso
 from flaskr.util.uuid import generate_id
@@ -61,6 +65,9 @@ from .primitives import quantize_credit_amount as _quantize_credit_amount
 from .primitives import to_decimal as _to_decimal
 from .queries import load_primary_active_subscription
 
+if TYPE_CHECKING:
+    from flask import Flask
+
 _ZERO = Decimal(0)
 _PRESERVED_BUCKET_STATUSES = {
     CREDIT_BUCKET_STATUS_CANCELED,
@@ -74,6 +81,8 @@ _SINGLE_BUCKET_CATEGORIES = {
 
 @dataclass(slots=True, frozen=True)
 class WalletSnapshotRecord:
+    """Record wallet snapshot details."""
+
     wallet_bid: str
     creator_bid: str
     available_credits: int | float
@@ -85,6 +94,7 @@ class WalletSnapshotRecord:
     changed: bool
 
     def to_payload(self) -> dict[str, Any]:
+        """Serialize this result as an API payload."""
         return {
             "wallet_bid": self.wallet_bid,
             "creator_bid": self.creator_bid,
@@ -97,12 +107,15 @@ class WalletSnapshotRecord:
             "changed": self.changed,
         }
 
-    def __getitem__(self, key: str) -> Any:
+    def __getitem__(self, key: str) -> object:
+        """Return a serialized payload field by key."""
         return self.to_payload()[key]
 
 
 @dataclass(slots=True, frozen=True)
 class WalletSnapshotRebuildResult:
+    """Capture the rebuild outcome for wallet snapshot."""
+
     status: str
     creator_bid: str | None
     wallet_bid: str | None
@@ -112,6 +125,7 @@ class WalletSnapshotRebuildResult:
     wallets: list[WalletSnapshotRecord] = field(default_factory=list)
 
     def to_task_payload(self) -> dict[str, Any]:
+        """Serialize this result for task processing."""
         return {
             "status": self.status,
             "creator_bid": self.creator_bid,
@@ -122,12 +136,15 @@ class WalletSnapshotRebuildResult:
             "wallets": [wallet.to_payload() for wallet in self.wallets],
         }
 
-    def __getitem__(self, key: str) -> Any:
+    def __getitem__(self, key: str) -> object:
+        """Return a task-payload field by key."""
         return self.to_task_payload()[key]
 
 
 @dataclass(slots=True, frozen=True)
 class RefundReturnCreditsResult:
+    """Capture credits returned while refunding a billing order."""
+
     status: str
     creator_bid: str | None
     source_bid: str | None
@@ -136,6 +153,7 @@ class RefundReturnCreditsResult:
     ledger_bid: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
+        """Serialize this result as an API payload."""
         return {
             "status": self.status,
             "creator_bid": self.creator_bid,
@@ -145,18 +163,22 @@ class RefundReturnCreditsResult:
             "ledger_bid": self.ledger_bid,
         }
 
-    def __getitem__(self, key: str) -> Any:
+    def __getitem__(self, key: str) -> object:
+        """Return a serialized payload field by key."""
         return self.to_payload()[key]
 
 
 @dataclass(slots=True, frozen=True)
 class WalletExpirationResult:
+    """Capture credits expired from a wallet."""
+
     status: str
     creator_bid: str | None
     bucket_count: int
     expired_credits: int | float
 
     def to_task_payload(self) -> dict[str, Any]:
+        """Serialize this result for task processing."""
         return {
             "status": self.status,
             "creator_bid": self.creator_bid,
@@ -164,12 +186,15 @@ class WalletExpirationResult:
             "expired_credits": self.expired_credits,
         }
 
-    def __getitem__(self, key: str) -> Any:
+    def __getitem__(self, key: str) -> object:
+        """Return a task-payload field by key."""
         return self.to_task_payload()[key]
 
 
 @dataclass(slots=True, frozen=True)
 class ExpireLedgerBucketDriftRecord:
+    """Record expire ledger bucket drift details."""
+
     wallet_bucket_bid: str
     wallet_bid: str
     creator_bid: str
@@ -186,6 +211,7 @@ class ExpireLedgerBucketDriftRecord:
     changed: bool
 
     def to_payload(self) -> dict[str, Any]:
+        """Serialize this result as an API payload."""
         return {
             "wallet_bucket_bid": self.wallet_bucket_bid,
             "wallet_bid": self.wallet_bid,
@@ -206,6 +232,8 @@ class ExpireLedgerBucketDriftRecord:
 
 @dataclass(slots=True, frozen=True)
 class ExpireLedgerBucketDriftRepairResult:
+    """Capture the repair outcome for expire ledger bucket drift."""
+
     status: str
     creator_bid: str | None
     wallet_bucket_bid: str | None
@@ -216,6 +244,7 @@ class ExpireLedgerBucketDriftRepairResult:
     buckets: list[ExpireLedgerBucketDriftRecord] = field(default_factory=list)
 
     def to_task_payload(self) -> dict[str, Any]:
+        """Serialize this result for task processing."""
         return {
             "status": self.status,
             "creator_bid": self.creator_bid,
@@ -227,12 +256,15 @@ class ExpireLedgerBucketDriftRepairResult:
             "buckets": [bucket.to_payload() for bucket in self.buckets],
         }
 
-    def __getitem__(self, key: str) -> Any:
+    def __getitem__(self, key: str) -> object:
+        """Return a task-payload field by key."""
         return self.to_task_payload()[key]
 
 
 @dataclass(slots=True, frozen=True)
 class ExpiredCreditPackBucketRestoreRecord:
+    """Record expired credit pack bucket restore details."""
+
     bill_order_bid: str
     creator_bid: str | None
     wallet_bid: str | None
@@ -250,6 +282,7 @@ class ExpiredCreditPackBucketRestoreRecord:
     ledger_bid: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
+        """Serialize this result as an API payload."""
         return {
             "bill_order_bid": self.bill_order_bid,
             "creator_bid": self.creator_bid,
@@ -271,6 +304,8 @@ class ExpiredCreditPackBucketRestoreRecord:
 
 @dataclass(slots=True, frozen=True)
 class ExpiredCreditPackBucketRestoreResult:
+    """Capture credits restored from an expired credit-pack bucket."""
+
     status: str
     bill_order_bids: list[str]
     order_count: int
@@ -281,6 +316,7 @@ class ExpiredCreditPackBucketRestoreResult:
     buckets: list[ExpiredCreditPackBucketRestoreRecord] = field(default_factory=list)
 
     def to_task_payload(self) -> dict[str, Any]:
+        """Serialize this result for task processing."""
         return {
             "status": self.status,
             "bill_order_bids": list(self.bill_order_bids),
@@ -292,12 +328,15 @@ class ExpiredCreditPackBucketRestoreResult:
             "buckets": [bucket.to_payload() for bucket in self.buckets],
         }
 
-    def __getitem__(self, key: str) -> Any:
+    def __getitem__(self, key: str) -> object:
+        """Return a task-payload field by key."""
         return self.to_task_payload()[key]
 
 
 @dataclass(slots=True, frozen=True)
 class ManualCreditGrantResult:
+    """Capture the outcome of manual credit grant."""
+
     status: str
     creator_bid: str | None
     amount: int | float = 0
@@ -308,6 +347,7 @@ class ManualCreditGrantResult:
     metadata_json: dict[str, Any] = field(default_factory=dict)
 
     def to_payload(self) -> dict[str, Any]:
+        """Serialize this result as an API payload."""
         return {
             "status": self.status,
             "creator_bid": self.creator_bid,
@@ -319,12 +359,15 @@ class ManualCreditGrantResult:
             "metadata_json": self.metadata_json,
         }
 
-    def __getitem__(self, key: str) -> Any:
+    def __getitem__(self, key: str) -> object:
+        """Return a serialized payload field by key."""
         return self.to_payload()[key]
 
 
 @dataclass(slots=True, frozen=True)
 class ReservedGrantRepairRecord:
+    """Record reserved grant repair details."""
+
     creator_bid: str
     bill_order_bid: str
     subscription_bid: str | None
@@ -335,6 +378,7 @@ class ReservedGrantRepairRecord:
     renewal_event_bids: list[str] = field(default_factory=list)
 
     def to_payload(self) -> dict[str, Any]:
+        """Serialize this result as an API payload."""
         return {
             "creator_bid": self.creator_bid,
             "bill_order_bid": self.bill_order_bid,
@@ -346,12 +390,15 @@ class ReservedGrantRepairRecord:
             "renewal_event_bids": list(self.renewal_event_bids),
         }
 
-    def __getitem__(self, key: str) -> Any:
+    def __getitem__(self, key: str) -> object:
+        """Return a serialized payload field by key."""
         return self.to_payload()[key]
 
 
 @dataclass(slots=True, frozen=True)
 class RenewalStateDriftRepairResult:
+    """Capture the repair outcome for renewal state drift."""
+
     status: str
     creator_bid: str | None
     creator_count: int
@@ -377,6 +424,7 @@ class RenewalStateDriftRepairResult:
     )
 
     def to_task_payload(self) -> dict[str, Any]:
+        """Serialize this result for task processing."""
         return {
             "status": self.status,
             "creator_bid": self.creator_bid,
@@ -403,7 +451,8 @@ class RenewalStateDriftRepairResult:
             ],
         }
 
-    def __getitem__(self, key: str) -> Any:
+    def __getitem__(self, key: str) -> object:
+        """Return a task-payload field by key."""
         return self.to_task_payload()[key]
 
 
@@ -416,11 +465,11 @@ def _normalize_optional_metadata_bid(value: object) -> str:
     return "" if normalized.lower() == "null" else normalized
 
 
-def _normalize_json_dict(payload: object) -> dict[str, Any]:
+def _normalize_json_dict(payload: object) -> dict[str, object]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _json_extract_text(column: Any, path: str) -> Any:
+def _json_extract_text(column: object, path: str) -> object:
     bind = db.session.get_bind()
     dialect_name = bind.dialect.name.lower() if bind is not None else ""
     extracted = func.json_extract(column, path)
@@ -429,7 +478,7 @@ def _json_extract_text(column: Any, path: str) -> Any:
     return extracted
 
 
-def _sql_null_if_empty_or_json_null(value: Any) -> Any:
+def _sql_null_if_empty_or_json_null(value: object) -> object:
     text = func.trim(func.coalesce(value, ""))
     return case(
         (func.lower(text) == "null", None),
@@ -574,13 +623,13 @@ def _load_overdue_reserved_paid_order_records(
     return records
 
 
-def _normalize_bucket_credit_state(value: Any) -> str:
+def _normalize_bucket_credit_state(value: object) -> str:
     state = str(value or "").strip().lower()
     return "" if state == "null" else state
 
 
 def _extract_ledger_bill_order_bid(
-    ledger: CreditLedgerEntry, metadata: dict[str, Any] | None = None
+    ledger: CreditLedgerEntry, metadata: dict[str, object] | None = None
 ) -> str:
     normalized_metadata = _normalize_json_dict(metadata or ledger.metadata_json)
     return _normalize_optional_metadata_bid(
@@ -819,10 +868,10 @@ def refresh_credit_wallet_snapshot(
 def persist_credit_wallet_snapshot(
     wallet: CreditWallet,
     *,
-    available_credits: Decimal | Any,
-    reserved_credits: Decimal | Any,
-    lifetime_granted_credits: Decimal | Any | None = None,
-    lifetime_consumed_credits: Decimal | Any | None = None,
+    available_credits: Decimal | object,
+    reserved_credits: Decimal | object,
+    lifetime_granted_credits: Decimal | object | None = None,
+    lifetime_consumed_credits: Decimal | object | None = None,
     last_settled_usage_id: int | None = None,
     updated_at: datetime | None = None,
 ) -> CreditWallet:
@@ -854,7 +903,8 @@ def persist_credit_wallet_snapshot(
         CreditWallet.version == expected_version,
     ).update(values, synchronize_session=False)
     if updated_rows != 1:
-        raise RuntimeError("credit_wallet_version_conflict")
+        message = "credit_wallet_version_conflict"
+        raise RuntimeError(message)
 
     wallet.available_credits = values["available_credits"]
     wallet.reserved_credits = values["reserved_credits"]
@@ -870,6 +920,7 @@ def persist_credit_wallet_snapshot(
 
 
 def resolve_bucket_source_type_for_category(bucket_category: int | None) -> int:
+    """Resolve bucket source type for category."""
     normalized_category = resolve_runtime_credit_bucket_category(
         bucket_category=bucket_category
     )
@@ -883,6 +934,7 @@ def load_primary_credit_bucket_by_category(
     *,
     bucket_category: int,
 ) -> CreditWalletBucket | None:
+    """Load primary credit bucket by category."""
     normalized_creator_bid = str(creator_bid or "").strip()
     normalized_category = resolve_runtime_credit_bucket_category(
         bucket_category=bucket_category
@@ -954,10 +1006,11 @@ def load_or_create_credit_bucket_by_category(
     creator_bid: str,
     bucket_category: int,
     source_bid: str,
-    metadata: dict[str, Any] | None = None,
+    metadata: dict[str, object] | None = None,
     effective_from: datetime | None = None,
     effective_to: datetime | None = None,
 ) -> CreditWalletBucket:
+    """Load or create credit bucket by category."""
     normalized_category = resolve_runtime_credit_bucket_category(
         bucket_category=bucket_category
     )
@@ -1000,7 +1053,11 @@ def rebuild_credit_wallet_snapshots(
     """Rebuild wallet snapshots from bucket rows for one or many creators."""
     normalized_creator_bid = str(creator_bid or "").strip()
     normalized_wallet_bid = str(wallet_bid or "").strip()
-    with app.app_context():
+    # A dry run stages nothing, so it must not own a transaction boundary at
+    # all: a caller's pending work stays pending (neither committed nor
+    # rolled back), exactly as before the migration.
+    boundary = nullcontext() if dry_run else unit_of_work()
+    with app_context_scope(app), boundary:
         query = CreditWallet.query.filter(CreditWallet.deleted == 0)
         if normalized_creator_bid:
             query = query.filter(CreditWallet.creator_bid == normalized_creator_bid)
@@ -1060,8 +1117,6 @@ def rebuild_credit_wallet_snapshots(
                 )
             )
 
-        if not dry_run:
-            db.session.commit()
         return WalletSnapshotRebuildResult(
             status="dry_run" if dry_run else "rebuilt",
             creator_bid=normalized_creator_bid or None,
@@ -1358,12 +1413,12 @@ def repair_credit_bucket_runtime_statuses(
     *,
     creator_bid: str = "",
     wallet_bucket_bid: str = "",
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Repair buckets whose runtime status no longer matches their live balance."""
     normalized_creator_bid = str(creator_bid or "").strip()
     normalized_wallet_bucket_bid = str(wallet_bucket_bid or "").strip()
     repaired_at = now_utc()
-    with app.app_context():
+    with app_context_scope(app), unit_of_work():
         query = CreditWalletBucket.query.filter(
             CreditWalletBucket.deleted == 0,
             CreditWalletBucket.status == CREDIT_BUCKET_STATUS_EXPIRED,
@@ -1423,7 +1478,6 @@ def repair_credit_bucket_runtime_statuses(
                 updated_at=repaired_at,
             )
 
-        db.session.commit()
         return {
             "status": "repaired",
             "creator_bid": normalized_creator_bid or None,
@@ -1437,9 +1491,9 @@ def grant_refund_return_credits(
     app: Flask,
     *,
     creator_bid: str,
-    amount: Decimal | Any,
+    amount: Decimal | object,
     refund_bid: str,
-    metadata: dict[str, Any] | None = None,
+    metadata: dict[str, object] | None = None,
     effective_from: datetime | None = None,
 ) -> RefundReturnCreditsResult:
     """Grant refunded credits back as a new subscription/topup bucket."""
@@ -1458,7 +1512,7 @@ def grant_refund_return_credits(
             amount=_credit_decimal_to_number(normalized_amount),
         )
 
-    with app.app_context():
+    with app_context_scope(app), unit_of_work():
         idempotency_key = f"refund_return:{normalized_refund_bid}"
         existing_entry = (
             CreditLedgerEntry.query.filter(
@@ -1566,7 +1620,6 @@ def grant_refund_return_credits(
             updated_at=now,
         )
         db.session.add(ledger_entry)
-        db.session.commit()
         return RefundReturnCreditsResult(
             status="granted",
             creator_bid=normalized_creator_bid,
@@ -1580,7 +1633,7 @@ def adjust_credit_wallet_balance(
     app: Flask,
     *,
     creator_bid: str,
-    amount: Decimal | Any,
+    amount: Decimal | object,
     note: str = "",
     operator_user_bid: str = "",
 ) -> BillingLedgerAdjustResultDTO:
@@ -1596,7 +1649,7 @@ def adjust_credit_wallet_balance(
             amount=_credit_decimal_to_number(normalized_amount),
         )
 
-    with app.app_context():
+    with app_context_scope(app), unit_of_work():
         wallet = _load_or_create_credit_wallet(app, normalized_creator_bid)
         adjustment_bid = generate_id(app)
         adjusted_at = now_utc()
@@ -1658,7 +1711,6 @@ def adjust_credit_wallet_balance(
                 updated_at=adjusted_at,
             )
             db.session.add(ledger_entry)
-            db.session.commit()
             return BillingLedgerAdjustResultDTO(
                 status="adjusted",
                 adjustment_bid=adjustment_bid,
@@ -1735,7 +1787,6 @@ def adjust_credit_wallet_balance(
             ledger_bids.append(ledger_entry.ledger_bid)
             remaining -= adjusted_amount
 
-        db.session.commit()
         return BillingLedgerAdjustResultDTO(
             status="adjusted",
             adjustment_bid=adjustment_bid,
@@ -1755,15 +1806,18 @@ def grant_manual_credit_wallet_balance(
     app: Flask,
     *,
     creator_bid: str,
-    amount: Decimal | Any,
+    amount: Decimal | object,
     source_bid: str = "",
     effective_from: datetime | None = None,
     effective_to: datetime | None = None,
-    metadata: dict[str, Any] | None = None,
-    ledger_metadata: dict[str, Any] | None = None,
+    metadata: dict[str, object] | None = None,
+    ledger_metadata: dict[str, object] | None = None,
     idempotency_key: str = "",
 ) -> ManualCreditGrantResult:
     """Create a dedicated manual-grant bucket and matching ledger row."""
+    # Idempotency depends on the IntegrityError reaching the handler below,
+    # which only happens when this call owns the outermost unit of work.
+    require_transaction_owner("manual credit grant", app)
     normalized_creator_bid = str(creator_bid or "").strip()
     normalized_amount = _quantize_credit_amount(amount)
     normalized_source_bid = str(source_bid or "").strip()
@@ -1781,11 +1835,50 @@ def grant_manual_credit_wallet_balance(
             amount=_credit_decimal_to_number(normalized_amount),
         )
 
-    with app.app_context():
+    with app_context_scope(app):
         granted_at = effective_from or now_utc()
-        wallet = _load_or_create_credit_wallet(app, normalized_creator_bid)
         grant_bid = normalized_source_bid or generate_id(app)
         ledger_key = normalized_idempotency_key or f"manual_grant:{grant_bid}"
+        try:
+            return _grant_manual_credit_wallet_balance_once(
+                app,
+                creator_bid=normalized_creator_bid,
+                amount=normalized_amount,
+                grant_bid=grant_bid,
+                ledger_key=ledger_key,
+                granted_at=granted_at,
+                effective_to=effective_to,
+                metadata=metadata,
+                ledger_metadata=ledger_metadata,
+            )
+        except IntegrityError:
+            # A concurrent grant with the same idempotency key won; the unit
+            # of work rolled ours back, so answer with the winner's result.
+            existing_result = _load_existing_manual_credit_grant_result(
+                creator_bid=normalized_creator_bid,
+                ledger_key=ledger_key,
+            )
+            if existing_result is not None:
+                return existing_result
+            raise
+
+
+def _grant_manual_credit_wallet_balance_once(
+    app: Flask,
+    *,
+    creator_bid: str,
+    amount: Decimal,
+    grant_bid: str,
+    ledger_key: str,
+    granted_at: datetime,
+    effective_to: datetime | None,
+    metadata: dict[str, object] | None,
+    ledger_metadata: dict[str, object] | None,
+) -> ManualCreditGrantResult:
+    normalized_creator_bid = creator_bid
+    normalized_amount = amount
+    with unit_of_work():
+        wallet = _load_or_create_credit_wallet(app, normalized_creator_bid)
 
         existing_result = _load_existing_manual_credit_grant_result(
             creator_bid=normalized_creator_bid,
@@ -1851,17 +1944,6 @@ def grant_manual_credit_wallet_balance(
             updated_at=granted_at,
         )
         db.session.add(ledger_entry)
-        try:
-            db.session.commit()
-        except IntegrityError:
-            db.session.rollback()
-            existing_result = _load_existing_manual_credit_grant_result(
-                creator_bid=normalized_creator_bid,
-                ledger_key=ledger_key,
-            )
-            if existing_result is not None:
-                return existing_result
-            raise
         return ManualCreditGrantResult(
             status="granted",
             creator_bid=normalized_creator_bid,
@@ -1918,14 +2000,12 @@ def expire_credit_wallet_buckets(
     """Expire currently active buckets whose effective window has ended."""
     normalized_creator_bid = str(creator_bid or "").strip()
     cutoff = expire_before or now_utc()
-    with app.app_context():
-        result = _expire_credit_wallet_buckets_in_session(
+    with app_context_scope(app), unit_of_work():
+        return _expire_credit_wallet_buckets_in_session(
             app,
             creator_bid=normalized_creator_bid,
             expire_before=cutoff,
         )
-        db.session.commit()
-        return result
 
 
 def repair_expire_ledger_bucket_drift(
@@ -2335,7 +2415,8 @@ def _build_expired_credit_pack_restore_records(
 
         wallet = _load_credit_wallet_by_wallet_bid(bucket.wallet_bid)
         if wallet is None:
-            raise RuntimeError("credit_pack_restore_wallet_missing")
+            message = "credit_pack_restore_wallet_missing"
+            raise RuntimeError(message)
         available_credits, reserved_credits = calculate_credit_wallet_snapshot_values(
             wallet,
             snapshot_at=repaired_at,
@@ -2407,13 +2488,13 @@ def _build_expired_credit_pack_restore_record(
     creator_bid: str | None = None,
     wallet_bid: str | None = None,
     wallet_bucket_bid: str | None = None,
-    previous_available_credits: Decimal | Any = _ZERO,
-    available_credits: Decimal | Any = _ZERO,
-    previous_expired_credits: Decimal | Any = _ZERO,
-    expired_credits: Decimal | Any = _ZERO,
+    previous_available_credits: Decimal | object = _ZERO,
+    available_credits: Decimal | object = _ZERO,
+    previous_expired_credits: Decimal | object = _ZERO,
+    expired_credits: Decimal | object = _ZERO,
     previous_status: int | None = None,
     status: int | None = None,
-    restored_credits: Decimal | Any = _ZERO,
+    restored_credits: Decimal | object = _ZERO,
     repair_action: str,
     repair_reason: str,
     changed: bool = False,

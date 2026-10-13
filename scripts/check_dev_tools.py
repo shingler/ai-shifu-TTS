@@ -7,6 +7,7 @@ git hooks only fire after ``lefthook install`` has wired them into
 on ``PATH`` (ruff, commitizen, the pre-commit-hooks console scripts, and the
 Cook Web prettier binary). If lefthook or any of those tools is missing the
 local checks are silently skipped or fail with a cryptic ``command not found``.
+The repository harness also needs markdown-it-py in the current Python environment.
 
 Run this from the repository root before committing to find what is missing and
 exactly how to install it::
@@ -30,6 +31,7 @@ import argparse
 import shutil
 import subprocess
 import sys
+from importlib import import_module
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,9 +43,13 @@ else:
     LEFTHOOK_PKG_INSTALL = (
         "npm install -g @evilmartians/lefthook  # (or use your package manager)"
     )
-PIP_INSTALL = "pip install ruff==0.16.3 commitizen==4.16.2 pre-commit-hooks==6.0.0"
-RUFF_VERSION = "0.16.3"
-NPM_INSTALL = "cd src/cook-web && npm ci"
+PIP_INSTALL = (
+    "python -m pip install ruff==0.16.5 commitizen==4.16.2 "
+    "pre-commit-hooks==6.0.0 markdown-it-py==4.0.0"
+)
+RUFF_VERSION = "0.16.5"
+MARKDOWN_IT_VERSION = "4.0.0"
+NPM_INSTALL = "cd src/web && npm ci"
 LEFTHOOK_INSTALL = "lefthook install"
 NODE_INSTALL = "install Node.js (see INSTALL_MANUAL.md for the supported version)"
 
@@ -61,13 +67,14 @@ PRE_COMMIT_HOOKS_SCRIPTS = (
 )
 
 # Cook Web prettier is installed locally, not on PATH (see lefthook.yml).
-COOK_WEB_PRETTIER = ROOT / "src" / "cook-web" / "node_modules" / ".bin" / "prettier"
+WEB_PRETTIER = ROOT / "src" / "web" / "node_modules" / ".bin" / "prettier"
 
 
 class Check:
     """A single tool/state check and the command that fixes it."""
 
     def __init__(self, name: str, ok: bool, fix: str, *, required: bool = True) -> None:
+        """Record a development-tool availability check."""
         self.name = name
         self.ok = ok
         self.fix = fix
@@ -134,6 +141,14 @@ def _ruff_version_matches() -> bool:
     return result.stdout.strip() == f"ruff {RUFF_VERSION}"
 
 
+def _markdown_it_version_matches() -> bool:
+    """Report whether this Python environment can load the pinned parser."""
+    try:
+        return import_module("markdown_it").__version__ == MARKDOWN_IT_VERSION
+    except ImportError:
+        return False
+
+
 def collect_checks() -> tuple[list[Check], list[Check]]:
     """Return (core_checks, frontend_checks)."""
     lefthook_present = shutil.which("lefthook") is not None
@@ -148,6 +163,11 @@ def collect_checks() -> tuple[list[Check], list[Check]]:
             LEFTHOOK_INSTALL,
         ),
         Check(f"ruff {RUFF_VERSION}", _ruff_version_matches(), PIP_INSTALL),
+        Check(
+            f"markdown-it-py {MARKDOWN_IT_VERSION}",
+            _markdown_it_version_matches(),
+            PIP_INSTALL,
+        ),
         Check("cz (commitizen)", shutil.which("cz") is not None, PIP_INSTALL),
     ]
     core.extend(
@@ -160,7 +180,7 @@ def collect_checks() -> tuple[list[Check], list[Check]]:
         Check("npm", shutil.which("npm") is not None, NODE_INSTALL, required=False),
         Check(
             "Cook Web prettier (node_modules)",
-            COOK_WEB_PRETTIER.is_file(),
+            WEB_PRETTIER.is_file(),
             NPM_INSTALL,
             required=False,
         ),
@@ -185,6 +205,7 @@ def _fix_lines(missing: list[Check]) -> list[str]:
 
 
 def main() -> int:
+    """Verify lefthook and every required developer tool."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--strict",

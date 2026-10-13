@@ -138,6 +138,29 @@ jobs:
             rm -f "$file.bak"
           }
 
+          # Keep npm lockfile package metadata aligned with package.json.
+          update_npm_lock_version() {
+            local file="$1"
+            echo "  → Updating $file..."
+            python - "$file" "$VERSION" <<'PY'
+          import json
+          import sys
+
+          path, version = sys.argv[1:]
+          with open(path, encoding="utf-8") as lock_file:
+              lock = json.load(lock_file)
+
+          lock["version"] = version
+          root_package = lock.get("packages", {}).get("")
+          if isinstance(root_package, dict):
+              root_package["version"] = version
+
+          with open(path, "w", encoding="utf-8") as lock_file:
+              json.dump(lock, lock_file, ensure_ascii=False, indent=2)
+              lock_file.write("\n")
+          PY
+          }
+
           # Function to update TOML version field
           update_toml_version() {
             local file="$1"
@@ -151,7 +174,7 @@ jobs:
             local file="$1"
             echo "  → Updating $file..."
             sed -i.bak -E "s/__version__ = ['\"]([^'\"]*)['\"]/__version__ = '$VERSION'/" "$file"
-            sed -i.bak -E "s/VERSION = ['\"]([^'\"]*)['\"]//VERSION = '$VERSION'/" "$file"
+            sed -i.bak -E "s/VERSION = ['\"]([^'\"]*)['\"]/VERSION = '$VERSION'/" "$file"
             rm -f "$file.bak"
           }
 
@@ -163,6 +186,11 @@ jobs:
             if [ -f "$file" ]; then
               update_json_version "$file"
               UPDATED_FILES+=("$file")
+              lock_file="$(dirname "$file")/package-lock.json"
+              if [ -f "$lock_file" ]; then
+                update_npm_lock_version "$lock_file"
+                UPDATED_FILES+=("$lock_file")
+              fi
             fi
           done < <(find . -name "package.json" -not -path "./node_modules/*" -not -path "./.git/*")
 
@@ -218,7 +246,9 @@ jobs:
                 UPDATED_FILES+=("$file")
               fi
             fi
-          done < <(find . \( -name "docker-compose*.yml" -o -name "docker-compose*.yaml" \) -not -path "./.git/*")
+          done < <(find . \( -name "docker-compose*.yml" -o -name "docker-compose*.yaml" \) \
+            -not -name "docker-compose.latest.yml" -not -name "docker-compose.latest.yaml" \
+            -not -path "./.git/*")
 
           # Guard against accidental third-party image tag changes in release PRs.
           if git diff --unified=0 -- 'docker/docker-compose*.yml' 'docker/docker-compose*.yaml' \
@@ -555,7 +585,8 @@ jobs:
               {
                   "name": "markdown-flow-ui",
                   "repo": "ai-shifu/markdown-flow-ui",
-                  "path": "src/cook-web/package-lock.json",
+                  "path": "src/web/package-lock.json",
+                  "legacy_path": "src/cook-web/package-lock.json",
                   "type": "package_lock",
                   "registry": "npm",
               },
@@ -866,7 +897,17 @@ jobs:
               name = dependency["name"]
               repo = dependency["repo"]
               path = dependency["path"]
-              previous_version = extract_version(git_show(PREV_TAG, path), dependency)
+              previous_source = git_show(PREV_TAG, path)
+              legacy_path = dependency.get("legacy_path", "")
+              if not previous_source and legacy_path:
+                  previous_source = git_show(PREV_TAG, legacy_path)
+                  if previous_source:
+                      print(
+                          f"Using legacy dependency path {legacy_path} "
+                          f"for {name} at {PREV_TAG}",
+                          file=sys.stderr,
+                      )
+              previous_version = extract_version(previous_source, dependency)
               current_version = extract_version(read_current(path), dependency)
 
               if not previous_version or not current_version:
@@ -991,9 +1032,15 @@ jobs:
             git checkout ${{ steps.version.outputs.tag }}
             cd docker
             cp .env.example.full .env
-            # Fill in your LLM API key in the .env configuration file.
+            # Configure a provider API key in .env and set LLM_MODEL_1_ID
+            # to a text model served by that provider (required; no default).
+            # LLM_MODEL_1_NAME is optional; an empty name displays the configured model ID.
             docker compose up
             ```
+
+            Existing installations must configure model 1 and follow
+            [Upgrading to numbered models](${{ github.event.repository.html_url }}/blob/${{ steps.version.outputs.tag }}/INSTALL_MANUAL.md#upgrading-to-numbered-models)
+            before starting the new API or workers.
 
             ## 📖 Documentation
 

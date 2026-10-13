@@ -1,7 +1,10 @@
+"""Verify stripe webhook behavior."""
+
 from __future__ import annotations
 
 import importlib
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import pytest
 from flask import Flask
@@ -20,29 +23,41 @@ from flaskr.service.billing.models import (
     CreditWallet,
     CreditWalletBucket,
 )
-from flaskr.service.order.consts import ORDER_STATUS_SUCCESS, ORDER_STATUS_TO_BE_PAID
+from flaskr.service.order.consts import (
+    ORDER_STATUS_REPRICING,
+    ORDER_STATUS_SUCCESS,
+    ORDER_STATUS_TO_BE_PAID,
+)
 from flaskr.service.order.funs import handle_stripe_webhook
 from flaskr.service.order.models import Order, StripeOrder
 from flaskr.service.order.payment_providers.base import PaymentNotificationResult
 
 from tests.common.fixtures.bill_products import build_bill_products
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
-def _load_route_module(module_name: str):
+
+def _load_route_module(module_name: str) -> object:
     return importlib.import_module(f"flaskr.route.{module_name}")
 
 
 class DummyStripeProvider:
+    """Simulate Stripe provider behavior for tests."""
+
     def __init__(self, notification: PaymentNotificationResult) -> None:
+        """Capture the notification returned by webhook verification."""
         self._notification = notification
 
-    def verify_webhook(self, *, headers, raw_body, app):
+    def verify_webhook(
+        self, *, headers: object, raw_body: object, app: object
+    ) -> object:
         del headers, raw_body, app
         return self._notification
 
 
 @pytest.fixture
-def stripe_webhook_app():
+def stripe_webhook_app() -> Iterator[Flask]:
     app = Flask(__name__)
     app.testing = True
     app.config.update(
@@ -65,7 +80,7 @@ def stripe_webhook_app():
         dao.db.drop_all()
 
 
-def _ensure_order(status, order_bid):
+def _ensure_order(status: object, order_bid: object) -> object:
     order = Order.query.filter(Order.order_bid == order_bid).first()
     if not order:
         order = Order(order_bid=order_bid, shifu_bid="shifu-1", user_bid="user-1")
@@ -77,7 +92,7 @@ def _ensure_order(status, order_bid):
     return order
 
 
-def _ensure_billing_subscription(status, subscription_bid):
+def _ensure_billing_subscription(status: object, subscription_bid: object) -> object:
     subscription = BillingSubscription.query.filter(
         BillingSubscription.subscription_bid == subscription_bid
     ).first()
@@ -101,7 +116,9 @@ def _ensure_billing_subscription(status, subscription_bid):
     return subscription
 
 
-def _ensure_billing_order(status, bill_order_bid, subscription_bid):
+def _ensure_billing_order(
+    status: object, bill_order_bid: object, subscription_bid: object
+) -> object:
     order = BillingOrder.query.filter(
         BillingOrder.bill_order_bid == bill_order_bid
     ).first()
@@ -132,7 +149,7 @@ def _ensure_billing_order(status, bill_order_bid, subscription_bid):
     return order
 
 
-def _ensure_billing_stripe_raw_snapshot(bill_order_bid):
+def _ensure_billing_stripe_raw_snapshot(bill_order_bid: object) -> object:
     raw_order = StripeOrder.query.filter(
         StripeOrder.bill_order_bid == bill_order_bid,
         StripeOrder.biz_domain == "billing",
@@ -165,9 +182,14 @@ def _ensure_billing_stripe_raw_snapshot(bill_order_bid):
     return raw_order
 
 
-def test_handle_stripe_webhook_marks_order_paid(stripe_webhook_app, monkeypatch):
+@pytest.mark.parametrize(
+    "initial_status", [ORDER_STATUS_TO_BE_PAID, ORDER_STATUS_REPRICING]
+)
+def test_handle_stripe_webhook_marks_order_paid(
+    stripe_webhook_app: object, monkeypatch: object, initial_status: int
+) -> None:
     with stripe_webhook_app.app_context():
-        order = _ensure_order(ORDER_STATUS_TO_BE_PAID, "order-webhook-1")
+        order = _ensure_order(initial_status, "order-webhook-1")
 
         stripe_order = StripeOrder(
             order_bid=order.order_bid,
@@ -211,11 +233,11 @@ def test_handle_stripe_webhook_marks_order_paid(stripe_webhook_app, monkeypatch)
 
     monkeypatch.setattr(
         "flaskr.service.order.funs.get_payment_provider",
-        lambda channel: DummyStripeProvider(notification),
+        lambda _channel: DummyStripeProvider(notification),
     )
     monkeypatch.setattr(
         "flaskr.service.order.funs.send_order_feishu",
-        lambda *args, **kwargs: None,
+        lambda *_args, **_kwargs: None,
     )
 
     payload, status_code = handle_stripe_webhook(stripe_webhook_app, b"{}", "sig")
@@ -234,7 +256,124 @@ def test_handle_stripe_webhook_marks_order_paid(stripe_webhook_app, monkeypatch)
         assert refreshed_stripe_order.status == 1
 
 
-def test_stripe_webhook_route_marks_legacy_order_paid(stripe_webhook_app, monkeypatch):
+def test_handle_stripe_webhook_accepts_current_recoverable_failed_attempt(
+    stripe_webhook_app: object, monkeypatch: object
+) -> None:
+    with stripe_webhook_app.app_context():
+        order = _ensure_order(ORDER_STATUS_TO_BE_PAID, "order-webhook-retry")
+        dao.db.session.add(
+            StripeOrder(
+                order_bid=order.order_bid,
+                stripe_order_bid="stripe-order-retry",
+                user_bid=order.user_bid,
+                shifu_bid=order.shifu_bid,
+                payment_intent_id="pi_retry",
+                amount=100,
+                currency="usd",
+                status=4,
+            )
+        )
+        dao.db.session.commit()
+
+    notification = PaymentNotificationResult(
+        order_bid="order-webhook-retry",
+        status="payment_intent.succeeded",
+        provider_payload={
+            "type": "payment_intent.succeeded",
+            "data": {
+                "object": {
+                    "id": "pi_retry",
+                    "metadata": {
+                        "order_bid": "order-webhook-retry",
+                        "stripe_order_bid": "stripe-order-retry",
+                    },
+                }
+            },
+        },
+        charge_id="ch_retry",
+    )
+    monkeypatch.setattr(
+        "flaskr.service.order.funs.get_payment_provider",
+        lambda _channel: DummyStripeProvider(notification),
+    )
+    monkeypatch.setattr(
+        "flaskr.service.order.funs.send_order_feishu",
+        lambda *_args, **_kwargs: None,
+    )
+
+    payload, status_code = handle_stripe_webhook(stripe_webhook_app, b"{}", "sig")
+
+    assert status_code == 200
+    assert payload["status"] == "paid"
+
+
+def test_handle_stripe_webhook_ignores_an_out_of_order_superseded_attempt(
+    stripe_webhook_app: object, monkeypatch: object
+) -> None:
+    with stripe_webhook_app.app_context():
+        order = _ensure_order(ORDER_STATUS_TO_BE_PAID, "order-webhook-superseded")
+        dao.db.session.add_all(
+            [
+                StripeOrder(
+                    order_bid=order.order_bid,
+                    stripe_order_bid="stripe-order-old",
+                    user_bid=order.user_bid,
+                    shifu_bid=order.shifu_bid,
+                    payment_intent_id="pi_old",
+                    amount=100,
+                    currency="usd",
+                    status=0,
+                ),
+                StripeOrder(
+                    order_bid=order.order_bid,
+                    stripe_order_bid="stripe-order-current",
+                    user_bid=order.user_bid,
+                    shifu_bid=order.shifu_bid,
+                    payment_intent_id="pi_current",
+                    amount=100,
+                    currency="usd",
+                    status=0,
+                ),
+            ]
+        )
+        dao.db.session.commit()
+
+    notification = PaymentNotificationResult(
+        order_bid="order-webhook-superseded",
+        status="payment_intent.succeeded",
+        provider_payload={
+            "type": "payment_intent.succeeded",
+            "data": {
+                "object": {
+                    "id": "pi_old",
+                    "metadata": {
+                        "order_bid": "order-webhook-superseded",
+                        "stripe_order_bid": "stripe-order-old",
+                    },
+                }
+            },
+        },
+        charge_id="ch_old",
+    )
+    monkeypatch.setattr(
+        "flaskr.service.order.funs.get_payment_provider",
+        lambda _channel: DummyStripeProvider(notification),
+    )
+
+    payload, status_code = handle_stripe_webhook(stripe_webhook_app, b"{}", "sig")
+
+    assert status_code == 202
+    assert payload["status"] == "ignored"
+    with stripe_webhook_app.app_context():
+        assert (
+            Order.query.filter_by(order_bid="order-webhook-superseded").one().status
+            == ORDER_STATUS_TO_BE_PAID
+        )
+
+
+def test_stripe_webhook_route_marks_legacy_order_paid(
+    stripe_webhook_app: object, monkeypatch: object
+) -> None:
     with stripe_webhook_app.app_context():
         order = _ensure_order(ORDER_STATUS_TO_BE_PAID, "order-webhook-route-1")
 
@@ -286,11 +425,11 @@ def test_stripe_webhook_route_marks_legacy_order_paid(stripe_webhook_app, monkey
     )
     monkeypatch.setattr(
         "flaskr.service.order.funs.get_payment_provider",
-        lambda channel: DummyStripeProvider(notification),
+        lambda _channel: DummyStripeProvider(notification),
     )
     monkeypatch.setattr(
         "flaskr.service.order.funs.send_order_feishu",
-        lambda *args, **kwargs: None,
+        lambda *_args, **_kwargs: None,
     )
 
     with stripe_webhook_app.test_client() as client:
@@ -316,8 +455,8 @@ def test_stripe_webhook_route_marks_legacy_order_paid(stripe_webhook_app, monkey
 
 
 def test_handle_stripe_webhook_routes_bill_orders_without_regression(
-    stripe_webhook_app, monkeypatch
-):
+    stripe_webhook_app: object, monkeypatch: object
+) -> None:
     with stripe_webhook_app.app_context():
         subscription = _ensure_billing_subscription(
             BILLING_SUBSCRIPTION_STATUS_DRAFT,
@@ -342,6 +481,8 @@ def test_handle_stripe_webhook_routes_bill_orders_without_regression(
                     "subscription": "sub_provider_1",
                     "customer": "cus_provider_1",
                     "payment_status": "paid",
+                    "amount_total": 9900,
+                    "currency": "cny",
                     "metadata": {
                         "bill_order_bid": "bill-order-webhook-1",
                         "order_bid": "bill-order-webhook-1",
@@ -353,7 +494,7 @@ def test_handle_stripe_webhook_routes_bill_orders_without_regression(
     )
     monkeypatch.setattr(
         "flaskr.service.order.funs.get_payment_provider",
-        lambda channel: DummyStripeProvider(success_notification),
+        lambda _channel: DummyStripeProvider(success_notification),
     )
     payload, status_code = handle_stripe_webhook(stripe_webhook_app, b"{}", "sig")
 
@@ -384,7 +525,7 @@ def test_handle_stripe_webhook_routes_bill_orders_without_regression(
     )
     monkeypatch.setattr(
         "flaskr.service.order.funs.get_payment_provider",
-        lambda channel: DummyStripeProvider(failed_notification),
+        lambda _channel: DummyStripeProvider(failed_notification),
     )
     payload, status_code = handle_stripe_webhook(stripe_webhook_app, b"{}", "sig")
 
@@ -423,7 +564,9 @@ def test_handle_stripe_webhook_routes_bill_orders_without_regression(
         assert len(ledgers) == 1
 
 
-def test_stripe_webhook_route_delegates_bill_orders(stripe_webhook_app, monkeypatch):
+def test_stripe_webhook_route_delegates_bill_orders(
+    stripe_webhook_app: object, monkeypatch: object
+) -> None:
     with stripe_webhook_app.app_context():
         subscription = _ensure_billing_subscription(
             BILLING_SUBSCRIPTION_STATUS_DRAFT,
@@ -448,6 +591,8 @@ def test_stripe_webhook_route_delegates_bill_orders(stripe_webhook_app, monkeypa
                     "subscription": "sub_provider_route_1",
                     "customer": "cus_provider_route_1",
                     "payment_status": "paid",
+                    "amount_total": 9900,
+                    "currency": "cny",
                     "metadata": {
                         "bill_order_bid": "bill-order-route-1",
                         "order_bid": "bill-order-route-1",
@@ -459,7 +604,7 @@ def test_stripe_webhook_route_delegates_bill_orders(stripe_webhook_app, monkeypa
     )
     monkeypatch.setattr(
         "flaskr.service.order.funs.get_payment_provider",
-        lambda channel: DummyStripeProvider(notification),
+        lambda _channel: DummyStripeProvider(notification),
     )
 
     with stripe_webhook_app.test_client() as client:
@@ -500,8 +645,8 @@ def test_stripe_webhook_route_delegates_bill_orders(stripe_webhook_app, monkeypa
 
 
 def test_handle_stripe_webhook_duplicate_paid_event_is_idempotent(
-    stripe_webhook_app, monkeypatch
-):
+    stripe_webhook_app: object, monkeypatch: object
+) -> None:
     with stripe_webhook_app.app_context():
         subscription = _ensure_billing_subscription(
             BILLING_SUBSCRIPTION_STATUS_DRAFT,
@@ -525,6 +670,8 @@ def test_handle_stripe_webhook_duplicate_paid_event_is_idempotent(
                     "subscription": "sub_provider_idempotent_1",
                     "customer": "cus_provider_idempotent_1",
                     "payment_status": "paid",
+                    "amount_total": 9900,
+                    "currency": "cny",
                     "metadata": {
                         "bill_order_bid": "bill-order-idempotent-1",
                         "order_bid": "bill-order-idempotent-1",
@@ -536,7 +683,7 @@ def test_handle_stripe_webhook_duplicate_paid_event_is_idempotent(
     )
     monkeypatch.setattr(
         "flaskr.service.order.funs.get_payment_provider",
-        lambda channel: DummyStripeProvider(notification),
+        lambda _channel: DummyStripeProvider(notification),
     )
 
     first_payload, first_status = handle_stripe_webhook(
@@ -571,8 +718,8 @@ def test_handle_stripe_webhook_duplicate_paid_event_is_idempotent(
 
 
 def test_handle_stripe_webhook_ignores_stale_subscription_updates(
-    stripe_webhook_app, monkeypatch
-):
+    stripe_webhook_app: object, monkeypatch: object
+) -> None:
     with stripe_webhook_app.app_context():
         subscription = _ensure_billing_subscription(
             BILLING_SUBSCRIPTION_STATUS_ACTIVE,
@@ -612,7 +759,7 @@ def test_handle_stripe_webhook_ignores_stale_subscription_updates(
     )
     monkeypatch.setattr(
         "flaskr.service.order.funs.get_payment_provider",
-        lambda channel: DummyStripeProvider(notification),
+        lambda _channel: DummyStripeProvider(notification),
     )
 
     payload, status_code = handle_stripe_webhook(stripe_webhook_app, b"{}", "sig")
@@ -628,8 +775,8 @@ def test_handle_stripe_webhook_ignores_stale_subscription_updates(
 
 
 def test_handle_stripe_webhook_ignores_orphan_billing_event(
-    stripe_webhook_app, monkeypatch
-):
+    stripe_webhook_app: object, monkeypatch: object
+) -> None:
     notification = PaymentNotificationResult(
         order_bid="",
         status="checkout.session.completed",
@@ -642,6 +789,8 @@ def test_handle_stripe_webhook_ignores_orphan_billing_event(
                     "subscription": "sub_orphan_test",
                     "customer": "cus_orphan_test",
                     "payment_status": "paid",
+                    "amount_total": 9900,
+                    "currency": "cny",
                     "metadata": {
                         "bill_order_bid": "bill-order-orphan-1",
                         "order_bid": "bill-order-orphan-1",
@@ -653,7 +802,7 @@ def test_handle_stripe_webhook_ignores_orphan_billing_event(
     )
     monkeypatch.setattr(
         "flaskr.service.order.funs.get_payment_provider",
-        lambda channel: DummyStripeProvider(notification),
+        lambda _channel: DummyStripeProvider(notification),
     )
 
     payload, status_code = handle_stripe_webhook(stripe_webhook_app, b"{}", "sig")

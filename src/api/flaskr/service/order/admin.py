@@ -1,3 +1,5 @@
+"""Implement administrative operations for legacy orders."""
+
 from __future__ import annotations
 
 import hashlib
@@ -5,10 +7,10 @@ import re
 from collections import defaultdict
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from flask import Flask
 from flaskr.dao import db
+from flaskr.dao.uow import unit_of_work
 from flaskr.i18n import _
 from flaskr.service.common.dtos import PageNationDTO
 from flaskr.service.common.models import (
@@ -38,6 +40,9 @@ from flaskr.service.order.models import (
     Order,
     PingxxOrder,
     StripeOrder,
+)
+from flaskr.service.order.payment_channel_resolution import (
+    resolve_market_payment_provider,
 )
 from flaskr.service.order.raw_snapshots import (
     legacy_native_snapshot_query,
@@ -72,6 +77,12 @@ from flaskr.service.user.repository import (
 from flaskr.service.user.utils import ensure_demo_course_permissions
 from flaskr.util.datetime import parse_naive_utc
 from sqlalchemy import case
+
+if TYPE_CHECKING:
+    from flask import Flask
+    from flask_sqlalchemy.query import Query
+    from sqlalchemy.sql.elements import ColumnElement
+    from sqlalchemy.sql.selectable import Subquery
 
 ORDER_STATUS_KEY_MAP = {
     ORDER_STATUS_INIT: "server.order.orderStatusInit",
@@ -229,7 +240,7 @@ def _parse_datetime(value: str, is_end: bool = False) -> datetime | None:
     return None
 
 
-def _normalize_order_status_filter(value: Any) -> int | None:
+def _normalize_order_status_filter(value: object) -> int | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
@@ -241,7 +252,7 @@ def _normalize_order_status_filter(value: Any) -> int | None:
 
 
 def _normalize_order_datetime_filter(
-    value: Any, *, is_end: bool = False
+    value: object, *, is_end: bool = False
 ) -> datetime | None:
     if isinstance(value, datetime):
         return value
@@ -449,7 +460,7 @@ def _load_coupon_code_map(order_bids: list[str]) -> dict[str, list[str]]:
     return dict(coupon_map)
 
 
-def _build_coupon_usage_order_bid_subquery():
+def _build_coupon_usage_order_bid_subquery() -> Subquery:
     return (
         db.session.query(CouponUsage.order_bid.label("order_bid"))
         .filter(
@@ -550,7 +561,7 @@ def _load_matching_shifu_bids_for_course_name(course_name: str) -> list[str]:
     return sorted(matched_shifu_bids)
 
 
-def _build_course_query_shifu_bid_filter(course_query: str):
+def _build_course_query_shifu_bid_filter(course_query: str) -> ColumnElement[bool]:
     normalized_course_query = str(course_query or "").strip()
     like_value = f"%{normalized_course_query}%"
     draft_course_bids = db.session.query(DraftShifu.shifu_bid).filter(
@@ -568,7 +579,7 @@ def _build_course_query_shifu_bid_filter(course_query: str):
     )
 
 
-def _apply_order_source_filter(query, order_source: str):
+def _apply_order_source_filter(query: Query, order_source: str) -> Query:
     normalized_order_source = str(order_source or "").strip()
     if not normalized_order_source:
         return query
@@ -610,6 +621,40 @@ def _apply_order_source_filter(query, order_source: str):
     return query.filter(db.literal(False))  # noqa: FBT003 -- SQL literal value
 
 
+def _resolve_order_display_payment_channel(order: Order) -> str:
+    """Correct the legacy model default for free orders on non-Ping++ markets."""
+    payment_channel = str(order.payment_channel or "").strip()
+    if payment_channel != "pingxx" or Decimal(order.paid_price or 0) != Decimal(0):
+        return payment_channel
+    return resolve_market_payment_provider()
+
+
+def _apply_payment_channel_filter(query: Query, payment_channel: str) -> Query:
+    """Filter by the same effective channel exposed in order DTOs."""
+    normalized_channel = str(payment_channel or "").strip()
+    if not normalized_channel:
+        return query
+
+    market_provider = resolve_market_payment_provider()
+    if market_provider == "pingxx":
+        return query.filter(Order.payment_channel == normalized_channel)
+
+    legacy_free_order = db.and_(
+        Order.payment_channel == "pingxx",
+        Order.paid_price == Decimal(0),
+    )
+    if normalized_channel == market_provider:
+        return query.filter(
+            db.or_(Order.payment_channel == normalized_channel, legacy_free_order)
+        )
+    if normalized_channel == "pingxx":
+        return query.filter(
+            Order.payment_channel == "pingxx",
+            Order.paid_price != Decimal(0),
+        )
+    return query.filter(Order.payment_channel == normalized_channel)
+
+
 def _build_order_item(
     order: Order,
     shifu_map: dict[str, DraftShifu | PublishedShifu],
@@ -619,7 +664,7 @@ def _build_order_item(
     """Build admin order summary DTO from order plus shifu/user lookups."""
     shifu = shifu_map.get(order.shifu_bid)
     user = user_map.get(order.user_bid, {})
-    payment_channel = order.payment_channel or ""
+    payment_channel = _resolve_order_display_payment_channel(order)
     status_key = ORDER_STATUS_KEY_MAP.get(order.status, "server.order.orderStatusInit")
     coupon_codes = []
     if coupon_map is not None:
@@ -686,77 +731,84 @@ def import_activation_order(
     existing_aggregate = load_user_aggregate_by_identifier(
         normalized_identifier, providers=[contact_type]
     )
-    aggregate, created_new_user = ensure_user_for_identifier(
-        app,
-        provider=contact_type,
-        identifier=normalized_identifier,
-        defaults=defaults,
-    )
-
-    if not aggregate:
-        raise_error("server.user.userNotFound")
-
-    user_id = aggregate.user_bid
-
-    existing_success_order = (
-        Order.query.filter(
-            Order.user_bid == user_id,
-            Order.shifu_bid == normalized_course_id,
-            Order.status == ORDER_STATUS_SUCCESS,
-            Order.deleted == 0,
+    # Step 1 - the account and its credential must exist before the order is
+    # created; ``init_buy_record`` owns its own retry-on-deadlock unit of
+    # work, so it stays outside this block instead of nesting.
+    with unit_of_work():
+        aggregate, created_new_user = ensure_user_for_identifier(
+            app,
+            provider=contact_type,
+            identifier=normalized_identifier,
+            defaults=defaults,
         )
-        .order_by(Order.id.desc())
-        .first()
-    )
-    if existing_success_order:
-        if contact_type == "email":
-            raise_error_with_args(
-                "server.order.emailAlreadyActivated", email=normalized_identifier
-            )
-        else:
-            raise_error_with_args(
-                "server.order.mobileAlreadyActivated",
-                mobile=normalized_identifier,
-            )
 
-    entity = get_user_entity_by_bid(user_id, include_deleted=True)
-    if entity:
-        updates = {"identify": normalized_identifier}
-        if normalized_nickname:
-            updates["nickname"] = normalized_nickname
-        if aggregate.state == USER_STATE_UNREGISTERED:
-            updates["state"] = USER_STATE_REGISTERED
-        update_user_entity_fields(entity, **updates)
-    if created_new_user or (
-        existing_aggregate and existing_aggregate.state == USER_STATE_UNREGISTERED
-    ):
-        ensure_demo_course_permissions(app, user_id)
+        if not aggregate:
+            raise_error("server.user.userNotFound")
 
-    upsert_credential(
-        app,
-        user_bid=user_id,
-        provider_name=contact_type,
-        subject_id=normalized_identifier,
-        subject_format=contact_type,
-        identifier=normalized_identifier,
-        metadata={"course_id": normalized_course_id},
-        verified=True,
-    )
-    db.session.commit()
+        user_id = aggregate.user_bid
+
+        existing_success_order = (
+            Order.query.filter(
+                Order.user_bid == user_id,
+                Order.shifu_bid == normalized_course_id,
+                Order.status == ORDER_STATUS_SUCCESS,
+                Order.deleted == 0,
+            )
+            .order_by(Order.id.desc())
+            .first()
+        )
+        if existing_success_order:
+            if contact_type == "email":
+                raise_error_with_args(
+                    "server.order.emailAlreadyActivated", email=normalized_identifier
+                )
+            else:
+                raise_error_with_args(
+                    "server.order.mobileAlreadyActivated",
+                    mobile=normalized_identifier,
+                )
+
+        entity = get_user_entity_by_bid(user_id, include_deleted=True)
+        if entity:
+            updates = {"identify": normalized_identifier}
+            if normalized_nickname:
+                updates["nickname"] = normalized_nickname
+            if aggregate.state == USER_STATE_UNREGISTERED:
+                updates["state"] = USER_STATE_REGISTERED
+            update_user_entity_fields(entity, **updates)
+        if created_new_user or (
+            existing_aggregate and existing_aggregate.state == USER_STATE_UNREGISTERED
+        ):
+            ensure_demo_course_permissions(app, user_id)
+
+        upsert_credential(
+            app,
+            user_bid=user_id,
+            provider_name=contact_type,
+            subject_id=normalized_identifier,
+            subject_format=contact_type,
+            identifier=normalized_identifier,
+            metadata={"course_id": normalized_course_id},
+            verified=True,
+        )
 
     buy_record = init_buy_record(app, user_id, normalized_course_id)
-    order = Order.query.filter(Order.order_bid == buy_record.order_id).first()
-    if not order:
-        raise_error("server.order.orderNotFound")
 
-    order.payable_price = Decimal(0)
-    order.paid_price = Decimal(0)
-    order.payment_channel = payment_channel
-    db.session.commit()
+    # Step 2 - zero the price and flip the order to SUCCESS together;
+    # ``success_buy_record`` joins this block and its notification fires
+    # only after the commit.
+    with unit_of_work():
+        order = Order.query.filter(Order.order_bid == buy_record.order_id).first()
+        if not order:
+            raise_error("server.order.orderNotFound")
 
-    success_buy_record(app, order.order_bid)
+        order.payable_price = Decimal(0)
+        order.paid_price = Decimal(0)
+        order.payment_channel = payment_channel
+        order_bid = order.order_bid
+        success_buy_record(app, order_bid)
 
-    return {"order_bid": order.order_bid}
+    return {"order_bid": order_bid}
 
 
 def import_activation_orders(
@@ -765,7 +817,7 @@ def import_activation_orders(
     course_id: str,
     user_nick_name: str | None = None,
     contact_type: str = "phone",
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Bulk import activation orders from a list of phone/email identifiers."""
     results: dict[str, Any] = {"success": [], "failed": []}
     for mobile in mobiles:
@@ -811,7 +863,7 @@ def import_activation_orders_from_entries(
     entries: list[dict[str, str]],
     course_id: str,
     contact_type: str = "phone",
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Bulk import activation orders from parsed phone/email+nickname entries."""
     results: dict[str, Any] = {"success": [], "failed": []}
     for entry in entries:
@@ -861,7 +913,7 @@ def list_orders(
     user_id: str,
     page_index: int,
     page_size: int,
-    filters: dict[str, Any] | None = None,
+    filters: dict[str, object] | None = None,
 ) -> PageNationDTO:
     """List orders visible to the current operator with optional filters."""
     with app.app_context():
@@ -919,7 +971,7 @@ def list_orders(
 
         payment_channel = filters.get("payment_channel")
         if payment_channel:
-            query = query.filter(Order.payment_channel == payment_channel)
+            query = _apply_payment_channel_filter(query, str(payment_channel))
 
         start_time = _normalize_order_datetime_filter(filters.get("start_time"))
         if start_time:
@@ -955,7 +1007,7 @@ def list_operator_orders(
     app: Flask,
     page_index: int,
     page_size: int,
-    filters: dict[str, Any] | None = None,
+    filters: dict[str, object] | None = None,
 ) -> PageNationDTO:
     """List global orders for operator views with cross-course filters."""
     with app.app_context():
@@ -998,7 +1050,7 @@ def list_operator_orders(
 
         payment_channel = str(filters.get("payment_channel", "") or "").strip()
         if payment_channel:
-            query = query.filter(Order.payment_channel == payment_channel)
+            query = _apply_payment_channel_filter(query, payment_channel)
 
         order_source = str(filters.get("order_source", "") or "").strip()
         if order_source:
@@ -1140,7 +1192,7 @@ def _load_order_coupons(order_bid: str) -> list[OrderAdminCouponDTO]:
 
 def _load_payment_detail(order: Order) -> OrderAdminPaymentDTO | None:
     """Build payment detail DTO from channel-specific order records."""
-    payment_channel = order.payment_channel or ""
+    payment_channel = _resolve_order_display_payment_channel(order)
     if payment_channel == "stripe":
         stripe_order = (
             legacy_stripe_snapshot_query()
@@ -1253,7 +1305,7 @@ def get_order_detail(app: Flask, user_id: str, order_bid: str) -> OrderAdminDeta
         summary = _build_order_item(order, shifu_map, user_map, coupon_map)
         payment_detail = _load_payment_detail(order)
         if not payment_detail:
-            payment_channel = order.payment_channel or ""
+            payment_channel = _resolve_order_display_payment_channel(order)
             payment_detail = OrderAdminPaymentDTO(
                 payment_channel=payment_channel,
                 payment_channel_key=PAYMENT_CHANNEL_KEY_MAP.get(
@@ -1289,7 +1341,7 @@ def get_operator_order_detail(app: Flask, order_bid: str) -> OrderAdminDetailDTO
         summary = _build_order_item(order, shifu_map, user_map, coupon_map)
         payment_detail = _load_payment_detail(order)
         if not payment_detail:
-            payment_channel = order.payment_channel or ""
+            payment_channel = _resolve_order_display_payment_channel(order)
             payment_detail = OrderAdminPaymentDTO(
                 payment_channel=payment_channel,
                 payment_channel_key=PAYMENT_CHANNEL_KEY_MAP.get(

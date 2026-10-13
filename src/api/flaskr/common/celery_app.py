@@ -5,14 +5,16 @@ from __future__ import annotations
 import importlib
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING
 
 from celery import Celery, Task
 from celery.schedules import crontab
 from celery.signals import worker_process_init
-from flask import Flask
 
 from flaskr.common.config import get_explicit_env_override
+
+if TYPE_CHECKING:
+    from flask import Flask
 
 _DEFAULT_BROKER_URL = "redis://localhost:6379/0"
 _DEFAULT_BILLING_RENEWAL_CRON = "* * * * *"
@@ -64,7 +66,7 @@ def create_celery_app(flask_app: Flask | None = None) -> Celery:
     resolved_flask_app = flask_app or _load_flask_app()
 
     @worker_process_init.connect(weak=False)
-    def _dispose_db_pools_after_fork(**_kwargs: Any) -> None:
+    def _dispose_db_pools_after_fork(**_kwargs: object) -> None:
         try:
             dispose_inherited_db_pools(resolved_flask_app)
         except Exception:  # pragma: no cover - never kill a booting worker
@@ -75,14 +77,18 @@ def create_celery_app(flask_app: Flask | None = None) -> Celery:
     class FlaskTask(Task):
         abstract = True
 
-        def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        def __call__(self, *args: object, **kwargs: object) -> object:
             with resolved_flask_app.app_context():
                 return self.run(*args, **kwargs)
 
     celery_app = Celery(
         resolved_flask_app.import_name,
         task_cls=FlaskTask,
-        include=("flaskr.service.billing.tasks", "flaskr.service.tts.tasks"),
+        include=(
+            "flaskr.service.billing.tasks",
+            "flaskr.service.tts.tasks",
+            "flaskr.service.user.tasks",
+        ),
     )
     celery_app.conf.update(_build_celery_config(resolved_flask_app))
     celery_app.flask_app = resolved_flask_app  # type: ignore[attr-defined]
@@ -98,7 +104,7 @@ def get_celery_app(flask_app: Flask | None = None) -> Celery:
     return _celery_state.app
 
 
-def _build_celery_config(flask_app: Flask) -> dict[str, Any]:
+def _build_celery_config(flask_app: Flask) -> dict[str, object]:
     default_broker_url = "memory://" if flask_app.testing else _DEFAULT_BROKER_URL
     default_result_backend = "cache+memory://" if flask_app.testing else None
     # The CELERY_* keys are declared in flaskr/common/config.py, but this
@@ -130,12 +136,16 @@ def _build_celery_config(flask_app: Flask) -> dict[str, Any]:
         "task_ignore_result": False,
         "broker_connection_retry_on_startup": True,
         "timezone": flask_app.config.get("TZ", "UTC"),
-        "imports": ("flaskr.service.billing.tasks",),
+        "imports": (
+            "flaskr.service.billing.tasks",
+            "flaskr.service.tts.tasks",
+            "flaskr.service.user.tasks",
+        ),
         "beat_schedule": _build_billing_beat_schedule(flask_app),
     }
 
 
-def _build_billing_beat_schedule(flask_app: Flask) -> dict[str, Any]:
+def _build_billing_beat_schedule(flask_app: Flask) -> dict[str, object]:
     return {
         "billing.dispatch_due_renewal_events.schedule": {
             "task": "billing.dispatch_due_renewal_events",
@@ -201,7 +211,7 @@ def _resolve_billing_crontab(
     flask_app: Flask,
     config_key: str,
     default_expression: str,
-):
+) -> crontab:
     # Raw env fallback for Flask apps not backed by the registry Config; the
     # BILLING_*_CRON keys are declared in flaskr/common/config.py.
     raw_expression = str(
@@ -219,11 +229,12 @@ def _resolve_billing_crontab(
     )
     fallback_schedule = _parse_crontab_expression(default_expression)
     if fallback_schedule is None:  # pragma: no cover - guarded by constants above
-        raise ValueError(f"Invalid default cron expression for {config_key}")
+        message = f"Invalid default cron expression for {config_key}"
+        raise ValueError(message)
     return fallback_schedule
 
 
-def _parse_crontab_expression(expression: str):
+def _parse_crontab_expression(expression: str) -> crontab | None:
     normalized_expression = " ".join(str(expression or "").split())
     parts = normalized_expression.split(" ")
     if len(parts) != 5 or any(not part for part in parts):
@@ -245,14 +256,16 @@ def _parse_crontab_expression(expression: str):
 def _load_flask_app() -> Flask:
     os.environ.setdefault("SKIP_APP_AUTOCREATE", "1")
     app_module = importlib.import_module("app")
-    return app_module.create_app()
+    return app_module.create_app(serving_http=False)
 
 
 def _register_default_tasks() -> None:
     importlib.import_module("flaskr.service.billing.tasks")
+    importlib.import_module("flaskr.service.tts.tasks")
+    importlib.import_module("flaskr.service.user.tasks")
 
 
-def _to_bool(value: Any) -> bool:
+def _to_bool(value: object) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, str):

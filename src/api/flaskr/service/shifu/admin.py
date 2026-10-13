@@ -22,7 +22,6 @@ from typing import Any, Dict, Optional, Set
 
 from flask import current_app
 from flaskr.common.i18n_utils import get_markdownflow_output_language
-from flaskr.common.umami_client import get_course_visit_count_30d
 from flaskr.dao import db
 from flaskr.i18n import _
 from flaskr.service.billing.bucket_categories import (
@@ -212,6 +211,7 @@ from flaskr.service.shifu.admin_shared import (
     OPERATOR_USER_ROLE_LEARNER,
     OPERATOR_USER_ROLE_OPERATOR,
     OPERATOR_USER_ROLE_REGULAR,
+    OPERATOR_USER_STATUS_CANCELLED,
     OPERATOR_USER_STATUS_PAID,
     OPERATOR_USER_STATUS_REGISTERED,
     OPERATOR_USER_STATUS_TRIAL,
@@ -464,6 +464,7 @@ _OPERATOR_COURSE_COMPAT_EXPORTS = (
     "_clear_shifu_creator_cache",
     "_update_course_creator_bid",
     "transfer_operator_course_creator",
+    "transfer_operator_published_courses",
     "copy_operator_course",
     "_merge_courses",
     "_load_latest_course_versions",
@@ -533,6 +534,9 @@ _clear_shifu_permission_cache = _operator_courses._clear_shifu_permission_cache
 _clear_shifu_creator_cache = _operator_courses._clear_shifu_creator_cache
 _update_course_creator_bid = _operator_courses._update_course_creator_bid
 transfer_operator_course_creator = _operator_courses.transfer_operator_course_creator
+transfer_operator_published_courses = (
+    _operator_courses.transfer_operator_published_courses
+)
 copy_operator_course = _operator_courses.copy_operator_course
 _load_operator_course_detail_source = (
     _operator_courses._load_operator_course_detail_source
@@ -628,7 +632,6 @@ _OPERATOR_COURSE_FORWARDABLE_NAMES = (
     *_OPERATOR_COURSE_COMPAT_EXPORTS,
     "check_text_with_risk_control",
     "datetime",
-    "get_course_visit_count_30d",
     "run_creator_granted_post_auth",
 )
 
@@ -642,7 +645,7 @@ _ADMIN_SPLIT_SUBMODULES = (
 
 
 class _AdminCompatibilityModule(type(sys)):
-    def __setattr__(self, name, value) -> None:
+    def __setattr__(self, name: object, value: object) -> None:
         super().__setattr__(name, value)
         for submodule in _ADMIN_SPLIT_SUBMODULES:
             if hasattr(submodule, name):
@@ -732,7 +735,6 @@ __all__ = (
     "_validate_operator_target_contact",
     "check_text_with_risk_control",
     "copy_operator_course",
-    "get_course_visit_count_30d",
     "get_operator_course_chapter_detail",
     "get_operator_course_credit_usage_details",
     "get_operator_course_credit_usages",
@@ -747,4 +749,5 @@ __all__ = (
     "load_existing_demo_shifu_ids",
     "run_creator_granted_post_auth",
     "transfer_operator_course_creator",
+    "transfer_operator_published_courses",
 )

@@ -1,8 +1,11 @@
+"""Manage profile-variable definitions and course usage."""
+
 import hashlib
 
 from flask import Flask
 from flaskr.common.i18n_utils import get_markdownflow_output_language
 from flaskr.dao import db
+from flaskr.dao.uow import app_context_scope, unit_of_work
 from flaskr.i18n import _
 from flaskr.service.common import raise_error
 from flaskr.service.shifu.models import DraftOutlineItem
@@ -28,9 +31,7 @@ from .models import (
 
 
 def _collect_used_variables(app: Flask, shifu_bid: str) -> set[str]:
-    """Collect variable names referenced across the latest mdflow content
-    for all draft outline items under a shifu.
-    """
+    """Collect variable names referenced across the latest mdflow content for all draft outline items under a shifu."""
     with app.app_context():
         latest_ids_subquery = (
             db.session.query(
@@ -120,9 +121,12 @@ def get_unused_profile_keys(app: Flask, shifu_bid: str) -> list[str]:
 def get_profile_item_definition_list(
     app: Flask, parent_id: str, definition_type: str = "all"
 ) -> list[ProfileItemDefinition]:
+    """Return profile item definition list."""
     _ = definition_type  # Kept for backward compatibility with existing callers.
     normalized_parent_id = parent_id or ""
-    with app.app_context():
+    # Join the caller's session so a read-back inside an open unit of work
+    # sees that unit's own uncommitted writes.
+    with app_context_scope(app):
         definitions = (
             Variable.query.filter(
                 Variable.shifu_bid.in_([normalized_parent_id, ""]),
@@ -146,7 +150,7 @@ def update_profile_item_hidden_state(
     if not profile_keys:
         return get_profile_item_definition_list(app, parent_id=parent_id)
 
-    with app.app_context():
+    with app_context_scope(app), unit_of_work():
         target_items = (
             Variable.query.filter(
                 Variable.shifu_bid == parent_id,
@@ -156,13 +160,13 @@ def update_profile_item_hidden_state(
             .order_by(Variable.id.asc())
             .all()
         )
-        if target_items:
-            for item in target_items:
-                item.is_hidden = 1 if hidden else 0
-                item.updated_at = now_utc()
-                item.updated_user_bid = user_id or ""
-            db.session.commit()
-        return get_profile_item_definition_list(app, parent_id=parent_id)
+        for item in target_items:
+            item.is_hidden = 1 if hidden else 0
+            item.updated_at = now_utc()
+            item.updated_user_bid = user_id or ""
+    # Read back after the block: the list helper joins this session, so it
+    # returns the committed state here and the staged state when nested.
+    return get_profile_item_definition_list(app, parent_id=parent_id)
 
 
 def hide_unused_profile_items(
@@ -208,18 +212,22 @@ def get_profile_variable_usage(app: Flask, parent_id: str) -> dict:
     }
 
 
-def add_profile_item_quick(app: Flask, parent_id: str, key: str, user_id: str):
-    with app.app_context():
+def add_profile_item_quick(
+    app: Flask, parent_id: str, key: str, user_id: str
+) -> ProfileItemDefinition:
+    """Add profile item quick."""
+    with app_context_scope(app), unit_of_work():
         if not parent_id:
             raise_error("server.profile.prarentRequired")
         if not key:
             raise_error("server.profile.keyRequire")
-        ret = add_profile_item_quick_internal(app, parent_id, key, user_id)
-        db.session.commit()
-        return ret
+        return add_profile_item_quick_internal(app, parent_id, key, user_id)
 
 
-def add_profile_item_quick_internal(app: Flask, parent_id: str, key: str, user_id: str):
+def add_profile_item_quick_internal(
+    app: Flask, parent_id: str, key: str, user_id: str
+) -> ProfileItemDefinition:
+    """Add profile item quick internal."""
     bind = db.session.get_bind()
     inspector = inspect(bind)
     tables = set(inspector.get_table_names())
@@ -379,7 +387,9 @@ def add_profile_i18n(
     language: str,
     profile_item_remark: str,
     user_id: str,
-):
+) -> None:
+    """Add profile i18n."""
+    _ = app
     bind = db.session.get_bind()
     inspector = inspect(bind)
     tables = set(inspector.get_table_names())
@@ -450,9 +460,9 @@ def save_profile_item(
     parent_id: str,
     user_id: str,
     key: str,
-):
+) -> ProfileItemDefinition:
     """Save (create/update) a custom variable definition."""
-    with app.app_context():
+    with app_context_scope(app), unit_of_work():
         normalized_parent_id = parent_id or ""
         if normalized_parent_id == "" and user_id != "":
             raise_error("server.profile.systemProfileNotAllowUpdate")
@@ -512,12 +522,12 @@ def save_profile_item(
             )
             db.session.add(definition)
 
-        db.session.commit()
         return convert_variable_definition_to_profile_item_definition(definition)
 
 
-def delete_profile_item(app: Flask, user_id: str, profile_id: str):
-    with app.app_context():
+def delete_profile_item(app: Flask, user_id: str, profile_id: str) -> bool:
+    """Delete profile item."""
+    with app_context_scope(app), unit_of_work():
         definition = Variable.query.filter(
             Variable.variable_bid == profile_id,
             Variable.deleted == 0,
@@ -530,5 +540,4 @@ def delete_profile_item(app: Flask, user_id: str, profile_id: str):
         definition.deleted = 1
         definition.updated_at = now_utc()
         definition.updated_user_bid = user_id or ""
-        db.session.commit()
         return True

@@ -6,11 +6,6 @@ This module provides a top-level, provider-agnostic pipeline that:
 3) synthesizes all segments via the unified TTS client,
 4) concatenates audio, uploads to OSS, and returns a playable URL.
 
-Cross-Platform Compatibility Note:
-Visual element boundary detection patterns in this module are mirrored in the
-frontend (src/cook-web/src/c-utils/listen-mode/constants.ts) to ensure consistent
-detection of visual blocks (video, table, iframe, svg, img, fence, sandbox) across
-backend and frontend. When modifying boundary detection logic, update both locations.
 """
 
 from __future__ import annotations
@@ -20,16 +15,17 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from flask import Flask
 from flaskr.api.tts import (
     AudioSettings,
+    TTSResult,
     VoiceSettings,
     get_default_audio_settings,
     get_default_voice_settings,
+    get_provider_capabilities,
     is_tts_configured,
     synthesize_text,
 )
@@ -64,13 +60,18 @@ from flaskr.service.tts.patterns import (
 from flaskr.service.tts.tts_handler import upload_audio_to_oss
 from flaskr.util.uuid import generate_id
 
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from flask import Flask
+
 _AV_LATEX_BLOCK = AV_LATEX_BLOCK
 
 
 logger = AppLoggerProxy(logging.getLogger(__name__))
 
 
-_DEFAULT_SENTENCE_ENDINGS = set(".!?。！？；;")
+_DEFAULT_SENTENCE_ENDINGS = set(".!?。！？；;")  # noqa: RUF001 - intentional fullwidth Chinese punctuation
 
 _AV_SPEAKABLE_SANDBOX_ROOT_TAGS = {"div", "section", "article", "main", "template"}
 
@@ -194,8 +195,9 @@ def _find_html_block_end_with_complete(raw: str, start_index: int) -> tuple[int,
 
 
 def _rewind_fixed_marker_start(raw: str, start_index: int) -> int:
-    """If `raw` contains a MarkdownFlow fixed marker prefix on the same line as a
-    visual tag (e.g. `=== <iframe ...`), rewind start to include the marker.
+    """Rewind over a MarkdownFlow fixed marker before a visual tag.
+
+    For example, include the marker in `=== <iframe ...`.
     """
     if not raw or start_index <= 0:
         return start_index
@@ -215,9 +217,9 @@ def _rewind_fixed_marker_start(raw: str, start_index: int) -> int:
 
 
 def _extend_fixed_marker_end(raw: str, end_index: int) -> int:
-    """If `raw` contains a trailing fixed marker suffix on the same line as a
-    visual close tag (e.g. `</iframe> ===`), extend end to include it (and one
-    trailing newline if present).
+    """Extend over a MarkdownFlow fixed marker after a visual close tag.
+
+    For example, include the marker and one trailing newline in `</iframe> ===`.
     """
     if not raw or end_index <= 0 or end_index >= len(raw):
         return end_index
@@ -281,7 +283,7 @@ def _append_open_close_boundary_candidate(
     close_pattern: re.Pattern[str],
     rewind_start: bool = False,
     extend_end: bool = False,
-):
+) -> None:
     match = _find_first_match_outside_fence(raw, open_pattern, fence_ranges)
     if match is None:
         return
@@ -444,7 +446,7 @@ def build_av_segmentation_contract(raw: str, block_bid: str = "") -> dict:
         start_offset: int,
         end_offset: int,
         after_visual_kind: str,
-    ):
+    ) -> None:
         cleaned = (text or "").strip()
         if not cleaned:
             return
@@ -458,7 +460,7 @@ def build_av_segmentation_contract(raw: str, block_bid: str = "") -> dict:
             }
         )
 
-    def _split(text: str, base_offset: int, after_visual_kind: str):
+    def _split(text: str, base_offset: int, after_visual_kind: str) -> None:
         if not text or not text.strip():
             return
 
@@ -549,7 +551,8 @@ def _split_by_sentence_and_newline(text: str) -> list[str]:
 
 def _split_text_by_max_chars(units: Sequence[str], max_chars: int) -> list[str]:
     if max_chars <= 0:
-        raise ValueError("max_chars must be > 0")
+        message = "max_chars must be > 0"
+        raise ValueError(message)
 
     segments: list[str] = []
     current = ""
@@ -599,7 +602,8 @@ def _split_text_by_max_bytes(
     This is mainly required for providers like Baidu which enforce byte limits.
     """
     if max_bytes <= 0:
-        raise ValueError("max_bytes must be > 0")
+        message = "max_bytes must be > 0"
+        raise ValueError(message)
 
     output: list[str] = []
     for raw_segment in segments:
@@ -644,7 +648,7 @@ def split_text_for_tts(
     - Applies `preprocess_for_tts` (removes markdown/code/SVG, etc).
     - Splits by newline and sentence endings.
     - Packs units into segments with a configurable maximum character size.
-    - Applies provider-specific byte constraints when needed.
+    - Applies provider-declared byte constraints when needed.
     """
     cleaned = preprocess_for_tts(text or "")
     if not cleaned:
@@ -655,19 +659,22 @@ def split_text_for_tts(
     units = _split_by_sentence_and_newline(cleaned)
     segments = _split_text_by_max_chars(units, max_chars=max_chars)
 
-    # Provider-specific byte constraints
-    if (provider_name or "").strip().lower() == "baidu":
-        # Baidu requires <= 1024 bytes in GBK encoding.
-        segments = _split_text_by_max_bytes(segments, max_bytes=1024, encoding="gbk")
-    elif (provider_name or "").strip().lower() == "volcengine_http":
-        # Volcengine HTTP v1/tts requires <= 1024 bytes in UTF-8 encoding.
-        segments = _split_text_by_max_bytes(segments, max_bytes=1024, encoding="utf-8")
+    # Provider-declared byte constraints (e.g. Baidu GBK, Volcengine HTTP UTF-8).
+    capabilities = get_provider_capabilities(provider_name)
+    if capabilities.segment_max_bytes:
+        segments = _split_text_by_max_bytes(
+            segments,
+            max_bytes=int(capabilities.segment_max_bytes),
+            encoding=capabilities.segment_encoding or "utf-8",
+        )
 
     return [s for s in segments if s and s.strip()]
 
 
 @dataclass(frozen=True)
 class SynthesizeToOssResult:
+    """Capture audio uploaded to OSS after speech synthesis."""
+
     provider: str
     model: str
     voice_id: str
@@ -710,10 +717,12 @@ def synthesize_long_text_to_oss(
     """
     provider = (provider_name or "").strip().lower()
     if not provider:
-        raise ValueError("TTS provider is required")
+        error_message = "TTS provider is required"
+        raise ValueError(error_message)
 
     if not is_tts_configured(provider):
-        raise ValueError(f"TTS provider is not configured: {provider}")
+        message = f"TTS provider is not configured: {provider}"
+        raise ValueError(message)
 
     segments = split_text_for_tts(
         text,
@@ -721,7 +730,8 @@ def synthesize_long_text_to_oss(
         max_segment_chars=max_segment_chars,
     )
     if not segments:
-        raise ValueError("No speakable text after preprocessing")
+        error_message = "No speakable text after preprocessing"
+        raise ValueError(error_message)
 
     cleaned_text = preprocess_for_tts(text or "")
     raw_length = len(text or "")
@@ -757,7 +767,8 @@ def synthesize_long_text_to_oss(
     max_workers = max(1, int(max_workers or 1))
     sleep_between_segments = float(sleep_between_segments or 0.0)
     if sleep_between_segments < 0:
-        raise ValueError("sleep_between_segments must be >= 0")
+        error_message = "sleep_between_segments must be >= 0"
+        raise ValueError(error_message)
 
     if max_workers == 1:
         audio_parts: list[bytes] = []
@@ -810,7 +821,7 @@ def synthesize_long_text_to_oss(
         audio_parts = [b""] * len(segments)
         segment_map = dict(enumerate(segments))
 
-        def _synthesize_in_app_context(segment_text: str):
+        def _synthesize_in_app_context(segment_text: str) -> TTSResult:
             with app.app_context():
                 return synthesize_text(
                     text=segment_text,
@@ -865,7 +876,8 @@ def synthesize_long_text_to_oss(
 
     final_audio = concat_audio_best_effort(audio_parts)
     if not final_audio:
-        raise ValueError("No audio data produced")
+        error_message = "No audio data produced"
+        raise ValueError(error_message)
 
     duration_ms = get_audio_duration_ms(final_audio, audio_format="mp3")
 

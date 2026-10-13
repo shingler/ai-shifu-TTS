@@ -1,11 +1,28 @@
+"""Implement coupon operations for legacy orders."""
+
 import decimal
 import json
 
 from flask import Flask
 from flaskr.api.doc.feishu import send_notify
-from flaskr.dao import db
+from flaskr.dao import db, uow
+from flaskr.dao.uow import app_context_scope, unit_of_work
 from flaskr.service.common import raise_error
-from flaskr.service.order.funs import query_buy_record, success_buy_record
+from flaskr.service.common.pricing import calculate_percentage_amount
+from flaskr.service.order.consts import (
+    ORDER_STATUS_INIT,
+    ORDER_STATUS_REPRICING,
+    ORDER_STATUS_TO_BE_PAID,
+)
+from flaskr.service.order.funs import (
+    AICourseBuyRecordDTO,
+    assign_free_order_payment_channel,
+    cancel_pending_payment_for_repricing,
+    payment_lifecycle_lock,
+    query_buy_record,
+    restore_repricing_order,
+    success_buy_record,
+)
 from flaskr.service.order.models import Order
 from flaskr.service.promo.api import (
     build_coupon_enabled_expression,
@@ -64,6 +81,7 @@ def _pick_coupon_candidate(
     user_id: str,
 ) -> tuple[CouponUsageModel | None, Coupon | None, bool]:
     """Pick a coupon_usage/coupon pair that matches the current course.
+
     Returns (usage, coupon, has_candidate_with_same_code).
     """
     has_candidate_with_same_code = bool(active_usages or coupons_by_code)
@@ -109,8 +127,13 @@ def _should_bind_usage_course(coupon: Coupon, coupon_usage: CouponUsageModel) ->
 
 
 def send_feishu_coupon_code(
-    app: Flask, user_id, discount_code, discount_name, discount_value
-):
+    app: Flask,
+    user_id: object,
+    discount_code: object,
+    discount_name: object,
+    discount_value: object,
+) -> None:
+    """Send feishu coupon code."""
     with app.app_context():
         user_info = load_user_aggregate(user_id)
         title = "优惠码通知"
@@ -120,23 +143,101 @@ def send_feishu_coupon_code(
                 "feishu coupon notify skipped: user aggregate missing for %s", user_id
             )
             return
-        msgs.append(f"手机号：{user_info.mobile}")
-        msgs.append(f"昵称：{user_info.name}")
-        msgs.append(f"优惠码：{discount_code}")
-        msgs.append(f"优惠名称：{discount_name}")
-        msgs.append(f"优惠额度：{discount_value}")
+        msgs.append(f"手机号：{user_info.mobile}")  # noqa: RUF001 - intentional fullwidth Chinese punctuation
+        msgs.append(f"昵称：{user_info.name}")  # noqa: RUF001 - intentional fullwidth Chinese punctuation
+        msgs.append(f"优惠码：{discount_code}")  # noqa: RUF001 - intentional fullwidth Chinese punctuation
+        msgs.append(f"优惠名称：{discount_name}")  # noqa: RUF001 - intentional fullwidth Chinese punctuation
+        msgs.append(f"优惠额度：{discount_value}")  # noqa: RUF001 - intentional fullwidth Chinese punctuation
         user_convertion = UserConversion.query.filter(
             UserConversion.user_id == user_id
         ).first()
         channel = ""
         if user_convertion:
             channel = user_convertion.conversion_source
-        msgs.append(f"渠道：{channel}")
+        msgs.append(f"渠道：{channel}")  # noqa: RUF001 - intentional fullwidth Chinese punctuation
         send_notify(app, title, msgs)
 
 
-def use_coupon_code(app: Flask, user_id, coupon_code, order_id):
-    """Use coupon code
+def _validate_coupon_before_closing_payment(
+    app: Flask, user_id: object, coupon_code: object, order_id: object
+) -> None:
+    """Reject an invalid coupon without disrupting the learner's current QR."""
+    with app_context_scope(app):
+        order = Order.query.filter(
+            Order.order_bid == order_id,
+            Order.user_bid == user_id,
+            Order.deleted == 0,
+        ).first()
+        if not order:
+            raise_error("server.order.orderNotFound")
+        if order.status == ORDER_STATUS_INIT:
+            return
+        if order.status not in {ORDER_STATUS_TO_BE_PAID, ORDER_STATUS_REPRICING}:
+            raise_error("server.order.orderStatusError")
+        if CouponUsageModel.query.filter(
+            CouponUsageModel.order_bid == order_id,
+            CouponUsageModel.status == COUPON_STATUS_USED,
+        ).first():
+            raise_error("server.discount.orderDiscountAlreadyUsed")
+
+        active_usages = (
+            CouponUsageModel.query.filter(
+                CouponUsageModel.code == coupon_code,
+                CouponUsageModel.status == COUPON_STATUS_ACTIVE,
+                CouponUsageModel.deleted == 0,
+            )
+            .order_by(CouponUsageModel.id.desc())
+            .all()
+        )
+        coupon_bids = {usage.coupon_bid for usage in active_usages if usage.coupon_bid}
+        coupons_by_bid = {
+            coupon.coupon_bid: coupon
+            for coupon in (
+                Coupon.query.filter(
+                    Coupon.coupon_bid.in_(coupon_bids),
+                    Coupon.deleted == 0,
+                ).all()
+                if coupon_bids
+                else []
+            )
+        }
+        coupons_by_code = (
+            Coupon.query.filter(
+                Coupon.code == coupon_code,
+                Coupon.deleted == 0,
+                build_coupon_enabled_expression(Coupon),
+                Coupon.usage_type != COUPON_APPLY_TYPE_SPECIFIC,
+            )
+            .order_by(Coupon.id.desc())
+            .all()
+        )
+        coupon_usage, coupon, has_candidate = _pick_coupon_candidate(
+            active_usages,
+            coupons_by_bid,
+            coupons_by_code,
+            order.shifu_bid,
+            user_id,
+        )
+        if not coupon:
+            if has_candidate:
+                raise_error("server.discount.discountNotApply")
+            raise_error("server.discount.discountNotFound")
+        now = now_utc()
+        if coupon_usage is not None and coupon_usage.status != COUPON_STATUS_ACTIVE:
+            raise_error("server.discount.discountAlreadyUsed")
+        if coupon.start > now:
+            raise_error("server.discount.discountNotStart")
+        if coupon.end < now:
+            raise_error("server.discount.discountAlreadyExpired")
+        if coupon.used_count + 1 > coupon.total_count:
+            raise_error("server.discount.discountLimitExceeded")
+
+
+def use_coupon_code(
+    app: Flask, user_id: object, coupon_code: object, order_id: object
+) -> AICourseBuyRecordDTO | None:
+    """Use coupon code.
+
     Args:
         app: Flask app
         user_id: User id
@@ -146,12 +247,67 @@ def use_coupon_code(app: Flask, user_id, coupon_code, order_id):
         Order object
     Raises:
         raise_error: If the coupon code is not found or the coupon is already used.
+
     """
-    with app.app_context():
+    # The coupon lock prevents another order from consuming the last use
+    # between validation and cancellation of this order's payment attempt.
+    with (
+        payment_lifecycle_lock(str(order_id or "")),
+        payment_lifecycle_lock(f"coupon:{coupon_code or ''!s}"),
+    ):
+        # Validate before installing this request's recovery handler. An invalid
+        # retry must not clear a durable repricing claim left by earlier work.
+        _validate_coupon_before_closing_payment(app, user_id, coupon_code, order_id)
+        try:
+            return _use_coupon_code_locked(
+                app,
+                user_id,
+                coupon_code,
+                order_id,
+                prevalidated=True,
+            )
+        except Exception:
+            restore_repricing_order(
+                app,
+                str(order_id or ""),
+                expected_user=str(user_id or ""),
+                target_status=ORDER_STATUS_INIT,
+            )
+            raise
+
+
+def _use_coupon_code_locked(
+    app: Flask,
+    user_id: object,
+    coupon_code: object,
+    order_id: object,
+    *,
+    prevalidated: bool = False,
+) -> AICourseBuyRecordDTO | None:
+    """Validate, cancel, and apply a coupon under the order lifecycle lock."""
+    if not prevalidated:
+        _validate_coupon_before_closing_payment(app, user_id, coupon_code, order_id)
+    cancel_pending_payment_for_repricing(
+        app,
+        str(order_id or ""),
+        expected_user=str(user_id or ""),
+        keep_repricing_claim=True,
+    )
+    with app_context_scope(app), unit_of_work():
         now = now_utc()
-        buy_record: Order = Order.query.filter(Order.order_bid == order_id).first()
+        buy_record: Order = (
+            Order.query.filter(
+                Order.order_bid == order_id,
+                Order.user_bid == user_id,
+                Order.deleted == 0,
+            )
+            .with_for_update()
+            .first()
+        )
         if not buy_record:
             raise_error("server.order.orderNotFound")
+        if buy_record.status not in {ORDER_STATUS_INIT, ORDER_STATUS_REPRICING}:
+            raise_error("server.order.orderStatusError")
         order_coupon_useage: CouponUsageModel = CouponUsageModel.query.filter(
             CouponUsageModel.order_bid == order_id,
             CouponUsageModel.status == COUPON_STATUS_USED,
@@ -246,24 +402,31 @@ def use_coupon_code(app: Flask, user_id, coupon_code, order_id):
         elif coupon.discount_type == COUPON_TYPE_PERCENT:
             buy_record.paid_price = decimal.Decimal(
                 buy_record.paid_price
-            ) - decimal.Decimal(buy_record.payable_price) * decimal.Decimal(
-                coupon_usage.value
+            ) - calculate_percentage_amount(
+                decimal.Decimal(buy_record.payable_price),
+                decimal.Decimal(coupon_usage.value),
             )
         if decimal.Decimal(buy_record.paid_price) < 0:
             buy_record.paid_price = decimal.Decimal(0)
+        if buy_record.paid_price == 0:
+            assign_free_order_payment_channel(buy_record)
         buy_record.updated_at = now
         coupon_usage.updated_at = now
         if not user_usage_already_bound:
             coupon.used_count = coupon.used_count + 1
-        db.session.commit()
 
         if buy_record.paid_price == 0:
+            # Joins this unit of work: the coupon usage and the SUCCESS flip
+            # commit together, and the order notification fires after that.
             return success_buy_record(app, buy_record.order_bid)
-        send_feishu_coupon_code(
-            app,
-            user_id,
-            coupon_code,
-            coupon.code,
-            coupon.value,
+        buy_record.status = ORDER_STATUS_INIT
+        coupon_name = coupon.code
+        coupon_value = coupon.value
+        uow.on_commit(
+            lambda: send_feishu_coupon_code(
+                app, user_id, coupon_code, coupon_name, coupon_value
+            )
         )
-        return query_buy_record(app, buy_record.order_bid)
+        return query_buy_record(
+            app, buy_record.order_bid, expected_user=str(user_id or "")
+        )

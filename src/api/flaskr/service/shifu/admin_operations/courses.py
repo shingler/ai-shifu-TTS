@@ -23,7 +23,6 @@ from flask import Flask, current_app
 from flaskr.common.cache_provider import cache as redis
 from flaskr.common.config import get_redis_key_prefix
 from flaskr.common.i18n_utils import get_markdownflow_output_language
-from flaskr.common.umami_client import get_course_visit_count_30d
 from flaskr.dao import db
 from flaskr.i18n import _
 from flaskr.service.billing.consts import (
@@ -283,6 +282,7 @@ from flaskr.service.shifu.admin_operations.courses_shared import (
     OPERATOR_USER_ROLE_LEARNER,
     OPERATOR_USER_ROLE_OPERATOR,
     OPERATOR_USER_ROLE_REGULAR,
+    OPERATOR_USER_STATUS_CANCELLED,
     OPERATOR_USER_STATUS_PAID,
     OPERATOR_USER_STATUS_REGISTERED,
     OPERATOR_USER_STATUS_TRIAL,
@@ -333,6 +333,7 @@ from flaskr.service.shifu.admin_operations.courses_transfer_copy import (
     _validate_operator_target_contact,
     copy_operator_course,
     transfer_operator_course_creator,
+    transfer_operator_published_courses,
 )
 from flaskr.service.shifu.admin_operations.courses_users import (
     _load_course_related_user_bids,
@@ -418,7 +419,7 @@ _COURSES_SPLIT_SUBMODULES = (
 
 
 class _CoursesCompatibilityModule(type(sys)):
-    def __setattr__(self, name, value) -> None:
+    def __setattr__(self, name: object, value: object) -> None:
         super().__setattr__(name, value)
         for submodule in _COURSES_SPLIT_SUBMODULES:
             if hasattr(submodule, name):

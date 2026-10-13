@@ -1,3 +1,5 @@
+"""Verify learner profile optimizer behavior."""
+
 from __future__ import annotations
 
 import json
@@ -11,6 +13,7 @@ from flaskr.service.check_risk.models import RiskControlResult
 from flaskr.service.common.models import AppError
 from flaskr.service.metering.consts import BILL_USAGE_SCENE_PROD
 from flaskr.service.profile import learner_profile_optimizer as optimizer
+from flaskr.service.profile.learner_profile import PROFILE_ONBOARDING_STATE_VERSION
 from flaskr.service.user.models import UserInfo, UserOnboardingState
 from flaskr.service.user.repository import create_user_entity
 
@@ -31,7 +34,7 @@ def _create_profile_state(user_bid: str, *, language: str = "zh-CN") -> None:
         UserOnboardingState(
             user_bid=user_bid,
             scene_key="profile_onboarding",
-            version="profile-v2",
+            version=PROFILE_ONBOARDING_STATE_VERSION,
             status="completed",
             trigger_source="settings",
             completed_at=STATE_COMPLETED_AT,
@@ -45,7 +48,7 @@ def _snapshot_profile_state(user_bid: str) -> tuple:
     state = UserOnboardingState.query.filter_by(
         user_bid=user_bid,
         scene_key="profile_onboarding",
-        version="profile-v2",
+        version=PROFILE_ONBOARDING_STATE_VERSION,
     ).one()
     return (
         user.learner_profile,
@@ -57,8 +60,8 @@ def _snapshot_profile_state(user_bid: str) -> tuple:
     )
 
 
-def _successful_llm(raw_output: str, captured: dict):
-    def invoke(*args, **kwargs):
+def _successful_llm(raw_output: str, captured: dict) -> object:
+    def invoke(*args: object, **kwargs: object) -> object:
         captured["call_count"] = captured.get("call_count", 0) + 1
         captured["args"] = args
         captured["kwargs"] = kwargs
@@ -67,15 +70,15 @@ def _successful_llm(raw_output: str, captured: dict):
     return invoke
 
 
-def _install_trace_spies(monkeypatch, captured: dict) -> None:
+def _install_trace_spies(monkeypatch: object, captured: dict) -> None:
     trace = object()
     root_span = object()
 
-    def create_trace(**kwargs):
+    def create_trace(**kwargs: object) -> object:
         captured["trace_create"] = kwargs
         return trace, root_span
 
-    def finalize_trace(**kwargs):
+    def finalize_trace(**kwargs: object) -> None:
         captured["trace_finalize"] = kwargs
 
     monkeypatch.setattr(optimizer, "create_trace_with_root_span", create_trace)
@@ -83,8 +86,8 @@ def _install_trace_spies(monkeypatch, captured: dict) -> None:
 
 
 def test_optimize_returns_reviewable_draft_without_changing_business_state(
-    app, monkeypatch
-):
+    app: object, monkeypatch: object
+) -> None:
     user_bid = "profile-optimize-success"
     source = (
         "我在上海做办公室工作，大学学的是工商管理，之前没学过编程。"
@@ -98,6 +101,7 @@ def test_optimize_returns_reviewable_draft_without_changing_business_state(
         "语言风格：请使用亲切直接、简洁易懂的表达，少用术语。"
     )
     captured: dict = {}
+    monkeypatch.setitem(app.config, "LLM_MODEL_1_ID", "profile-model-one")
     monkeypatch.setattr(optimizer, "check_text_content", lambda *_args: True)
     monkeypatch.setattr(
         optimizer,
@@ -120,6 +124,7 @@ def test_optimize_returns_reviewable_draft_without_changing_business_state(
 
     assert result == {"optimized_learner_profile": optimized}
     assert after == before
+    assert captured["args"][3] == "profile-model-one"
     instruction, encoded_profile = captured["args"][4].split("\n", 1)
     assert "Apply the system transformation" in instruction
     assert json.loads(encoded_profile) == {"learner_profile": source}
@@ -162,8 +167,8 @@ def test_optimize_returns_reviewable_draft_without_changing_business_state(
     ],
 )
 def test_optimize_returns_model_text_without_quality_postprocessing(
-    app, monkeypatch, case_suffix, optimized
-):
+    app: object, monkeypatch: object, case_suffix: object, optimized: object
+) -> None:
     user_bid = f"profile-optimize-low-quality-{case_suffix}"
     source = "我在教育行业工作，希望表达简洁准确。"
     captured: dict = {}
@@ -194,11 +199,17 @@ def test_optimize_returns_model_text_without_quality_postprocessing(
 
 @pytest.mark.parametrize(
     ("language", "expected_output_language"),
-    [("zh-CN", "简体中文"), ("en-US", "English"), ("fr-FR", "Français")],
+    [
+        ("zh-CN", "简体中文"),
+        ("en-US", "English"),
+        ("fr-FR", "Français"),
+        ("ar-SA", "العربية"),
+        ("th-TH", "ไทย"),
+    ],
 )
 def test_optimizer_uses_the_current_users_system_language(
-    app, monkeypatch, language, expected_output_language
-):
+    app: object, monkeypatch: object, language: object, expected_output_language: object
+) -> None:
     user_bid = f"profile-optimize-language-{language}"
     captured: dict = {}
     monkeypatch.setattr(optimizer, "check_text_content", lambda *_args: True)
@@ -223,7 +234,7 @@ def test_optimizer_uses_the_current_users_system_language(
     assert "Put each category on a separate line" in system_prompt
 
 
-def test_optimizer_prompt_targets_the_downstream_learner_context_contract():
+def test_optimizer_prompt_targets_the_downstream_learner_context_contract() -> None:
     optimization_prompt = optimizer.load_prompt_template(
         "learner_profile_optimizer"
     ).strip()
@@ -279,7 +290,9 @@ def test_optimizer_prompt_targets_the_downstream_learner_context_contract():
     assert "Translate every foreign-language word or phrase" not in optimization_prompt
 
 
-def test_named_style_input_uses_the_full_optimizer_prompt(app, monkeypatch):
+def test_named_style_input_uses_the_full_optimizer_prompt(
+    app: object, monkeypatch: object
+) -> None:
     captured: dict = {}
     monkeypatch.setattr(optimizer, "check_text_content", lambda *_args: True)
     monkeypatch.setattr(
@@ -303,13 +316,13 @@ def test_named_style_input_uses_the_full_optimizer_prompt(app, monkeypatch):
 
 
 def test_optimize_rejects_moderation_without_calling_llm_or_changing_state(
-    app, monkeypatch
-):
+    app: object, monkeypatch: object
+) -> None:
     user_bid = "profile-optimize-rejected"
     invoked = False
     monkeypatch.setattr(optimizer, "check_text_content", lambda *_args: False)
 
-    def unexpected_invoke(*_args, **_kwargs):
+    def unexpected_invoke(*_args: object, **_kwargs: object) -> object:
         nonlocal invoked
         invoked = True
         yield SimpleNamespace(result="unexpected")
@@ -333,7 +346,9 @@ def test_optimize_rejects_moderation_without_calling_llm_or_changing_state(
     assert after == before
 
 
-def test_optimize_provider_unavailable_moderation_still_allows_llm(app, monkeypatch):
+def test_optimize_provider_unavailable_moderation_still_allows_llm(
+    app: object, monkeypatch: object
+) -> None:
     user_bid = "profile-optimize-moderation-unavailable"
     source = "Provider unavailable source profile"
     captured: dict = {}
@@ -375,15 +390,15 @@ def test_optimize_provider_unavailable_moderation_still_allows_llm(app, monkeypa
     assert audit.text == source
 
 
-def test_optimize_missing_default_model_does_not_call_llm_or_change_state(
-    app, monkeypatch
-):
+def test_optimize_missing_model_one_does_not_call_llm_or_change_state(
+    app: object, monkeypatch: object
+) -> None:
     user_bid = "profile-optimize-missing-model"
     invoked = False
     monkeypatch.setattr(optimizer, "check_text_content", lambda *_args: True)
-    monkeypatch.setitem(app.config, "DEFAULT_LLM_MODEL", "")
+    monkeypatch.setitem(app.config, "LLM_MODEL_1_ID", "")
 
-    def unexpected_invoke(*_args, **_kwargs):
+    def unexpected_invoke(*_args: object, **_kwargs: object) -> object:
         nonlocal invoked
         invoked = True
         yield SimpleNamespace(result="unexpected")
@@ -413,8 +428,8 @@ def test_optimize_missing_default_model_does_not_call_llm_or_change_state(
     [("empty", ""), ("whitespace", "   ")],
 )
 def test_optimize_rejects_empty_model_output_without_changing_state(
-    app, monkeypatch, case_suffix, raw_output
-):
+    app: object, monkeypatch: object, case_suffix: object, raw_output: object
+) -> None:
     user_bid = f"profile-optimize-empty-{case_suffix}"
     captured: dict = {}
     monkeypatch.setattr(optimizer, "check_text_content", lambda *_args: True)
@@ -443,13 +458,16 @@ def test_optimize_rejects_empty_model_output_without_changing_state(
     assert captured["trace_finalize"]["root_span"] is not None
 
 
-def test_optimize_timeout_finalizes_trace_without_changing_state(app, monkeypatch):
+def test_optimize_timeout_finalizes_trace_without_changing_state(
+    app: object, monkeypatch: object
+) -> None:
     user_bid = "profile-optimize-timeout"
     captured: dict = {}
     monkeypatch.setattr(optimizer, "check_text_content", lambda *_args: True)
 
-    def timeout_invoke(*_args, **_kwargs):
-        raise TimeoutError("provider timeout")
+    def timeout_invoke(*_args: object, **_kwargs: object) -> object:
+        message = "provider timeout"
+        raise TimeoutError(message)
         yield  # pragma: no cover
 
     monkeypatch.setattr(optimizer, "invoke_llm", timeout_invoke)
@@ -473,16 +491,20 @@ def test_optimize_timeout_finalizes_trace_without_changing_state(app, monkeypatc
     assert captured["trace_finalize"]["root_span"] is not None
 
 
-def test_optimize_reports_a_wrapped_timeout_as_timeout(app, monkeypatch):
+def test_optimize_reports_a_wrapped_timeout_as_timeout(
+    app: object, monkeypatch: object
+) -> None:
     user_bid = "profile-optimize-wrapped-timeout"
     monkeypatch.setattr(optimizer, "check_text_content", lambda *_args: True)
 
-    def timeout_invoke(*_args, **_kwargs):
+    def timeout_invoke(*_args: object, **_kwargs: object) -> object:
         try:
             # The wrapped-timeout shape is exactly what this test asserts.
-            raise TimeoutError("provider timeout")  # noqa: TRY301
+            message = "provider timeout"
+            raise TimeoutError(message)  # noqa: TRY301
         except TimeoutError as exc:
-            raise AppError("wrapped provider failure", 9999) from exc
+            message = "wrapped provider failure"
+            raise AppError(message, 9999) from exc
         yield  # pragma: no cover
 
     monkeypatch.setattr(optimizer, "invoke_llm", timeout_invoke)
@@ -510,13 +532,17 @@ def test_optimize_reports_a_wrapped_timeout_as_timeout(app, monkeypatch):
     ],
 )
 def test_optimize_reports_runtime_failure_reason_without_changing_state(
-    app, monkeypatch, provider_error, expected_code, expected_message
-):
+    app: object,
+    monkeypatch: object,
+    provider_error: object,
+    expected_code: object,
+    expected_message: object,
+) -> None:
     user_bid = f"profile-optimize-runtime-error-{expected_code}"
     captured: dict = {}
     monkeypatch.setattr(optimizer, "check_text_content", lambda *_args: True)
 
-    def failed_invoke(*_args, **_kwargs):
+    def failed_invoke(*_args: object, **_kwargs: object) -> object:
         raise provider_error
         yield  # pragma: no cover
 
@@ -541,14 +567,15 @@ def test_optimize_reports_runtime_failure_reason_without_changing_state(
 
 
 def test_optimize_reports_moderation_failure_reason_without_calling_llm(
-    app, monkeypatch
-):
+    app: object, monkeypatch: object
+) -> None:
     invoked = False
 
-    def failed_moderation(*_args):
-        raise RuntimeError("moderation unavailable")
+    def failed_moderation(*_args: object) -> None:
+        message = "moderation unavailable"
+        raise RuntimeError(message)
 
-    def unexpected_invoke(*_args, **_kwargs):
+    def unexpected_invoke(*_args: object, **_kwargs: object) -> object:
         nonlocal invoked
         invoked = True
         yield SimpleNamespace(result="unexpected")
@@ -570,11 +597,11 @@ def test_optimize_reports_moderation_failure_reason_without_calling_llm(
 
 @pytest.mark.parametrize("learner_profile", ["", "   ", "x" * 1001])
 def test_optimize_rejects_invalid_input_before_moderation(
-    app, monkeypatch, learner_profile
-):
+    app: object, monkeypatch: object, learner_profile: object
+) -> None:
     moderated = False
 
-    def unexpected_moderation(*_args):
+    def unexpected_moderation(*_args: object) -> object:
         nonlocal moderated
         moderated = True
         return True

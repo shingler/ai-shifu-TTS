@@ -6,14 +6,18 @@ import hashlib
 import secrets
 import string
 from dataclasses import dataclass
-from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
 
-from flask import Flask, has_app_context, has_request_context, request
+from flask import Flask, has_request_context, request
 from flaskr.common.config import get_config as get_common_config
 from flaskr.dao import db
+from flaskr.dao.uow import (
+    app_context_scope,
+    require_transaction_owner,
+    unit_of_work,
+)
 from flaskr.service.billing.api import (
     ReferralPlanRewardRequest,
 )
@@ -53,12 +57,17 @@ from .models import (
 )
 from .reward_queue import build_referral_reward_queue
 
+if TYPE_CHECKING:
+    from datetime import datetime
+
 _INVITE_CODE_ALPHABET = string.ascii_uppercase + string.digits
 _INVITE_CODE_LENGTH = 8
 
 
 @dataclass(slots=True, frozen=True)
 class InviteEventInput:
+    """Carry request context for a referral invite event."""
+
     event_type: str
     invite_code: str = ""
     landing_path: str = ""
@@ -71,6 +80,8 @@ class InviteEventInput:
 
 @dataclass(slots=True, frozen=True)
 class InviteEventResult:
+    """Capture the persisted outcome of a referral invite event."""
+
     success: bool
     session_id: str
     recognized: bool
@@ -78,6 +89,8 @@ class InviteEventResult:
 
 @dataclass(slots=True, frozen=True)
 class ReferralPostAuthResult:
+    """Capture referral work completed after authentication."""
+
     created_relation: bool = False
     created_reward: bool = False
     relation_bid: str = ""
@@ -86,6 +99,7 @@ class ReferralPostAuthResult:
 
 
 def hash_referral_context(value: object) -> str:
+    """Hash referral context."""
     normalized = str(value or "").strip()
     if not normalized:
         return ""
@@ -93,11 +107,12 @@ def hash_referral_context(value: object) -> str:
 
 
 def extract_referral_post_auth_fields(
-    payload: dict[str, Any],
+    payload: dict[str, object],
     *,
     client_ip: object = "",
     user_agent: object = "",
 ) -> dict[str, str]:
+    """Extract referral post auth fields."""
     return {
         "invite_code": str(payload.get("invite_code") or "").strip(),
         "referral_session_id": str(payload.get("referral_session_id") or "").strip(),
@@ -107,18 +122,6 @@ def extract_referral_post_auth_fields(
         "client_ip_hash": hash_referral_context(client_ip),
         "user_agent_hash": hash_referral_context(user_agent),
     }
-
-
-def _with_app_context(app: Flask):
-    return app.app_context() if not has_app_context() else _NullContext()
-
-
-class _NullContext:
-    def __enter__(self) -> None:
-        return None
-
-    def __exit__(self, *_exc) -> bool | None:
-        return False
 
 
 def _feature_flag_enabled(feature_flag_key: str) -> bool:
@@ -153,6 +156,7 @@ def _campaign_runtime_enabled(campaign: ReferralCampaign, *, now: datetime) -> b
 
 
 def load_active_campaign(*, now: datetime | None = None) -> ReferralCampaign | None:
+    """Load active campaign."""
     resolved_now = now or now_utc()
     candidates = (
         ReferralCampaign.query.filter(
@@ -181,6 +185,7 @@ def load_campaign_by_bid(
     *,
     now: datetime | None = None,
 ) -> ReferralCampaign | None:
+    """Load campaign by BID."""
     campaign = (
         ReferralCampaign.query.filter(
             ReferralCampaign.deleted == 0,
@@ -202,6 +207,7 @@ def select_reward_rule(
     trigger_event: str = REFERRAL_TRIGGER_INVITED_REGISTRATION,
     now: datetime | None = None,
 ) -> ReferralCampaignRewardRule | None:
+    """Select reward rule."""
     resolved_now = now or now_utc()
     candidates = (
         ReferralCampaignRewardRule.query.filter(
@@ -237,17 +243,20 @@ def _load_active_invite_code(
     *,
     campaign_bid: str,
     inviter_user_bid: str,
+    for_update: bool = False,
 ) -> ReferralInviteCode | None:
-    return (
-        ReferralInviteCode.query.filter(
-            ReferralInviteCode.deleted == 0,
-            ReferralInviteCode.campaign_bid == campaign_bid,
-            ReferralInviteCode.inviter_user_bid == inviter_user_bid,
-            ReferralInviteCode.status == REFERRAL_INVITE_CODE_STATUS_ACTIVE,
-        )
-        .order_by(ReferralInviteCode.id.desc())
-        .first()
-    )
+    query = ReferralInviteCode.query.filter(
+        ReferralInviteCode.deleted == 0,
+        ReferralInviteCode.campaign_bid == campaign_bid,
+        ReferralInviteCode.inviter_user_bid == inviter_user_bid,
+        ReferralInviteCode.status == REFERRAL_INVITE_CODE_STATUS_ACTIVE,
+    ).order_by(ReferralInviteCode.id.desc())
+    if for_update:
+        # A locking read returns the latest committed row even under
+        # REPEATABLE READ, where a plain SELECT would keep serving the
+        # transaction's earlier snapshot.
+        query = query.with_for_update()
+    return query.first()
 
 
 def _create_invite_code_with_retry(
@@ -265,20 +274,30 @@ def _create_invite_code_with_retry(
             status=REFERRAL_INVITE_CODE_STATUS_ACTIVE,
             generated_at=now_utc(),
         )
+        # A savepoint keeps a code collision local to this insert: the
+        # caller's unit of work (and anything it already staged) survives.
+        savepoint = db.session.begin_nested()
         db.session.add(invite_code)
         try:
             db.session.flush()
         except IntegrityError:
-            db.session.rollback()
+            savepoint.rollback()
+            # The conflict may be this inviter's own code inserted by a
+            # concurrent request after our snapshot was taken: only a
+            # locking read can see it, otherwise every retry would collide
+            # again on the (campaign, inviter) uniqueness.
             existing = _load_active_invite_code(
                 campaign_bid=campaign_bid,
                 inviter_user_bid=inviter_user_bid,
+                for_update=True,
             )
             if existing is not None:
                 return existing
         else:
+            savepoint.commit()
             return invite_code
-    raise RuntimeError("unable to generate referral invite code")
+    message = "unable to generate referral invite code"
+    raise RuntimeError(message)
 
 
 def _reward_count_for_rule(
@@ -328,7 +347,8 @@ def _resolve_public_origin() -> str:
             if normalized_origin:
                 return normalized_origin
         return _normalize_origin(f"{request.scheme}://{request.host}")
-    raise RuntimeError("HOST_URL must be configured to build referral invite URLs")
+    message = "HOST_URL must be configured to build referral invite URLs"
+    raise RuntimeError(message)
 
 
 def _normalize_origin(value: str) -> str:
@@ -337,15 +357,16 @@ def _normalize_origin(value: str) -> str:
         return ""
     parsed = urlsplit(raw_value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise RuntimeError("HOST_URL must include http(s) scheme and host")
+        message = "HOST_URL must include http(s) scheme and host"
+        raise RuntimeError(message)
     if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
-        raise RuntimeError(
-            "HOST_URL must be an origin without path, query, or fragment"
-        )
+        message = "HOST_URL must be an origin without path, query, or fragment"
+        raise RuntimeError(message)
     return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
 
 
 def mask_identifier_snapshot(value: str) -> str:
+    """Mask identifier snapshot."""
     raw_value = str(value or "").strip()
     if not raw_value:
         return ""
@@ -371,8 +392,8 @@ def mask_identifier_snapshot(value: str) -> str:
 
 
 def _mask_reward_queue_mobile_snapshots(
-    reward_queue: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+    reward_queue: list[dict[str, object]],
+) -> list[dict[str, object]]:
     masked_queue: list[dict[str, Any]] = []
     for item in reward_queue:
         next_item = dict(item)
@@ -384,10 +405,12 @@ def _mask_reward_queue_mobile_snapshots(
 
 
 def build_invite_profile(app: Flask, *, inviter_user_bid: str) -> InviteProfileDTO:
-    with _with_app_context(app):
+    """Build invite profile."""
+    with app_context_scope(app):
         normalized_inviter = str(inviter_user_bid or "").strip()
         if not normalized_inviter:
-            raise ValueError("inviter_user_bid is required")
+            message = "inviter_user_bid is required"
+            raise ValueError(message)
         campaign = load_active_campaign()
         if campaign is None:
             return InviteProfileDTO.unavailable()
@@ -400,12 +423,12 @@ def build_invite_profile(app: Flask, *, inviter_user_bid: str) -> InviteProfileD
             inviter_user_bid=normalized_inviter,
         )
         if invite_code is None:
-            invite_code = _create_invite_code_with_retry(
-                app,
-                campaign_bid=campaign.campaign_bid,
-                inviter_user_bid=normalized_inviter,
-            )
-            db.session.commit()
+            with unit_of_work():
+                invite_code = _create_invite_code_with_retry(
+                    app,
+                    campaign_bid=campaign.campaign_bid,
+                    inviter_user_bid=normalized_inviter,
+                )
 
         granted_count = _reward_count_for_rule(
             campaign_bid=campaign.campaign_bid,
@@ -444,7 +467,8 @@ def build_invite_profile(app: Flask, *, inviter_user_bid: str) -> InviteProfileD
 
 
 def build_invite_preview(app: Flask, *, invite_code: str) -> InvitePreviewDTO:
-    with _with_app_context(app):
+    """Build invite preview."""
+    with app_context_scope(app):
         normalized_code = str(invite_code or "").strip().upper()
         if not normalized_code:
             return InvitePreviewDTO(recognized=False)
@@ -489,10 +513,12 @@ def _load_invite_code(invite_code: str) -> ReferralInviteCode | None:
 
 
 def record_invite_event(app: Flask, payload: InviteEventInput) -> InviteEventResult:
-    with _with_app_context(app):
+    """Record invite event."""
+    with app_context_scope(app), unit_of_work():
         event_type = str(payload.event_type or "").strip()
         if event_type not in REFERRAL_INVITE_EVENT_TYPES:
-            raise ValueError("unsupported referral invite event type")
+            message = "unsupported referral invite event type"
+            raise ValueError(message)
         normalized_code = str(payload.invite_code or "").strip().upper()
         invite_code = _load_invite_code(normalized_code) if normalized_code else None
         campaign_bid = ""
@@ -524,7 +550,6 @@ def record_invite_event(app: Flask, payload: InviteEventInput) -> InviteEventRes
                 metadata_json=metadata,
             )
         )
-        db.session.commit()
         return InviteEventResult(
             success=True,
             session_id=session_id,
@@ -610,7 +635,8 @@ def grant_referral_plan_reward(
     app: Flask,
     *,
     reward: ReferralInviteReward,
-) -> dict[str, Any]:
+) -> dict[str, object]:
+    """Grant referral plan reward."""
     request = ReferralPlanRewardRequest(
         reward_bid=reward.reward_bid,
         inviter_user_bid=reward.inviter_user_bid,
@@ -642,7 +668,7 @@ def _mark_reward_grant_succeeded(
     *,
     relation_bid: str,
     reward_bid: str,
-    billing_artifacts: dict[str, Any],
+    billing_artifacts: dict[str, object],
 ) -> None:
     relation = ReferralInviteRelation.query.filter(
         ReferralInviteRelation.deleted == 0,
@@ -655,7 +681,6 @@ def _mark_reward_grant_succeeded(
     reward.billing_artifacts = dict(billing_artifacts or {})
     relation.relation_status = REFERRAL_RELATION_STATUS_REWARD_GENERATED
     db.session.add_all([relation, reward])
-    db.session.commit()
 
 
 def _mark_reward_grant_failed(
@@ -676,7 +701,6 @@ def _mark_reward_grant_failed(
         "last_failed_at": to_utc_iso(now_utc()),
     }
     db.session.add(reward)
-    db.session.commit()
 
 
 def retry_pending_referral_rewards(
@@ -684,9 +708,13 @@ def retry_pending_referral_rewards(
     *,
     limit: int = 100,
     dry_run: bool = True,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, object]]:
     """Retry generated referral rewards that do not yet have billing artifacts."""
-    with _with_app_context(app):
+    # One unit of work per reward, plus a second one to record a failed grant:
+    # nested, no row would commit on its own and a conflict would surface at
+    # the caller's commit instead of in the per-row handler.
+    require_transaction_owner("pending referral reward retry", app)
+    with app_context_scope(app):
         safe_limit = max(min(int(limit or 100), 500), 1)
         rewards = (
             ReferralInviteReward.query.filter(
@@ -724,12 +752,13 @@ def retry_pending_referral_rewards(
                 )
                 continue
             try:
-                billing_artifacts = grant_referral_plan_reward(app, reward=reward)
-                _mark_reward_grant_succeeded(
-                    relation_bid=relation.relation_bid,
-                    reward_bid=reward.reward_bid,
-                    billing_artifacts=billing_artifacts,
-                )
+                with unit_of_work():
+                    billing_artifacts = grant_referral_plan_reward(app, reward=reward)
+                    _mark_reward_grant_succeeded(
+                        relation_bid=relation.relation_bid,
+                        reward_bid=reward.reward_bid,
+                        billing_artifacts=billing_artifacts,
+                    )
                 results.append(
                     {
                         "reward_bid": reward.reward_bid,
@@ -739,8 +768,8 @@ def retry_pending_referral_rewards(
                     }
                 )
             except Exception as exc:  # repair must continue per row.
-                db.session.rollback()
-                _mark_reward_grant_failed(reward_bid=reward.reward_bid, error=exc)
+                with unit_of_work():
+                    _mark_reward_grant_failed(reward_bid=reward.reward_bid, error=exc)
                 results.append(
                     {
                         "reward_bid": reward.reward_bid,
@@ -754,9 +783,13 @@ def retry_pending_referral_rewards(
 
 def process_referral_post_auth(
     app: Flask,
-    context: Any,
+    context: object,
 ) -> ReferralPostAuthResult:
-    with _with_app_context(app):
+    """Process referral post auth."""
+    # Three consecutive units of work (relation + reward, grant, outcome):
+    # nested, none of them would be durable on their own.
+    require_transaction_owner("referral post-auth binding", app)
+    with app_context_scope(app):
         if not context.created_new_user:
             return ReferralPostAuthResult()
         normalized_code = str(context.invite_code or "").strip().upper()
@@ -791,79 +824,89 @@ def process_referral_post_auth(
             )
 
         now = now_utc()
-        relation = ReferralInviteRelation(
-            relation_bid=generate_id(app),
-            campaign_bid=campaign.campaign_bid,
-            reward_rule_bid=rule.reward_rule_bid,
-            invite_code=invite_code.invite_code,
-            inviter_user_bid=invite_code.inviter_user_bid,
-            invitee_user_bid=context.user_id,
-            invitee_mobile_snapshot=_load_invitee_mobile_snapshot(context.user_id),
-            bound_at=now,
-            registration_source="phone" if context.source == "sms" else context.source,
-            reward_eligible=1,
-            relation_status=REFERRAL_RELATION_STATUS_REGISTERED,
-            metadata_json={
-                "referral_session_id": context.referral_session_id or "",
-                "referral_entry_source": context.referral_entry_source or "",
-                "client_ip_hash": context.client_ip_hash or "",
-                "user_agent_hash": context.user_agent_hash or "",
-            },
-        )
-        db.session.add(relation)
-        db.session.flush()
+        # Step 1 - the relation and its reward row must persist on their own:
+        # a failed billing grant below is repaired later from this row.
+        with unit_of_work():
+            relation = ReferralInviteRelation(
+                relation_bid=generate_id(app),
+                campaign_bid=campaign.campaign_bid,
+                reward_rule_bid=rule.reward_rule_bid,
+                invite_code=invite_code.invite_code,
+                inviter_user_bid=invite_code.inviter_user_bid,
+                invitee_user_bid=context.user_id,
+                invitee_mobile_snapshot=_load_invitee_mobile_snapshot(context.user_id),
+                bound_at=now,
+                registration_source=(
+                    "phone" if context.source == "sms" else context.source
+                ),
+                reward_eligible=1,
+                relation_status=REFERRAL_RELATION_STATUS_REGISTERED,
+                metadata_json={
+                    "referral_session_id": context.referral_session_id or "",
+                    "referral_entry_source": context.referral_entry_source or "",
+                    "client_ip_hash": context.client_ip_hash or "",
+                    "user_agent_hash": context.user_agent_hash or "",
+                },
+            )
+            db.session.add(relation)
+            db.session.flush()
 
-        if _cap_reached(
-            rule=rule,
-            inviter_user_bid=invite_code.inviter_user_bid,
-            campaign_bid=campaign.campaign_bid,
-        ):
-            relation.relation_status = REFERRAL_RELATION_STATUS_REWARD_SKIPPED_CAP
+            if _cap_reached(
+                rule=rule,
+                inviter_user_bid=invite_code.inviter_user_bid,
+                campaign_bid=campaign.campaign_bid,
+            ):
+                relation.relation_status = REFERRAL_RELATION_STATUS_REWARD_SKIPPED_CAP
+                reward = _build_reward_from_relation(
+                    app,
+                    relation=relation,
+                    rule=rule,
+                    reward_status=REFERRAL_REWARD_STATUS_SKIPPED_CAP,
+                )
+                db.session.add(reward)
+                db.session.flush()
+                return ReferralPostAuthResult(
+                    created_relation=True,
+                    created_reward=True,
+                    relation_bid=relation.relation_bid,
+                    reward_bid=reward.reward_bid,
+                    skipped_reason="cap_reached",
+                )
+
             reward = _build_reward_from_relation(
                 app,
                 relation=relation,
                 rule=rule,
-                reward_status=REFERRAL_REWARD_STATUS_SKIPPED_CAP,
+                reward_status=REFERRAL_REWARD_STATUS_GENERATED,
             )
             db.session.add(reward)
-            db.session.commit()
-            return ReferralPostAuthResult(
-                created_relation=True,
-                created_reward=True,
-                relation_bid=relation.relation_bid,
-                reward_bid=reward.reward_bid,
-                skipped_reason="cap_reached",
-            )
+            db.session.flush()
+            relation_bid = relation.relation_bid
+            reward_bid = reward.reward_bid
 
-        reward = _build_reward_from_relation(
-            app,
-            relation=relation,
-            rule=rule,
-            reward_status=REFERRAL_REWARD_STATUS_GENERATED,
-        )
-        db.session.add(reward)
-        db.session.flush()
-        db.session.commit()
+        # Step 2 - grant the billing reward and mark the outcome; a failure
+        # rolls this step back and is recorded in its own unit of work.
         try:
-            billing_artifacts = grant_referral_plan_reward(app, reward=reward)
-            _mark_reward_grant_succeeded(
-                relation_bid=relation.relation_bid,
-                reward_bid=reward.reward_bid,
-                billing_artifacts=billing_artifacts,
-            )
+            with unit_of_work():
+                billing_artifacts = grant_referral_plan_reward(app, reward=reward)
+                _mark_reward_grant_succeeded(
+                    relation_bid=relation_bid,
+                    reward_bid=reward_bid,
+                    billing_artifacts=billing_artifacts,
+                )
         except Exception as exc:  # referral grant is best-effort.
-            db.session.rollback()
-            _mark_reward_grant_failed(reward_bid=reward.reward_bid, error=exc)
+            with unit_of_work():
+                _mark_reward_grant_failed(reward_bid=reward_bid, error=exc)
             return ReferralPostAuthResult(
                 created_relation=True,
                 created_reward=True,
-                relation_bid=relation.relation_bid,
-                reward_bid=reward.reward_bid,
+                relation_bid=relation_bid,
+                reward_bid=reward_bid,
                 skipped_reason="billing_grant_failed",
             )
         return ReferralPostAuthResult(
             created_relation=True,
             created_reward=True,
-            relation_bid=relation.relation_bid,
-            reward_bid=reward.reward_bid,
+            relation_bid=relation_bid,
+            reward_bid=reward_bid,
         )

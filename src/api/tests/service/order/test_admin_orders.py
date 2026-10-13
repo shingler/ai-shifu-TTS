@@ -1,3 +1,5 @@
+"""Verify administrative order listing, filtering, and detail responses."""
+
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -15,7 +17,9 @@ from flaskr.service.order.admin import (
     ORDER_SOURCE_OPEN_API,
     ORDER_SOURCE_USER_PURCHASE,
     _apply_order_source_filter,
+    _apply_payment_channel_filter,
     _load_matching_user_bids_for_keyword,
+    _resolve_order_display_payment_channel,
     _resolve_order_source,
     get_operator_order_detail,
     get_operator_order_overview,
@@ -32,7 +36,10 @@ from sqlalchemy.sql import column
 
 
 class DummyOrder:
+    """Simulate order behavior for tests."""
+
     def __init__(self) -> None:
+        """Initialize the fixed order fields used by admin DTO tests."""
         self.order_bid = "order-1"
         self.shifu_bid = "shifu-1"
         self.user_bid = "user-1"
@@ -46,12 +53,70 @@ class DummyOrder:
 
 
 class DummyShifu:
+    """Simulate shifu behavior for tests."""
+
     def __init__(self) -> None:
+        """Expose the fixed course title used by admin order tests."""
         self.title = "Demo Course"
 
 
+def test_free_order_legacy_default_uses_market_payment_channel() -> None:
+    order = DummyOrder()
+    order.paid_price = "0.00"
+    order.payment_channel = "pingxx"
+
+    with patch(
+        "flaskr.service.order.admin.resolve_market_payment_provider",
+        return_value="stripe",
+    ):
+        assert _resolve_order_display_payment_channel(order) == "stripe"
+
+
+def test_paid_order_keeps_recorded_payment_channel() -> None:
+    order = DummyOrder()
+    order.payment_channel = "pingxx"
+
+    with patch(
+        "flaskr.service.order.admin.resolve_market_payment_provider"
+    ) as resolver:
+        assert _resolve_order_display_payment_channel(order) == "pingxx"
+        resolver.assert_not_called()
+
+
+def test_stripe_filter_includes_legacy_free_pingxx_orders() -> None:
+    query = MagicMock()
+    query.filter.return_value = query
+
+    with patch(
+        "flaskr.service.order.admin.resolve_market_payment_provider",
+        return_value="stripe",
+    ):
+        _apply_payment_channel_filter(query, "stripe")
+
+    predicate = str(query.filter.call_args.args[0])
+    assert "payment_channel" in predicate
+    assert "paid_price" in predicate
+    assert " OR " in predicate
+
+
+def test_pingxx_filter_excludes_legacy_free_orders_on_stripe_market() -> None:
+    query = MagicMock()
+    query.filter.return_value = query
+
+    with patch(
+        "flaskr.service.order.admin.resolve_market_payment_provider",
+        return_value="stripe",
+    ):
+        _apply_payment_channel_filter(query, "pingxx")
+
+    predicates = query.filter.call_args.args
+    assert len(predicates) == 2
+    assert "payment_channel" in str(predicates[0])
+    assert "paid_price" in str(predicates[1])
+
+
 def _mock_operator(
-    monkeypatch,
+    monkeypatch: object,
     user_id: str = "operator-1",
     *,
     is_operator: bool = True,
@@ -69,7 +134,7 @@ def _mock_operator(
     )
 
 
-def test_list_orders_returns_page_dto():
+def test_list_orders_returns_page_dto() -> None:
     app = Flask(__name__)
     order = DummyOrder()
 
@@ -108,7 +173,7 @@ def test_list_orders_returns_page_dto():
     assert result.data[0].updated_at == datetime(2025, 1, 2, 12, 0, 0)
 
 
-def test_get_order_detail_returns_detail_dto():
+def test_get_order_detail_returns_detail_dto() -> None:
     app = Flask(__name__)
     order = DummyOrder()
 
@@ -148,7 +213,7 @@ def test_get_order_detail_returns_detail_dto():
     assert detail.order.updated_at == datetime(2025, 1, 2, 12, 0, 0)
 
 
-def test_list_operator_orders_returns_page_dto():
+def test_list_operator_orders_returns_page_dto() -> None:
     app = Flask(__name__)
     order = DummyOrder()
 
@@ -187,7 +252,7 @@ def test_list_operator_orders_returns_page_dto():
     assert result.data[0].updated_at == datetime(2025, 1, 2, 12, 0, 0)
 
 
-def test_list_operator_orders_returns_derived_source_and_coupon_codes():
+def test_list_operator_orders_returns_derived_source_and_coupon_codes() -> None:
     app = Flask(__name__)
     order = DummyOrder()
     order.payment_channel = "pingxx"
@@ -228,7 +293,7 @@ def test_list_operator_orders_returns_derived_source_and_coupon_codes():
     assert result.data[0].coupon_codes == ["FREE100"]
 
 
-def test_list_operator_orders_applies_combined_course_query():
+def test_list_operator_orders_applies_combined_course_query() -> None:
     app = Flask(__name__)
     order = DummyOrder()
 
@@ -273,7 +338,7 @@ def test_list_operator_orders_applies_combined_course_query():
     assert isinstance(result, PageNationDTO)
 
 
-def test_list_operator_orders_applies_order_source_filter():
+def test_list_operator_orders_applies_order_source_filter() -> None:
     app = Flask(__name__)
     order = DummyOrder()
 
@@ -319,7 +384,7 @@ def test_list_operator_orders_applies_order_source_filter():
     assert isinstance(result, PageNationDTO)
 
 
-def test_list_operator_orders_reuses_preparsed_status_and_datetimes():
+def test_list_operator_orders_reuses_preparsed_status_and_datetimes() -> None:
     app = Flask(__name__)
     order = DummyOrder()
     start_time = datetime(2026, 4, 1, 0, 0, 0)
@@ -369,7 +434,7 @@ def test_list_operator_orders_reuses_preparsed_status_and_datetimes():
     assert isinstance(result, PageNationDTO)
 
 
-def test_get_operator_order_overview_returns_aggregates():
+def test_get_operator_order_overview_returns_aggregates() -> None:
     app = Flask(__name__)
     summary = SimpleNamespace(
         total_order_count=12,
@@ -397,7 +462,7 @@ def test_get_operator_order_overview_returns_aggregates():
     assert result.paid_amount_total == "456.78"
 
 
-def test_get_operator_order_detail_returns_detail_dto():
+def test_get_operator_order_detail_returns_detail_dto() -> None:
     app = Flask(__name__)
     order = DummyOrder()
 
@@ -437,9 +502,9 @@ def test_get_operator_order_detail_returns_detail_dto():
 
 
 def test_admin_operation_orders_route_requires_operator(
-    test_client,
-    monkeypatch,
-):
+    test_client: object,
+    monkeypatch: object,
+) -> None:
     _mock_operator(monkeypatch, is_operator=False)
 
     response = test_client.get(
@@ -453,9 +518,9 @@ def test_admin_operation_orders_route_requires_operator(
 
 
 def test_admin_operation_order_detail_route_requires_operator(
-    test_client,
-    monkeypatch,
-):
+    test_client: object,
+    monkeypatch: object,
+) -> None:
     _mock_operator(monkeypatch, is_operator=False)
 
     response = test_client.get(
@@ -469,9 +534,9 @@ def test_admin_operation_order_detail_route_requires_operator(
 
 
 def test_admin_operation_credit_orders_route_requires_operator(
-    test_client,
-    monkeypatch,
-):
+    test_client: object,
+    monkeypatch: object,
+) -> None:
     _mock_operator(monkeypatch, is_operator=False)
 
     response = test_client.get(
@@ -485,9 +550,9 @@ def test_admin_operation_credit_orders_route_requires_operator(
 
 
 def test_admin_operation_credit_order_detail_route_requires_operator(
-    test_client,
-    monkeypatch,
-):
+    test_client: object,
+    monkeypatch: object,
+) -> None:
     _mock_operator(monkeypatch, is_operator=False)
 
     response = test_client.get(
@@ -501,9 +566,9 @@ def test_admin_operation_credit_order_detail_route_requires_operator(
 
 
 def test_admin_operation_credit_orders_route_returns_operator_page(
-    test_client,
-    monkeypatch,
-):
+    test_client: object,
+    monkeypatch: object,
+) -> None:
     _mock_operator(monkeypatch)
 
     expected = OperatorCreditOrdersPageDTO(
@@ -566,9 +631,9 @@ def test_admin_operation_credit_orders_route_returns_operator_page(
 
 
 def test_admin_operation_credit_orders_route_forwards_available_credit_filter(
-    test_client,
-    monkeypatch,
-):
+    test_client: object,
+    monkeypatch: object,
+) -> None:
     _mock_operator(monkeypatch)
 
     expected = OperatorCreditOrdersPageDTO(
@@ -600,9 +665,9 @@ def test_admin_operation_credit_orders_route_forwards_available_credit_filter(
 
 
 def test_admin_operation_credit_orders_route_rejects_invalid_available_credit_filter(
-    test_client,
-    monkeypatch,
-):
+    test_client: object,
+    monkeypatch: object,
+) -> None:
     _mock_operator(monkeypatch)
 
     response = test_client.get(
@@ -621,9 +686,9 @@ def test_admin_operation_credit_orders_route_rejects_invalid_available_credit_fi
 
 
 def test_admin_operation_credit_order_detail_route_returns_detail(
-    test_client,
-    monkeypatch,
-):
+    test_client: object,
+    monkeypatch: object,
+) -> None:
     _mock_operator(monkeypatch)
 
     expected = OperatorCreditOrderDetailDTO(
@@ -675,7 +740,7 @@ def test_admin_operation_credit_order_detail_route_returns_detail(
     detail_mock.assert_called_once()
 
 
-def test_resolve_order_source_prefers_manual_open_api_and_coupon():
+def test_resolve_order_source_prefers_manual_open_api_and_coupon() -> None:
     source, _ = _resolve_order_source(
         payment_channel="manual",
         coupon_codes=[],
@@ -705,7 +770,7 @@ def test_resolve_order_source_prefers_manual_open_api_and_coupon():
     assert source == ORDER_SOURCE_USER_PURCHASE
 
 
-def test_load_matching_user_bids_for_keyword_ignores_deleted_credentials():
+def test_load_matching_user_bids_for_keyword_ignores_deleted_credentials() -> None:
     user_query = MagicMock()
     user_filtered_query = MagicMock()
     user_query.filter.return_value = user_filtered_query
@@ -746,7 +811,7 @@ def test_load_matching_user_bids_for_keyword_ignores_deleted_credentials():
     assert any("deleted" in str(arg) for arg in filter_args)
 
 
-def test_apply_order_source_filter_treats_null_payment_channel_as_non_special():
+def test_apply_order_source_filter_treats_null_payment_channel_as_non_special() -> None:
     query_mock = MagicMock()
     query_mock.filter.return_value = query_mock
     coupon_order_bid_subquery = SimpleNamespace(

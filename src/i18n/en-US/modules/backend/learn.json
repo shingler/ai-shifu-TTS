@@ -1,15 +1,18 @@
 {
   "__namespace__": "server.learn",
   "__flat__": {
+    "agentTurnCapacity": "Too many lessons are running right now. Please try again in a moment.",
     "askProviderAuthFailed": "Knowledge base authentication failed. Please check the API Key and Client ID.",
     "askProviderNoResults": "No relevant knowledge base content was found.",
     "askProviderNotMember": "The Dedao Brain account has no active membership, so the OpenAPI is unavailable.",
     "askProviderRateLimited": "The knowledge base request rate or quota limit was reached. Please try again later.",
     "askProviderTimeout": "The external knowledge service timed out. Please try again later.",
     "askProviderUnavailable": "The external knowledge service is temporarily unavailable.",
+    "continueButton": "Continue",
     "generatedBlockNotFound": "Generated block not found",
     "invalidAction": "Invalid action",
     "lessonFeedbackCommentPlaceholder": "Optional: leave your feedback",
+    "liveFollowUpCapacityExceeded": "Voice conversation capacity has been reached. Please try again later.",
     "llmStreamInterrupted": "The generation connection was interrupted. Please refresh and try again.",
     "nextChapterButton": "Next",
     "outputInProgress": "Content is still generating. Please wait before retrying.",

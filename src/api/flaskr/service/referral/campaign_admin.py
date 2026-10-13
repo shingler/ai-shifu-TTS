@@ -6,10 +6,10 @@ import json
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from math import ceil
-from typing import Any
+from typing import TYPE_CHECKING
 
-from flask import Flask
 from flaskr.dao import db
+from flaskr.dao.uow import app_context_scope, unit_of_work
 from flaskr.service.billing.consts import (
     BILLING_PRODUCT_STATUS_ACTIVE,
     BILLING_PRODUCT_TYPE_PLAN,
@@ -48,6 +48,10 @@ from .models import (
     ReferralInviteReward,
 )
 
+if TYPE_CHECKING:
+    from flask import Flask
+    from flask_sqlalchemy.query import Query
+
 REFERRAL_CAMPAIGN_STATUS_FILTERS = {
     "active",
     "not_started",
@@ -66,8 +70,9 @@ def list_operator_referral_campaigns(
     *,
     page_index: int,
     page_size: int,
-    filters: dict[str, Any],
-) -> dict[str, Any]:
+    filters: dict[str, object],
+) -> dict[str, object]:
+    """Return operator referral campaigns."""
     with app.app_context():
         safe_page_index, safe_page_size = normalize_pagination(page_index, page_size)
         query = ReferralCampaign.query.filter(ReferralCampaign.deleted == 0)
@@ -158,7 +163,8 @@ def get_operator_referral_campaign_detail(
     app: Flask,
     *,
     campaign_bid: str,
-) -> dict[str, Any]:
+) -> dict[str, object]:
+    """Return operator referral campaign detail."""
     with app.app_context():
         campaign = _load_campaign_or_404(campaign_bid)
         rule = _load_latest_rule(campaign.campaign_bid)
@@ -187,9 +193,10 @@ def get_operator_referral_campaign_detail(
 def create_operator_referral_campaign(
     app: Flask,
     operator_user_bid: str,
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    with app.app_context():
+    payload: dict[str, object],
+) -> dict[str, object]:
+    """Create operator referral campaign."""
+    with app_context_scope(app), unit_of_work():
         data = _normalize_payload(payload, is_create=True)
         _assert_campaign_code_available(data["campaign_code"])
         _assert_product_code_is_active_plan(data["reward_product_code"])
@@ -229,7 +236,6 @@ def create_operator_referral_campaign(
             ),
         )
         db.session.add_all([campaign, rule])
-        db.session.commit()
         return {"campaign_bid": campaign.campaign_bid}
 
 
@@ -237,9 +243,10 @@ def update_operator_referral_campaign(
     app: Flask,
     operator_user_bid: str,
     campaign_bid: str,
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    with app.app_context():
+    payload: dict[str, object],
+) -> dict[str, object]:
+    """Update operator referral campaign."""
+    with app_context_scope(app), unit_of_work():
         campaign = _load_campaign_or_404(campaign_bid)
         rule = _load_latest_rule(campaign.campaign_bid)
         data = _normalize_payload(payload, is_create=False, existing=campaign)
@@ -260,7 +267,9 @@ def update_operator_referral_campaign(
         campaign.invitee_benefit_policy = data["invitee_benefit_policy"]
         campaign.rules_copy_i18n_key = data["rules_copy_i18n_key"]
         metadata = (
-            campaign.metadata_json if isinstance(campaign.metadata_json, dict) else {}
+            dict(campaign.metadata_json)
+            if isinstance(campaign.metadata_json, dict)
+            else {}
         )
         metadata["operator_user_bid"] = _normalize_text(operator_user_bid)
         campaign.metadata_json = metadata
@@ -292,7 +301,6 @@ def update_operator_referral_campaign(
                     else REFERRAL_RULE_STATUS_PAUSED
                 )
         db.session.add(campaign)
-        db.session.commit()
         return {"campaign_bid": campaign.campaign_bid}
 
 
@@ -301,8 +309,9 @@ def update_operator_referral_campaign_status(
     operator_user_bid: str,
     campaign_bid: str,
     enabled: object,
-) -> dict[str, Any]:
-    with app.app_context():
+) -> dict[str, object]:
+    """Update operator referral campaign status."""
+    with app_context_scope(app), unit_of_work():
         campaign = _load_campaign_or_404(campaign_bid)
         enabled_value = _parse_bool(enabled, "enabled")
         now = now_utc()
@@ -322,12 +331,13 @@ def update_operator_referral_campaign_status(
             else REFERRAL_RULE_STATUS_PAUSED
         )
         metadata = (
-            campaign.metadata_json if isinstance(campaign.metadata_json, dict) else {}
+            dict(campaign.metadata_json)
+            if isinstance(campaign.metadata_json, dict)
+            else {}
         )
         metadata["operator_user_bid"] = _normalize_text(operator_user_bid)
         campaign.metadata_json = metadata
         db.session.add_all([campaign, rule])
-        db.session.commit()
         return {"campaign_bid": campaign.campaign_bid, "enabled": enabled_value}
 
 
@@ -412,7 +422,7 @@ def _parse_positive_decimal(value: object, field_name: str) -> Decimal:
     return parsed
 
 
-def _parse_json_object(value: object, field_name: str) -> dict[str, Any]:
+def _parse_json_object(value: object, field_name: str) -> dict[str, object]:
     if value is None or value == "":
         return {}
     if isinstance(value, dict):
@@ -429,11 +439,11 @@ def _parse_json_object(value: object, field_name: str) -> dict[str, Any]:
 
 
 def _normalize_payload(
-    payload: dict[str, Any],
+    payload: dict[str, object],
     *,
     is_create: bool,
     existing: ReferralCampaign | None = None,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     campaign_code = _normalize_text(payload.get("campaign_code"))
     if is_create and not campaign_code:
         raise_param_error("campaign_code")
@@ -521,7 +531,7 @@ def _build_rule(
     app: Flask,
     *,
     campaign_bid: str,
-    data: dict[str, Any],
+    data: dict[str, object],
     status: int,
 ) -> ReferralCampaignRewardRule:
     rule = ReferralCampaignRewardRule(
@@ -538,7 +548,7 @@ def _build_rule(
     return rule
 
 
-def _apply_rule(rule: ReferralCampaignRewardRule, data: dict[str, Any]) -> None:
+def _apply_rule(rule: ReferralCampaignRewardRule, data: dict[str, object]) -> None:
     rule.rule_code = data["rule_code"]
     rule.reward_product_code = data["reward_product_code"]
     rule.reward_cycle_count = data["reward_cycle_count"]
@@ -600,7 +610,7 @@ def _latest_rule_map(campaign_bids: list[str]) -> dict[str, ReferralCampaignRewa
     return result
 
 
-def _count_by_campaign(model, campaign_bids: list[str]) -> dict[str, int]:
+def _count_by_campaign(model: object, campaign_bids: list[str]) -> dict[str, int]:
     if not campaign_bids:
         return {}
     rows = (
@@ -614,7 +624,7 @@ def _count_by_campaign(model, campaign_bids: list[str]) -> dict[str, int]:
 
 def _invite_event_stats_by_campaign(
     campaign_bids: list[str],
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, dict[str, object]]:
     if not campaign_bids:
         return {}
     rows = (
@@ -633,7 +643,7 @@ def _invite_event_stats_by_campaign(
     }
 
 
-def _count_rows(model, campaign_bid: str) -> int:
+def _count_rows(model: object, campaign_bid: str) -> int:
     return int(
         model.query.filter(
             model.deleted == 0,
@@ -689,7 +699,7 @@ def _assert_product_code_is_active_plan(product_code: str) -> None:
         raise_param_error("reward_product_code")
 
 
-def _apply_status_filter(query, status: str, *, now: datetime):
+def _apply_status_filter(query: Query, status: str, *, now: datetime) -> Query:
     if status == "active":
         return query.filter(
             ReferralCampaign.campaign_status == REFERRAL_CAMPAIGN_STATUS_ACTIVE,
@@ -739,7 +749,7 @@ def _serialize_campaign(
     invite_event_count: int,
     latest_invite_event_at: datetime | None,
     now: datetime,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     return {
         "campaign_bid": campaign.campaign_bid,
         "campaign_code": campaign.campaign_code,

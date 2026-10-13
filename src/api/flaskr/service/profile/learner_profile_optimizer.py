@@ -1,15 +1,20 @@
+"""Optimize learner profiles through the shared LLM wrapper."""
+
 from __future__ import annotations
 
 import json
-from typing import Any
+from collections.abc import (
+    Iterator,  # noqa: TC003 - private annotation is inspected at runtime
+)
+from typing import TYPE_CHECKING, Any
 
-from flask import Flask
 from flaskr.api.langfuse import (
     create_trace_with_root_span,
     finalize_langfuse_trace,
     get_langfuse_client,
 )
 from flaskr.api.llm import invoke_llm
+from flaskr.api.llm.model_selection import get_default_llm_model
 from flaskr.common.i18n_utils import resolve_markdownflow_output_language
 from flaskr.service.common.models import AppError, raise_error, raise_param_error
 from flaskr.service.metering.api import UsageContext
@@ -19,6 +24,9 @@ from flaskr.service.profile.learner_profile import (
     normalize_learner_profile,
 )
 from flaskr.util.prompt_loader import load_prompt_template
+
+if TYPE_CHECKING:
+    from flask import Flask
 
 LEARNER_PROFILE_OPTIMIZATION_TIMEOUT_SECONDS = 15
 LEARNER_PROFILE_OPTIMIZATION_MAX_TOKENS = 1200
@@ -35,7 +43,7 @@ def _parse_optimized_profile(raw_response: str) -> str:
     return raw_response
 
 
-def _exception_chain(exc: BaseException):
+def _exception_chain(exc: BaseException) -> Iterator[BaseException]:
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
@@ -84,7 +92,7 @@ def optimize_learner_profile(
     if not moderation_allowed:
         raise_error("server.profile.learnerProfileOptimizationRejected")
 
-    model = str(app.config.get("DEFAULT_LLM_MODEL", "") or "").strip()
+    model = get_default_llm_model(app)
     if not model:
         raise_error("server.profile.learnerProfileOptimizationNotConfigured")
 

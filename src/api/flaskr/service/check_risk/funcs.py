@@ -1,7 +1,10 @@
+"""Implement business operations for risk control."""
+
 from flask import Flask
 from flaskr.api.check import CHECK_RESULT_PASS, CHECK_RESULT_REJECT, check_text
 from flaskr.api.check.dto import CheckResultDTO
 from flaskr.dao import db
+from flaskr.dao.uow import autonomous_unit_of_work
 from flaskr.service.common.models import raise_error
 from flaskr.util.datetime import now_utc
 
@@ -10,16 +13,23 @@ from .models import RiskControlResult
 
 def add_risk_control_result(
     app: Flask,
-    chat_id,
-    user_id,
-    text,
-    check_vendor,
-    check_result,
-    check_resp,
-    is_pass,
-    check_strategy,
-):
-    with app.app_context():
+    chat_id: object,
+    user_id: object,
+    text: object,
+    check_vendor: object,
+    check_result: object,
+    check_resp: object,
+    is_pass: object,
+    check_strategy: object,
+) -> int:
+    """Add risk control result.
+
+    Audit rows persist on their own session: the moderation verdict must
+    survive even when the caller's unit of work (a /run stream, a profile
+    save) later rolls back, and the caller's staged rows must not commit
+    early.
+    """
+    with autonomous_unit_of_work(app):
         risk_control_result = RiskControlResult(
             chat_id=chat_id,
             user_id=user_id,
@@ -31,13 +41,15 @@ def add_risk_control_result(
             check_strategy=check_strategy,
         )
         db.session.add(risk_control_result)
-        db.session.commit()
+        db.session.flush()
+        # Read the id before the block commits and pops the context.
         return risk_control_result.id
 
 
 def check_text_with_risk_control(
     app: Flask, check_id: str, user_id: str, text: str | None
 ) -> CheckResultDTO:
+    """Check text with risk control."""
     if text is None or text == "":
         return CheckResultDTO(
             check_result=CHECK_RESULT_PASS,

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 from dataclasses import dataclass
@@ -31,7 +32,7 @@ REQUIRED_HARNESS_WORKFLOWS = (
 REQUIRED_RUNTIME_ASSETS = (
     ROOT / "scripts" / "check_architecture_boundaries.py",
     ROOT / "src" / "api" / "scripts" / "harness_diagnostics.py",
-    ROOT / "src" / "cook-web" / "e2e" / "smoke.spec.ts",
+    ROOT / "src" / "web" / "e2e" / "smoke.spec.ts",
     ROOT / "docker" / "docker-compose.dev.yml",
     ROOT / "docker" / "observability" / "loki-config.yml",
     ROOT / "docker" / "observability" / "tempo-config.yml",
@@ -43,6 +44,8 @@ REQUIRED_RUNTIME_ASSETS = (
 
 @dataclass(frozen=True)
 class DocRecord:
+    """Record doc details."""
+
     path: Path
     title: str
     category: str
@@ -57,6 +60,7 @@ HEADING_PATTERN = re.compile(r"^#{1,6}\s+(.*)$", re.MULTILINE)
 
 
 def parse_frontmatter(path: Path) -> dict[str, str]:
+    """Return trimmed leading-frontmatter metadata, skipping missing or malformed entries."""
     text = path.read_text(encoding="utf-8")
     match = FRONTMATTER_PATTERN.match(text)
     if not match:
@@ -72,6 +76,7 @@ def parse_frontmatter(path: Path) -> dict[str, str]:
 
 
 def extract_title(path: Path) -> str:
+    """Return a Markdown file's first heading or a title derived from its filename."""
     text = path.read_text(encoding="utf-8")
     match = HEADING_PATTERN.search(text)
     if match:
@@ -80,6 +85,7 @@ def extract_title(path: Path) -> str:
 
 
 def build_frontmatter_records(category_dir: Path, category: str) -> list[DocRecord]:
+    """Build category-tagged records for non-index Markdown files in one metadata directory."""
     records: list[DocRecord] = []
     for path in sorted(category_dir.glob("*.md")):
         if path.name == "index.md":
@@ -101,6 +107,7 @@ def build_frontmatter_records(category_dir: Path, category: str) -> list[DocReco
 
 
 def build_reference_records() -> list[DocRecord]:
+    """Build canonical reference records for Markdown files under docs/references."""
     records: list[DocRecord] = []
     for path in sorted((DOCS_ROOT / "references").glob("*.md")):
         if path.name == "index.md":
@@ -120,11 +127,12 @@ def build_reference_records() -> list[DocRecord]:
 
 
 def build_execplan_records(subdir: str, status: str) -> list[DocRecord]:
+    """Build status-tagged records for every Markdown ExecPlan in one plan directory."""
     plan_dir = DOCS_ROOT / "exec-plans" / subdir
     records: list[DocRecord] = [
         DocRecord(
             path=path,
-            title=extract_title(path),
+            title=parse_frontmatter(path).get("title") or extract_title(path),
             category=f"exec-plan-{subdir}",
             status=status,
             owner_surface="repo",
@@ -137,10 +145,12 @@ def build_execplan_records(subdir: str, status: str) -> list[DocRecord]:
 
 
 def rel_doc(path: Path) -> str:
+    """Return a document path relative to the repository root."""
     return path.relative_to(ROOT).as_posix()
 
 
 def render_section_index(title: str, intro: str, records: list[DocRecord]) -> str:
+    """Render a generated category index that links each supplied document record."""
     lines = [GENERATED_COMMENT, "", f"# {title}", "", intro, ""]
     if not records:
         lines.extend(["No documents are currently indexed here.", ""])
@@ -162,6 +172,7 @@ def render_section_index(title: str, intro: str, records: list[DocRecord]) -> st
 def render_execplan_index(
     active: list[DocRecord], completed: list[DocRecord], tracker: Path
 ) -> str:
+    """Render links for active and completed ExecPlans plus their supporting tracker."""
     lines = [
         GENERATED_COMMENT,
         "",
@@ -200,6 +211,7 @@ def render_execplan_index(
 
 
 def render_inventory(records: list[DocRecord]) -> str:
+    """Render a Markdown table that inventories the supplied repository document records."""
     lines = [
         GENERATED_COMMENT,
         "",
@@ -229,6 +241,7 @@ def render_inventory(records: list[DocRecord]) -> str:
 
 
 def load_boundary_baseline() -> tuple[int, dict[str, int]]:
+    """Return boundary-baseline totals and per-rule counts, or empty defaults when absent."""
     if not BOUNDARY_BASELINE_PATH.exists():
         return 0, {}
     payload = json.loads(BOUNDARY_BASELINE_PATH.read_text(encoding="utf-8"))
@@ -250,6 +263,7 @@ def render_harness_health_report(
     active_plans: list[DocRecord],
     completed_plans: list[DocRecord],
 ) -> str:
+    """Render health metrics for document inventories, boundaries, and required runtime assets."""
     baseline_count, baseline_breakdown = load_boundary_baseline()
     lines = [
         GENERATED_COMMENT,
@@ -257,6 +271,10 @@ def render_harness_health_report(
         "# Harness Health",
         "",
         "This generated report summarizes the repository harness control plane.",
+        "",
+        "> Local snapshot of the working tree; it may be stale after edits or a branch switch.",
+        "> Refresh with `python scripts/build_repo_knowledge_index.py --health-only`.",
+        "> Asset status checks file existence, not test results or service health.",
         "",
         "## Knowledge System",
         "",
@@ -284,7 +302,23 @@ def render_harness_health_report(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def build_harness_health_report() -> str:
+    """Build an optional health snapshot directly from the current working tree."""
+    return render_harness_health_report(
+        design_records=build_frontmatter_records(
+            DOCS_ROOT / "design-docs", "design-doc"
+        ),
+        product_records=build_frontmatter_records(
+            DOCS_ROOT / "product-specs", "product-spec"
+        ),
+        reference_records=build_reference_records(),
+        active_plans=build_execplan_records("active", "active"),
+        completed_plans=build_execplan_records("completed", "completed"),
+    )
+
+
 def build_knowledge_docs() -> dict[Path, str]:
+    """Build version-controlled knowledge documents as a path-to-content mapping."""
     design_records = build_frontmatter_records(DOCS_ROOT / "design-docs", "design-doc")
     product_records = build_frontmatter_records(
         DOCS_ROOT / "product-specs", "product-spec"
@@ -365,15 +399,6 @@ def build_knowledge_docs() -> dict[Path, str]:
                 canonical="true",
             ),
             DocRecord(
-                path=HARNESS_HEALTH_PATH,
-                title="Harness Health",
-                category="generated-doc",
-                status="reference",
-                owner_surface="repo",
-                last_reviewed="2026-04-17",
-                canonical="true",
-            ),
-            DocRecord(
                 path=GARDENING_SUMMARY_PATH,
                 title="Harness Gardening Summary",
                 category="generated-doc",
@@ -408,18 +433,13 @@ def build_knowledge_docs() -> dict[Path, str]:
         DOCS_ROOT / "generated" / "doc-inventory.md": render_inventory(
             sorted(all_records, key=lambda record: rel_doc(record.path))
         ),
-        HARNESS_HEALTH_PATH: render_harness_health_report(
-            design_records=design_records,
-            product_records=product_records,
-            reference_records=reference_records,
-            active_plans=active_plans,
-            completed_plans=completed_plans,
-        ),
     }
 
 
-def write_documents() -> int:
-    docs = build_knowledge_docs()
+def write_documents(*, health_only: bool = False) -> int:
+    """Refresh the ignored health report and, by default, version-controlled indexes."""
+    docs = {} if health_only else build_knowledge_docs()
+    docs[HARNESS_HEALTH_PATH] = build_harness_health_report()
     for path, content in sorted(docs.items()):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
@@ -428,7 +448,15 @@ def write_documents() -> int:
 
 
 def main() -> int:
-    return write_documents()
+    """Regenerate knowledge documents or only the ignored local health report."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--health-only",
+        action="store_true",
+        help="Refresh only docs/generated/harness-health.md without changing tracked indexes.",
+    )
+    args = parser.parse_args()
+    return write_documents(health_only=args.health_only)
 
 
 if __name__ == "__main__":

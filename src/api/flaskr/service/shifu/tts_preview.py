@@ -1,10 +1,12 @@
+"""Handle TTS preview for course authoring."""
+
 from __future__ import annotations
 
 import base64
 import json
 import uuid
 from dataclasses import replace
-from typing import Any
+from typing import TYPE_CHECKING
 
 from flask import Response, current_app, stream_with_context
 from flaskr.api.tts import (
@@ -27,10 +29,15 @@ from flaskr.service.tts.validation import (
 )
 from flaskr.util.uuid import generate_id
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from flaskr.api.tts.base import AudioSettings, VoiceSettings
+
 
 def _build_tts_preview_usage_metadata(
-    voice_settings: Any,
-    audio_settings: Any,
+    voice_settings: VoiceSettings,
+    audio_settings: AudioSettings,
 ) -> dict[str, object]:
     return {
         "voice_id": getattr(voice_settings, "voice_id", "") or "",
@@ -46,9 +53,10 @@ def _build_tts_preview_usage_metadata(
 def build_tts_preview_response(
     json_data: dict | None,
     *,
+    shifu_bid: str,
     request_user_id: str = "",
-    request_user_is_creator: bool = False,
 ) -> Response:
+    """Build billable TTS preview response after the caller passes admission."""
     app = current_app._get_current_object()
     payload = json_data or {}
     provider_name = (payload.get("provider") or "").strip().lower()
@@ -59,7 +67,7 @@ def build_tts_preview_response(
     emotion = ""
     text = payload.get(
         "text",
-        "你好，这是语音合成的试听效果。Hello, this is a preview of text-to-speech.",
+        "你好，这是语音合成的试听效果。Hello, this is a preview of text-to-speech.",  # noqa: RUF001 - intentional fullwidth Chinese punctuation
     )
 
     validated = validate_tts_settings_strict(
@@ -104,13 +112,12 @@ def build_tts_preview_response(
     safe_audio_settings = replace(audio_settings, format="mp3")
     audio_bid = uuid.uuid4().hex
     cleaned_text = preprocess_for_tts(text or "")
-    runtime_billable = 1 if request_user_is_creator else 0
     usage_context = UsageContext(
         user_bid=str(request_user_id or "").strip(),
-        shifu_bid="",
+        shifu_bid=shifu_bid,
         audio_bid=audio_bid,
         usage_scene=BILL_USAGE_SCENE_DEBUG,
-        billable=runtime_billable,
+        billable=1,
     )
     parent_usage_bid = generate_id(app)
     usage_metadata = _build_tts_preview_usage_metadata(
@@ -118,7 +125,7 @@ def build_tts_preview_response(
         audio_settings=safe_audio_settings,
     )
 
-    def event_stream():
+    def event_stream() -> Iterator[str]:
         total_duration_ms = 0
         total_word_count = 0
         total_output_chars = 0

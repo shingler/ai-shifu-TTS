@@ -23,10 +23,12 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.mysql import BIGINT, LONGTEXT
 
-from .consts import ASK_MODE_DEFAULT
+from .consts import ASK_MODE_DEFAULT, FLOW_ENGINE_DEFAULT
 
 
 class ResourceType:
+    """Enumerate resource categories stored with course assets."""
+
     CHAPTER = 9001
     SECTION = 9002
     BLOCK = 9003
@@ -184,7 +186,7 @@ class DraftShifu(db.Model):
         default="",
         comment="Avatar resource business identifier",
     )
-    llm = Column(String(100), nullable=False, default="", comment="LLM model name")
+    llm = Column(String(100), nullable=False, default="1", comment="LLM model name")
     llm_temperature = Column(
         DECIMAL(10, 2),
         nullable=False,
@@ -203,10 +205,17 @@ class DraftShifu(db.Model):
         default=ASK_MODE_DEFAULT,
         comment="Ask agent status: 5101=default, 5102=disabled, 5103=enabled",
     )
+    flow_engine = Column(
+        SmallInteger,
+        nullable=False,
+        default=FLOW_ENGINE_DEFAULT,
+        server_default=str(FLOW_ENGINE_DEFAULT),
+        comment="MarkdownFlow runtime that teaches this shifu: 1=1.0, 2=2.0",
+    )
     ask_llm = Column(
         String(100),
         nullable=False,
-        default="",
+        default="1",
         comment="Ask agent LLM model",
     )
     ask_llm_temperature = Column(
@@ -318,7 +327,8 @@ class DraftShifu(db.Model):
         comment="Last updater user business identifier",
     )
 
-    def clone(self):
+    def clone(self) -> "DraftShifu":
+        """Create a transient copy of this draft record for a new revision."""
         return DraftShifu(
             shifu_bid=self.shifu_bid,
             title=self.title,
@@ -329,6 +339,7 @@ class DraftShifu(db.Model):
             llm_temperature=self.llm_temperature,
             llm_system_prompt=self.llm_system_prompt,
             ask_enabled_status=self.ask_enabled_status,
+            flow_engine=self.flow_engine,
             ask_llm=self.ask_llm,
             ask_llm_temperature=self.ask_llm_temperature,
             ask_llm_system_prompt=self.ask_llm_system_prompt,
@@ -350,7 +361,8 @@ class DraftShifu(db.Model):
             updated_user_bid=self.updated_user_bid,
         )
 
-    def eq(self, other):
+    def eq(self, other: object) -> bool:
+        """Compare the persisted fields relevant to draft equality."""
         return (
             self.shifu_bid == other.shifu_bid
             and self.title == other.title
@@ -361,6 +373,7 @@ class DraftShifu(db.Model):
             and compare_decimal(self.llm_temperature, other.llm_temperature)
             and self.llm_system_prompt == other.llm_system_prompt
             and self.ask_enabled_status == other.ask_enabled_status
+            and self.flow_engine == other.flow_engine
             and self.ask_llm == other.ask_llm
             and compare_decimal(self.ask_llm_temperature, other.ask_llm_temperature)
             and self.ask_llm_system_prompt == other.ask_llm_system_prompt
@@ -377,11 +390,14 @@ class DraftShifu(db.Model):
             and self.use_learner_language == other.use_learner_language
         )
 
-    def get_str_to_check(self):
+    def get_str_to_check(self) -> str:
+        """Return concatenated draft fields for comparison without normalization."""
         return f"{self.title} {self.keywords} {self.description} {self.llm_system_prompt} {self.ask_llm_system_prompt}"
 
 
 class DraftOutlineItem(db.Model):
+    """Persist draft outline item records."""
+
     __tablename__ = "shifu_draft_outline_items"
     __table_args__ = (
         Index(
@@ -457,13 +473,6 @@ class DraftOutlineItem(db.Model):
         default="",
         comment="Prerequisite outline item business identifiers",
     )
-    llm = Column(String(100), nullable=False, default="", comment="LLM model name")
-    llm_temperature = Column(
-        DECIMAL(10, 2),
-        nullable=False,
-        default=0,
-        comment="LLM temperature parameter",
-    )
     llm_system_prompt = Column(
         Text, nullable=False, default="", comment="LLM system prompt"
     )
@@ -472,15 +481,6 @@ class DraftOutlineItem(db.Model):
         nullable=False,
         default=ASK_MODE_DEFAULT,
         comment="Ask agent status: 5101=default, 5102=disabled, 5103=enabled",
-    )
-    ask_llm = Column(
-        String(100), nullable=False, default="", comment="Ask agent LLM model"
-    )
-    ask_llm_temperature = Column(
-        DECIMAL(10, 2),
-        nullable=False,
-        default=0.0,
-        comment="Ask mode LLM temperature",
     )
     ask_llm_system_prompt = Column(
         Text, nullable=False, default="", comment="Ask mode LLM system prompt"
@@ -515,7 +515,8 @@ class DraftOutlineItem(db.Model):
         comment="Last updater user business identifier",
     )
 
-    def clone(self):
+    def clone(self) -> "DraftOutlineItem":
+        """Create a transient copy of this draft record for a new revision."""
         return DraftOutlineItem(
             outline_item_bid=self.outline_item_bid,
             shifu_bid=self.shifu_bid,
@@ -523,12 +524,8 @@ class DraftOutlineItem(db.Model):
             parent_bid=self.parent_bid,
             position=self.position,
             prerequisite_item_bids=self.prerequisite_item_bids,
-            llm=self.llm,
-            llm_temperature=self.llm_temperature,
             llm_system_prompt=self.llm_system_prompt,
             ask_enabled_status=self.ask_enabled_status,
-            ask_llm=self.ask_llm,
-            ask_llm_temperature=self.ask_llm_temperature,
             ask_llm_system_prompt=self.ask_llm_system_prompt,
             content=self.content,
             type=self.type,
@@ -540,7 +537,8 @@ class DraftOutlineItem(db.Model):
             updated_user_bid=self.updated_user_bid,
         )
 
-    def eq(self, other):
+    def eq(self, other: object) -> bool:
+        """Compare the persisted fields relevant to draft equality."""
         return (
             self.outline_item_bid == other.outline_item_bid
             and self.shifu_bid == other.shifu_bid
@@ -548,23 +546,22 @@ class DraftOutlineItem(db.Model):
             and self.parent_bid == other.parent_bid
             and self.position == other.position
             and self.prerequisite_item_bids == other.prerequisite_item_bids
-            and self.llm == other.llm
             and self.type == other.type
             and self.hidden == other.hidden
-            and compare_decimal(self.llm_temperature, other.llm_temperature)
             and self.llm_system_prompt == other.llm_system_prompt
             and self.ask_enabled_status == other.ask_enabled_status
-            and self.ask_llm == other.ask_llm
-            and compare_decimal(self.ask_llm_temperature, other.ask_llm_temperature)
             and self.ask_llm_system_prompt == other.ask_llm_system_prompt
             and self.content == other.content
         )
 
-    def get_str_to_check(self):
+    def get_str_to_check(self) -> str:
+        """Return concatenated draft fields for comparison without normalization."""
         return f"{self.title} {self.llm_system_prompt} {self.ask_llm_system_prompt}"
 
 
 class LogDraftStruct(db.Model):
+    """Persist log draft struct records."""
+
     __tablename__ = "shifu_log_draft_structs"
     id = Column(BIGINT, primary_key=True, autoincrement=True)
     struct_bid = Column(
@@ -617,6 +614,8 @@ class LogDraftStruct(db.Model):
 
 # published shifu's model
 class PublishedShifu(db.Model):
+    """Persist published shifu records."""
+
     __tablename__ = "shifu_published_shifus"
     id = Column(BIGINT, primary_key=True, autoincrement=True)
     shifu_bid = Column(
@@ -639,7 +638,7 @@ class PublishedShifu(db.Model):
         default="",
         comment="Avatar resource business identifier",
     )
-    llm = Column(String(100), nullable=False, default="", comment="LLM model name")
+    llm = Column(String(100), nullable=False, default="1", comment="LLM model name")
     llm_temperature = Column(
         DECIMAL(10, 2), nullable=False, default=0, comment="LLM temperature parameter"
     )
@@ -652,8 +651,15 @@ class PublishedShifu(db.Model):
         default=ASK_MODE_DEFAULT,
         comment="Ask agent status: 5101=default, 5102=disabled, 5103=enabled",
     )
+    flow_engine = Column(
+        SmallInteger,
+        nullable=False,
+        default=FLOW_ENGINE_DEFAULT,
+        server_default=str(FLOW_ENGINE_DEFAULT),
+        comment="MarkdownFlow runtime that teaches this shifu: 1=1.0, 2=2.0",
+    )
     ask_llm = Column(
-        String(100), nullable=False, default="", comment="Ask agent LLM model"
+        String(100), nullable=False, default="1", comment="Ask agent LLM model"
     )
     ask_llm_temperature = Column(
         DECIMAL(10, 2), nullable=False, default=0.0, comment="Ask agent LLM temperature"
@@ -759,6 +765,8 @@ class PublishedShifu(db.Model):
 
 
 class PublishedOutlineItem(db.Model):
+    """Persist published outline item records."""
+
     __tablename__ = "shifu_published_outline_items"
     id = Column(BIGINT, primary_key=True, autoincrement=True)
     outline_item_bid = Column(
@@ -805,13 +813,6 @@ class PublishedOutlineItem(db.Model):
         default="",
         comment="Prerequisite outline item business identifiers",
     )
-    llm = Column(String(100), nullable=False, default="", comment="LLM model name")
-    llm_temperature = Column(
-        DECIMAL(10, 2),
-        nullable=False,
-        default=0,
-        comment="LLM temperature parameter",
-    )
     llm_system_prompt = Column(
         Text, nullable=False, default="", comment="LLM system prompt"
     )
@@ -820,15 +821,6 @@ class PublishedOutlineItem(db.Model):
         nullable=False,
         default=ASK_MODE_DEFAULT,
         comment="Ask agent status: 5101=default, 5102=disabled, 5103=enabled",
-    )
-    ask_llm = Column(
-        String(100), nullable=False, default="", comment="Ask agent LLM model"
-    )
-    ask_llm_temperature = Column(
-        DECIMAL(10, 2),
-        nullable=False,
-        default=0.0,
-        comment="Ask agent LLM temperature",
     )
     ask_llm_system_prompt = Column(
         Text, nullable=False, default="", comment="Ask agent LLM system prompt"
@@ -866,6 +858,8 @@ class PublishedOutlineItem(db.Model):
 
 
 class LogPublishedStruct(db.Model):
+    """Persist log published struct records."""
+
     __tablename__ = "shifu_log_published_structs"
     id = Column(BIGINT, primary_key=True, autoincrement=True)
     struct_bid = Column(

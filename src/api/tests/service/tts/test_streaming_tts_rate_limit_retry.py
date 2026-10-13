@@ -30,15 +30,20 @@ _TENCENT_MESSAGE = (
         ("No audio data received", False),
     ],
 )
-def test_rate_limit_detector(message, expected):
+def test_rate_limit_detector(message: object, expected: object) -> None:
     assert _is_retryable_rate_limit_error(ValueError(message)) is expected
 
 
-def _run_retry(monkeypatch, outcomes, segment_index=0):
+def _run_retry(
+    monkeypatch: object,
+    outcomes: object,
+    segment_index: object = 0,
+    tts_provider: object = "tencent_texttovoice",
+) -> object:
     calls = []
     sleeps = []
 
-    def _fake_synthesize_text(**kwargs):
+    def _fake_synthesize_text(**kwargs: object) -> object:
         calls.append(kwargs)
         outcome = outcomes[min(len(calls) - 1, len(outcomes) - 1)]
         if isinstance(outcome, Exception):
@@ -54,14 +59,14 @@ def _run_retry(monkeypatch, outcomes, segment_index=0):
         text="hello",
         voice_settings=None,
         audio_settings=None,
-        tts_provider="tencent_texttovoice",
+        tts_provider=tts_provider,
         tts_model="large-model",
         segment_index=segment_index,
     )
     return result, calls, sleeps
 
 
-def test_throttled_segment_retries_until_success(monkeypatch):
+def test_throttled_segment_retries_until_success(monkeypatch: object) -> None:
     success = types.SimpleNamespace(audio_data=b"ok")
     result, calls, sleeps = _run_retry(
         monkeypatch,
@@ -75,7 +80,7 @@ def test_throttled_segment_retries_until_success(monkeypatch):
     assert sleeps[1] > sleeps[0] > 0
 
 
-def test_throttled_segment_gives_up_after_max_attempts(monkeypatch):
+def test_throttled_segment_gives_up_after_max_attempts(monkeypatch: object) -> None:
     with pytest.raises(ValueError, match="LimitExceeded"):
         _run_retry(
             monkeypatch,
@@ -83,7 +88,7 @@ def test_throttled_segment_gives_up_after_max_attempts(monkeypatch):
         )
 
 
-def test_stagger_gives_concurrent_segments_distinct_delays(monkeypatch):
+def test_stagger_gives_concurrent_segments_distinct_delays(monkeypatch: object) -> None:
     from flaskr.service.tts.streaming_tts import _RATE_LIMIT_RETRY_STAGGER_SLOTS
 
     success = types.SimpleNamespace(audio_data=b"ok")
@@ -102,9 +107,44 @@ def test_stagger_gives_concurrent_segments_distinct_delays(monkeypatch):
     assert len(set(delays)) == _RATE_LIMIT_RETRY_STAGGER_SLOTS
 
 
-def test_non_retryable_error_still_raises_immediately(monkeypatch):
+def test_non_retryable_error_still_raises_immediately(monkeypatch: object) -> None:
     with pytest.raises(ValueError, match="AuthFailure"):
         _run_retry(
             monkeypatch,
             [ValueError("Tencent TextToVoice error AuthFailure: bad secret")],
         )
+
+
+def test_elevenlabs_http_429_uses_shared_retry(monkeypatch: object) -> None:
+    success = types.SimpleNamespace(audio_data=b"ok")
+    result, calls, sleeps = _run_retry(
+        monkeypatch,
+        [ValueError("ElevenLabs TTS HTTP 429 rate limit"), success],
+        tts_provider="elevenlabs",
+    )
+
+    assert result is success
+    assert len(calls) == 2
+    assert len(sleeps) == 1
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Gemini TTS HTTP 429 rate limit: quota exceeded",
+        "Gemini TTS HTTP 503 overloaded (rate limit): The model is overloaded",
+    ],
+)
+def test_gemini_http_429_and_503_use_shared_retry(
+    monkeypatch: object, message: str
+) -> None:
+    success = types.SimpleNamespace(audio_data=b"ok")
+    result, calls, sleeps = _run_retry(
+        monkeypatch,
+        [ValueError(message), success],
+        tts_provider="gemini",
+    )
+
+    assert result is success
+    assert len(calls) == 2
+    assert len(sleeps) == 1

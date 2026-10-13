@@ -1,4 +1,8 @@
+"""Expose the TTS service API."""
+
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from flaskr.service.tts.cloned_voice_registry import (
     find_ready_cloned_voice,
@@ -7,6 +11,9 @@ from flaskr.service.tts.cloned_voice_registry import (
     supports_cloned_voices,
 )
 from flaskr.service.tts.minimax_voice_clone import (
+    MINIMAX_CLONE_PROMPT_MAX_BYTES,
+    MINIMAX_CLONE_REQUEST_MAX_BYTES,
+    MINIMAX_CLONE_SOURCE_MAX_BYTES,
     build_minimax_clone_cost,
     delete_minimax_cloned_voice,
     get_minimax_cloned_voice,
@@ -29,18 +36,38 @@ from flaskr.service.tts.volcengine_voice_clone import (
 )
 from flaskr.util.deprecation import deprecated_alias_getattr
 
+if TYPE_CHECKING:
+    from flaskr.service.tts.streaming_tts import StreamingTTSProcessor
 
-def create_streaming_tts_processor(**kwargs):
+
+def create_av_streaming_tts_processor(**kwargs: object) -> object:
+    """Build the processor that derives visual boundaries from the text as it streams.
+
+    Unlike the plain one, this recomputes the AV contract on every chunk and attaches it to the
+    audio events, which is what lets the element adapter rebuild slides for a block whose text
+    arrived without MarkdownFlow stream parts.
+    """
+    from flaskr.service.tts.streaming_tts import AVStreamingTTSProcessor
+
+    return AVStreamingTTSProcessor(**kwargs)
+
+
+def create_streaming_tts_processor(**kwargs: object) -> StreamingTTSProcessor:
+    """Create streaming TTS processor."""
     from flaskr.service.tts.streaming_tts import StreamingTTSProcessor
 
     return StreamingTTSProcessor(**kwargs)
 
 
 __all__ = [
+    "MINIMAX_CLONE_PROMPT_MAX_BYTES",
+    "MINIMAX_CLONE_REQUEST_MAX_BYTES",
+    "MINIMAX_CLONE_SOURCE_MAX_BYTES",
     "TTSRpmQueueTimeoutError",
     "append_subtitle_cue",
     "build_av_segmentation_contract",
     "build_minimax_clone_cost",
+    "create_av_streaming_tts_processor",
     "create_streaming_tts_processor",
     "delete_minimax_cloned_voice",
     "find_ready_cloned_voice",

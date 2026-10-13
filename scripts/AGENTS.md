@@ -16,7 +16,7 @@ under `scripts/`, including translation utilities and AI-doc tooling.
   and [Internationalization Rules](../docs/engineering-baseline.md#internationalization-rules).
 
 - This directory owns repeatable repo maintenance, translation validation, and
-  AI-doc generation or validation logic used by both local development and CI.
+  knowledge-index generation and instruction validation used locally and in CI.
 
 - Script changes can rewrite tracked files or change automation behavior, so
   keep ownership and side effects explicit.
@@ -59,11 +59,13 @@ under `scripts/`, including translation utilities and AI-doc tooling.
 - `python scripts/check_architecture_boundaries.py` validates the committed
   frontend/backend boundary baseline and fixture coverage.
 
-- `python scripts/generate_ai_collab_docs.py` regenerates the derived AI-doc
-  mirrors after AI instruction or generator changes.
-
 - `python scripts/build_repo_knowledge_index.py` regenerates the knowledge
-  indexes and generated document inventory.
+  indexes, generated document inventory, and ignored harness health snapshot.
+- `python scripts/build_repo_knowledge_index.py --health-only` refreshes only
+  `docs/generated/harness-health.md`. This optional report is not a committed
+  artifact or a prerequisite for harness validation; regenerate it after
+  switching branches before relying on its contents. Committed indexes and
+  enforcement baselines remain subject to their existing checks.
 
 - `python scripts/check_translations.py && python scripts/check_translation_usage.py --fail-on-unused`
   is the shared translation validation pass after translation-tooling changes.
@@ -83,15 +85,15 @@ under `scripts/`, including translation utilities and AI-doc tooling.
 - When translation scripts change, rerun translation parity, translation usage,
   and locale-metadata checks in the same task.
 
-- When AI-doc generation or validation scripts change, regenerate docs, rerun
-  `python scripts/check_repo_harness.py`, and run focused lefthook checks on the
-  touched files.
+- When instruction validation changes, run its focused tests and
+  `python scripts/check_repo_harness.py`. Regenerate knowledge indexes only
+  when their source documents or metadata change, then run lefthook checks.
 
 ## Related Skills
 
 - `SKILL.md` is the repository-level skill routing index.
 
-- `src/api/SKILL.md` and `src/cook-web/SKILL.md` remain the right entry points
+- `src/api/SKILL.md` and `src/web/SKILL.md` remain the right entry points
   when a shared script change is tightly coupled to backend or frontend
   behavior.
 

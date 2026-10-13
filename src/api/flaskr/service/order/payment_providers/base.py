@@ -1,3 +1,5 @@
+"""Define the shared payment-provider contract for legacy orders."""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -71,49 +73,66 @@ class PaymentRefundResult:
     status: str
 
 
+@dataclass(slots=True)
+class PaymentCancellationResult:
+    """Response returned after making a payment attempt unusable."""
+
+    provider_reference: str
+    raw_response: dict[str, Any]
+    status: str
+
+
 class PaymentProvider(ABC):
     """Base abstraction for payment providers."""
 
     channel: str = ""
 
     @abstractmethod
-    def create_payment(self, *, request: PaymentRequest, app) -> PaymentCreationResult:
+    def create_payment(
+        self, *, request: PaymentRequest, app: object
+    ) -> PaymentCreationResult:
         """Create a payment with the external provider."""
 
     def create_subscription(
-        self, *, request: PaymentRequest, app
+        self, *, request: PaymentRequest, app: object
     ) -> PaymentCreationResult:
         """Create a provider-managed subscription checkout."""
-        raise NotImplementedError(
-            f"{self.__class__.__name__} does not support subscriptions"
-        )
+        message = f"{self.__class__.__name__} does not support subscriptions"
+        raise NotImplementedError(message)
 
     def cancel_subscription(
-        self, *, subscription_bid: str, provider_subscription_id: str, app
+        self,
+        *,
+        subscription_bid: str,
+        provider_subscription_id: str,
+        app: object,
     ) -> SubscriptionUpdateResult:
         """Schedule or trigger subscription cancellation at the provider."""
-        raise NotImplementedError(
+        message = (
             f"{self.__class__.__name__} does not support subscription cancellation"
         )
+        raise NotImplementedError(message)
 
     def resume_subscription(
-        self, *, subscription_bid: str, provider_subscription_id: str, app
+        self,
+        *,
+        subscription_bid: str,
+        provider_subscription_id: str,
+        app: object,
     ) -> SubscriptionUpdateResult:
         """Resume a paused or cancel-scheduled provider subscription."""
-        raise NotImplementedError(
-            f"{self.__class__.__name__} does not support subscription resumption"
-        )
+        message = f"{self.__class__.__name__} does not support subscription resumption"
+        raise NotImplementedError(message)
 
     def verify_webhook(
-        self, *, headers: dict[str, str], raw_body: bytes | str, app
+        self, *, headers: dict[str, str], raw_body: bytes | str, app: object
     ) -> PaymentNotificationResult:
         """Verify and normalize a provider webhook payload."""
-        raise NotImplementedError(
-            f"{self.__class__.__name__} does not support webhook verification"
-        )
+        message = f"{self.__class__.__name__} does not support webhook verification"
+        raise NotImplementedError(message)
 
     def handle_notification(
-        self, *, payload: dict[str, Any], app
+        self, *, payload: dict[str, Any], app: object
     ) -> PaymentNotificationResult:
         """Process provider webhook payloads."""
         return self.verify_webhook(
@@ -123,15 +142,28 @@ class PaymentProvider(ABC):
         )
 
     def refund_payment(
-        self, *, request: PaymentRefundRequest, app
+        self, *, request: PaymentRefundRequest, app: object
     ) -> PaymentRefundResult:
         """Trigger a refund on the provider."""
-        raise NotImplementedError(f"{self.__class__.__name__} does not support refunds")
+        message = f"{self.__class__.__name__} does not support refunds"
+        raise NotImplementedError(message)
+
+    def cancel_payment(
+        self,
+        *,
+        provider_reference: str,
+        reference_type: str,
+        app: object,
+    ) -> PaymentCancellationResult:
+        """Close an unpaid provider attempt before the order is repriced."""
+        message = f"{self.__class__.__name__} does not support payment cancellation"
+        raise NotImplementedError(message)
 
     def sync_payment_status(
-        self, *, order_bid: str, provider_reference: str, app
+        self, *, order_bid: str, provider_reference: str, app: object
     ) -> PaymentNotificationResult:
         """Synchronize payment status with the provider if supported."""
+        _ = order_bid
         return self.sync_reference(
             provider_reference=provider_reference,
             reference_type="payment",
@@ -139,9 +171,20 @@ class PaymentProvider(ABC):
         )
 
     def sync_reference(
-        self, *, provider_reference: str, reference_type: str, app
+        self, *, provider_reference: str, reference_type: str, app: object
     ) -> PaymentNotificationResult:
         """Synchronize a provider reference and return normalized state."""
-        raise NotImplementedError(
-            f"{self.__class__.__name__} does not support reference sync"
-        )
+        message = f"{self.__class__.__name__} does not support reference sync"
+        raise NotImplementedError(message)
+
+    def expire_checkout_session(
+        self, *, session_id: str, app: object
+    ) -> dict[str, Any]:
+        """Expire an open provider checkout session if supported."""
+        message = f"{self.__class__.__name__} does not support checkout session expiry"
+        raise NotImplementedError(message)
+
+    def build_jsapi_params(self, *, prepay_id: str) -> dict[str, str]:
+        """Build client parameters for an existing JSAPI payment if supported."""
+        message = f"{self.__class__.__name__} does not support JSAPI payments"
+        raise NotImplementedError(message)

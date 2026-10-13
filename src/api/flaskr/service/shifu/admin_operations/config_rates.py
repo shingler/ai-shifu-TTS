@@ -1,11 +1,13 @@
+"""Handle config rates for course-administration operations."""
+
 from __future__ import annotations
 
 import unicodedata
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from flask import Flask
 from flaskr.api.llm import get_current_models
+from flaskr.api.llm.model_selection import get_default_llm_model
 from flaskr.api.tts import get_all_provider_configs
 from flaskr.dao import db
 from flaskr.dao.uow import app_context_scope, unit_of_work
@@ -35,6 +37,11 @@ from flaskr.service.metering.consts import (
 from flaskr.util import generate_id
 from flaskr.util.datetime import now_utc, to_utc_iso
 
+if TYPE_CHECKING:
+    from datetime import datetime
+
+    from flask import Flask
+
 _RATE_METRICS = {
     BILL_USAGE_TYPE_LLM: (
         BILLING_METRIC_LLM_INPUT_TOKENS,
@@ -62,14 +69,14 @@ _CREDITS_PER_UNIT_MAX = Decimal("9999999999.9999999999")
 _ActiveRateIndex = dict[tuple[int, int, str, str], CreditUsageRate]
 
 
-def _rate_effective_now():
+def _rate_effective_now() -> datetime:
     # MySQL DATETIME columns in this schema do not keep fractional seconds.
     # Truncate before writing so a just-saved rate is immediately readable and
     # repeated saves in one second hit the same deterministic version.
     return now_utc().replace(microsecond=0)
 
 
-def _decimal(value: Any, *, field_name: str) -> Decimal:
+def _decimal(value: object, *, field_name: str) -> Decimal:
     try:
         result = Decimal(str(value).strip())
     except (InvalidOperation, AttributeError, TypeError, ValueError):
@@ -98,7 +105,7 @@ def _quantize_derived_credits_per_unit(value: Decimal) -> Decimal:
         raise_param_error("credits_per_unit")
 
 
-def _normalize_create_only(payload: dict[str, Any]) -> bool:
+def _normalize_create_only(payload: dict[str, object]) -> bool:
     if "create_only" not in payload:
         return False
     value = payload.get("create_only")
@@ -175,13 +182,13 @@ def _load_llm_credit_1x_reference_cost() -> Decimal | None:
     return load_llm_credit_1x_unit_cost()
 
 
-def _load_default_llm_metric_ratio(metric: int) -> Decimal:
+def _load_model_1_metric_ratio(metric: int, app: Flask) -> Decimal:
     if metric == BILLING_METRIC_LLM_OUTPUT_TOKENS:
         return Decimal(1)
 
-    default_model = str(get_config("DEFAULT_LLM_MODEL", "") or "").strip()
-    if default_model:
-        provider, model_candidates = _resolve_llm_rate_identity(default_model)
+    model_1_id = get_default_llm_model(app)
+    if model_1_id:
+        provider, model_candidates = _resolve_llm_rate_identity(model_1_id)
         metric_cost = _unit_cost(
             _rate_for_identity(
                 usage_type=BILL_USAGE_TYPE_LLM,
@@ -206,11 +213,12 @@ def _load_default_llm_metric_ratio(metric: int) -> Decimal:
 
 def _llm_credits_for_missing_metric(
     *,
+    app: Flask,
     metric: int,
     output_unit_cost: Decimal,
     unit_size: int,
 ) -> Decimal:
-    ratio = _load_default_llm_metric_ratio(metric)
+    ratio = _load_model_1_metric_ratio(metric, app)
     return output_unit_cost * ratio * Decimal(str(unit_size))
 
 
@@ -331,7 +339,7 @@ def _serialize_rate_row(
     baseline_cost: Decimal | None,
     tts_chars_per_llm_token: Decimal | None,
     rate_index: _ActiveRateIndex | None = None,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     rate_model_candidates = model_candidates or [model]
     resolved_rate_model = rate_model or (
         rate_model_candidates[0] if rate_model_candidates else model
@@ -399,7 +407,7 @@ def _build_llm_rows(
     app: Flask,
     baseline_cost: Decimal | None,
     rate_index: _ActiveRateIndex,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, object]]:
     rows: list[dict[str, Any]] = []
     catalog_seen: set[tuple[str, str]] = set()
     seen: set[tuple[str, str]] = set()
@@ -459,7 +467,7 @@ def _build_llm_rows(
 def _build_tts_rows(
     baseline_cost: Decimal | None,
     rate_index: _ActiveRateIndex,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, object]]:
     config = get_all_provider_configs()
     tts_chars_per_llm_token = _load_tts_chars_per_llm_token()
     rows: list[dict[str, Any]] = []
@@ -528,14 +536,14 @@ def _load_active_exact_rate_identities(
     return sorted(identities)
 
 
-def get_operator_rate_config(app: Flask) -> dict[str, Any]:
+def get_operator_rate_config(app: Flask) -> dict[str, object]:
+    """Return operator rate config."""
     with app_context_scope(app):
         baseline_cost = _load_llm_credit_1x_reference_cost()
         baseline_per_1000 = load_llm_credit_1x_per_1000_output_tokens()
         rate_index = _load_active_rate_index()
         return {
             "baseline": {
-                "default_llm_model": str(get_config("DEFAULT_LLM_MODEL", "") or ""),
                 "unit_cost": _decimal_to_number(baseline_cost or Decimal(0)),
                 "per_1000_output_tokens": _decimal_to_number(
                     baseline_per_1000 or Decimal(0)
@@ -550,7 +558,7 @@ def get_operator_rate_config(app: Flask) -> dict[str, Any]:
         }
 
 
-def _normalize_usage_type(value: Any) -> int:
+def _normalize_usage_type(value: object) -> int:
     if isinstance(value, str):
         normalized = value.strip().lower()
         if normalized in _USAGE_TYPE_CODES:
@@ -564,7 +572,7 @@ def _normalize_usage_type(value: Any) -> int:
     return numeric
 
 
-def _normalize_metric(value: Any, *, usage_type: int) -> int:
+def _normalize_metric(value: object, *, usage_type: int) -> int:
     if isinstance(value, str):
         normalized = value.strip()
         if normalized in _METRIC_CODES:
@@ -584,9 +592,11 @@ def _normalize_metric(value: Any, *, usage_type: int) -> int:
 def update_operator_rate_config(
     app: Flask,
     *,
-    payload: dict[str, Any],
+    payload: dict[str, object],
     operator_user_bid: str,
-) -> dict[str, Any]:
+) -> dict[str, object]:
+    """Update operator rate config."""
+    _ = operator_user_bid
     with app_context_scope(app), unit_of_work():
         create_only = _normalize_create_only(payload)
         usage_type = _normalize_usage_type(payload.get("usage_type"))
@@ -781,6 +791,7 @@ def update_operator_rate_config(
                     )
                 else:
                     next_credits_per_unit = _llm_credits_for_missing_metric(
+                        app=app,
                         metric=metric,
                         output_unit_cost=target_unit_cost,
                         unit_size=next_unit_size,

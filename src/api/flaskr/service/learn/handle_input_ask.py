@@ -1,3 +1,5 @@
+"""Handle learner follow-up questions and streamed answers."""
+
 from collections.abc import Generator
 from typing import Any
 
@@ -12,6 +14,7 @@ from flaskr.common.i18n_utils import get_markdownflow_output_language
 from flaskr.dao import db
 from flaskr.framework.plugin.plugin_manager import extensible_generic
 from flaskr.i18n import _, get_current_language
+from flaskr.service.common.models import raise_param_error
 from flaskr.service.learn.ask_provider_adapters.consts import (
     ASK_PROVIDER_LLM,
     ASK_PROVIDER_MODE_PROVIDER_ONLY,
@@ -19,20 +22,25 @@ from flaskr.service.learn.ask_provider_adapters.consts import (
 )
 from flaskr.service.learn.ask_provider_langfuse import stream_provider_with_langfuse
 from flaskr.service.learn.const import ROLE_STUDENT, ROLE_TEACHER
+from flaskr.service.learn.follow_up_context import (
+    build_follow_up_conversation_context,
+    build_follow_up_element_history,
+    build_legacy_follow_up_history,
+    is_complete_follow_up_asks,
+)
 from flaskr.service.learn.langfuse_naming import (
     build_langfuse_generation_name,
     build_langfuse_span_name,
 )
 from flaskr.service.learn.learn_dtos import (
-    ElementType,
     GeneratedType,
     RunMarkdownFlowDTO,
 )
-from flaskr.service.learn.listen_element_payloads import _deserialize_payload
 from flaskr.service.learn.listen_element_queries import (
     _load_latest_active_element_row,
     find_follow_up_element_rows,
 )
+from flaskr.service.learn.live_follow_up_config import is_live_follow_up_model
 from flaskr.service.learn.models import LearnGeneratedBlock
 from flaskr.service.learn.utils_v2 import (
     get_fmt_prompt,
@@ -48,8 +56,6 @@ from flaskr.service.shifu.ask_provider_registry import get_effective_ask_provide
 from flaskr.service.shifu.consts import (
     BLOCK_TYPE_MDANSWER_VALUE,
     BLOCK_TYPE_MDASK_VALUE,
-    BLOCK_TYPE_MDCONTENT_VALUE,
-    BLOCK_TYPE_MDINTERACTION_VALUE,
 )
 from flaskr.service.shifu.shifu_struct_manager import ShifuOutlineItemDto
 from flaskr.service.user.repository import UserAggregate
@@ -63,99 +69,47 @@ stream_ask_provider_response = None
 chat_llm = None
 
 
-def _is_valid_asks(asks):
-    """Check if asks list has at least one complete student+teacher pair."""
-    if not asks or not isinstance(asks, list):
-        return False
-    has_student = any(a.get("role") == "student" for a in asks if isinstance(a, dict))
-    has_teacher = any(a.get("role") == "teacher" for a in asks if isinstance(a, dict))
-    return has_student and has_teacher
+def _is_valid_asks(asks: object) -> bool:
+    """Compatibility wrapper for legacy follow-up history tests and callers."""
+    return is_complete_follow_up_asks(asks)
 
 
-def _load_legacy_ask_context(anchor_element, ask_element, ask_max_history_len):
+def _load_legacy_ask_context(
+    anchor_element: object,
+    ask_element: object,
+    ask_max_history_len: int,
+) -> list[dict[str, str]] | None:
+    """Compatibility wrapper around the shared legacy-history builder."""
     if anchor_element is None or ask_element is None:
         return None
-
-    payload_dto = _deserialize_payload(getattr(ask_element, "payload", "") or "")
-    asks = payload_dto.asks
-
-    if not _is_valid_asks(asks):
-        return None
-
-    messages = []
-    # Anchor element content as first assistant context message
-    anchor_content = getattr(anchor_element, "content_text", "") or ""
-    if anchor_content:
-        messages.append({"role": "assistant", "content": anchor_content})
-
-    # Map asks entries: student -> user, teacher -> assistant
-    for entry in asks[-ask_max_history_len:]:
-        if not isinstance(entry, dict):
-            continue
-        role = entry.get("role", "")
-        content = entry.get("content", "")
-        if role == "student":
-            messages.append({"role": "user", "content": content})
-        elif role == "teacher":
-            messages.append({"role": "assistant", "content": content})
-
-    return messages
+    return build_legacy_follow_up_history(
+        anchor_element,
+        ask_element,
+        max(0, int(ask_max_history_len)),
+    )
 
 
-def _load_ask_context(anchor_element, follow_up_elements, ask_max_history_len):
-    """Load ask context from ask/answer sidecar elements first."""
-    if anchor_element is None or not follow_up_elements:
-        return None
-
-    messages = []
-    anchor_content = getattr(anchor_element, "content_text", "") or ""
-    if anchor_content:
-        messages.append({"role": "assistant", "content": anchor_content})
-
-    row_messages = []
-    legacy_ask_element = None
-    has_new_follow_up_elements = False
-
-    for row in follow_up_elements:
-        element_type = str(getattr(row, "element_type", "") or "")
-        payload_dto = _deserialize_payload(getattr(row, "payload", "") or "")
-        if element_type == ElementType.ASK.value and _is_valid_asks(payload_dto.asks):
-            legacy_ask_element = row
-            continue
-
-        content = getattr(row, "content_text", "") or ""
-        if not content:
-            continue
-
-        if element_type == ElementType.ASK.value:
-            has_new_follow_up_elements = True
-            row_messages.append({"role": "user", "content": content})
-        elif element_type == ElementType.ANSWER.value:
-            has_new_follow_up_elements = True
-            row_messages.append({"role": "assistant", "content": content})
-
-    if has_new_follow_up_elements and row_messages:
-        messages.extend(row_messages[-ask_max_history_len:])
-        return messages
-
-    if legacy_ask_element is not None:
-        return _load_legacy_ask_context(
-            anchor_element,
-            legacy_ask_element,
-            ask_max_history_len,
-        )
-
-    return None
+def _load_ask_context(
+    anchor_element: object,
+    follow_up_elements: object,
+    ask_max_history_len: int,
+) -> list[dict[str, str]] | None:
+    """Compatibility wrapper around the shared sidecar-history builder."""
+    return build_follow_up_element_history(
+        anchor_element,
+        follow_up_elements,
+        max(0, int(ask_max_history_len)),
+    )
 
 
 def _create_ask_block(
-    app,
-    outline_item_info,
-    attend_id,
-    user_bid,
-    input_text,
-    last_position,
-):
+    app: object,
+    outline_item_info: object,
+    attend_id: object,
+    user_bid: object,
+    input_text: object,
+    last_position: object,
+) -> LearnGeneratedBlock:
     ask_block = init_generated_block(
         app,
         shifu_bid=outline_item_info.shifu_bid,
@@ -175,13 +129,13 @@ def _create_ask_block(
 
 
 def _create_answer_block(
-    app,
-    outline_item_info,
-    attend_id,
-    user_bid,
-    response_text,
-    last_position,
-):
+    app: object,
+    outline_item_info: object,
+    attend_id: object,
+    user_bid: object,
+    response_text: object,
+    last_position: object,
+) -> LearnGeneratedBlock:
     answer_block = init_generated_block(
         app,
         shifu_bid=outline_item_info.shifu_bid,
@@ -200,20 +154,20 @@ def _create_answer_block(
 
 
 def _run_guardrail(
-    app,
-    user_info,
-    ask_block,
-    input_text,
-    span,
-    outline_item_info,
-    last_position,
-    follow_up_model,
-    follow_up_info,
-    attend_id,
-    usage_context,
-    chapter_title,
-    ask_scene,
-):
+    app: object,
+    user_info: object,
+    ask_block: object,
+    input_text: object,
+    span: object,
+    outline_item_info: object,
+    last_position: object,
+    follow_up_model: object,
+    follow_up_info: object,
+    attend_id: object,
+    usage_context: object,
+    chapter_title: object,
+    ask_scene: object,
+) -> list[str]:
     check_text_func = globals().get("check_text_with_llm_response")
     llm_settings_cls = globals().get("LLMSettings")
     if check_text_func is None or llm_settings_cls is None:
@@ -237,6 +191,7 @@ def _run_guardrail(
         block_position=last_position,
         llm_settings=llm_settings_cls(
             model=follow_up_model,
+            usage_metadata=getattr(follow_up_info, "usage_metadata", {}),
             temperature=follow_up_info.model_args["temperature"],
         ),
         attend_id=attend_id,
@@ -253,7 +208,7 @@ def _run_guardrail(
     return chunks
 
 
-def _append_context_langfuse_output(context: Any, value: str) -> None:
+def _append_context_langfuse_output(context: object, value: str) -> None:
     append_output = getattr(context, "append_langfuse_output", None)
     if callable(append_output) and value:
         append_output(value)
@@ -261,10 +216,10 @@ def _append_context_langfuse_output(context: Any, value: str) -> None:
 
 def _finalize_ask_trace(
     *,
-    context: Any,
+    context: object,
     trace: LangfuseTraceHandle,
-    parent_observation: Any | None,
-    span: Any,
+    parent_observation: object | None,
+    span: object,
     trace_args: dict,
     response_text: str,
 ) -> None:
@@ -285,7 +240,7 @@ def _finalize_ask_trace(
 @extensible_generic
 def handle_input_ask(
     app: Flask,
-    context,
+    context: object,
     user_info: UserAggregate,
     attend_id: str,
     user_input: str,
@@ -295,15 +250,22 @@ def handle_input_ask(
     is_preview: bool = False,
     last_position: int = -1,
     anchor_element_bid: str = "",
-    parent_observation: Any | None = None,
+    parent_observation: object | None = None,
+    runtime_profiles: dict | None = None,
 ) -> Generator[str, None, None]:
-    """Handle user Q&A input
-    Responsible for processing user questions in the shifu and returning AI tutor responses.
+    """Handle user Q&A input.
+
+    Process user questions in the shifu and return AI tutor responses.
     """
     # Get follow-up information (including Q&A prompts and model configuration)
     follow_up_info = get_follow_up_info_v2(
         app, outline_item_info.shifu_bid, outline_item_info.bid, attend_id, is_preview
     )
+    if is_live_follow_up_model(follow_up_info.ask_model):
+        # Live voice has a dedicated authenticated WebSocket transport. The
+        # legacy text/SSE path must never invoke it through LiteLLM or create a
+        # text fallback history turn.
+        raise_param_error("follow_up_model")
 
     usage_scene = BILL_USAGE_SCENE_PREVIEW if is_preview else BILL_USAGE_SCENE_PROD
     usage_context = UsageContext(
@@ -324,8 +286,6 @@ def handle_input_ask(
     except ValueError:
         ask_max_history_len = 10
 
-    llm_messages = []  # Conversation messages for built-in LLM ask.
-    provider_messages = []  # Conversation messages for external ask providers.
     raw_input = user_input
     normalized_trace_input = normalize_langfuse_input_value(raw_input)
     if normalized_trace_input and not trace_args.get("input"):
@@ -333,88 +293,31 @@ def handle_input_ask(
     escaped_input = raw_input.replace("{", "{{").replace(
         "}", "}}"
     )  # Escape braces to avoid formatting conflicts
-    use_learner_language = getattr(context._shifu_info, "use_learner_language", 0)
-    prompt_kwargs: dict[str, Any] = {}
-    if use_learner_language:
-        runtime_language = str(get_current_language() or "").strip()
-        if runtime_language:
-            prompt_kwargs["profile_overrides"] = {
-                "sys_user_language": runtime_language,
-                "language": runtime_language,
-            }
-    system_prompt_template = context.get_system_prompt(outline_item_info.bid)
-    base_system_prompt = (
-        None
-        if system_prompt_template is None or system_prompt_template == ""
-        else get_fmt_prompt(
-            app,
-            user_info.user_id,
-            outline_item_info.shifu_bid,
-            system_prompt_template,
-            **prompt_kwargs,
-        )
+    use_learner_language = bool(getattr(context._shifu_info, "use_learner_language", 0))
+    runtime_language = str(get_current_language() or "").strip()
+    conversation_context = build_follow_up_conversation_context(
+        app,
+        user_info=user_info,
+        shifu_bid=outline_item_info.shifu_bid,
+        outline_item_bid=outline_item_info.bid,
+        progress_record_bid=attend_id,
+        follow_up_info=follow_up_info,
+        course_system_prompt=context.get_system_prompt(outline_item_info.bid),
+        use_learner_language=use_learner_language,
+        runtime_language=runtime_language,
+        runtime_profiles=dict(runtime_profiles or {}),
+        anchor_element_bid=anchor_element_bid,
+        max_history_messages=ask_max_history_len,
+        latest_element_loader=_load_latest_active_element_row,
+        element_rows_loader=find_follow_up_element_rows,
+        generated_block_model=LearnGeneratedBlock,
+        format_prompt=get_fmt_prompt,
+        output_language=(
+            get_markdownflow_output_language() if use_learner_language else None
+        ),
     )
-    llm_system_prompt = follow_up_info.ask_prompt.replace(
-        "{shifu_system_message}", base_system_prompt or ""
-    )
-    # Append language instruction if use_learner_language is enabled
-    if use_learner_language:
-        output_language = get_markdownflow_output_language()
-        llm_system_prompt += f"\n\nIMPORTANT: You MUST respond in {output_language}."
-    llm_messages.append({"role": "system", "content": llm_system_prompt})
-    if base_system_prompt:
-        provider_messages.append({"role": "system", "content": base_system_prompt})
-
-    # Try loading ask context from ask/answer sidecar elements first
-    anchor_element = None
-    follow_up_elements = []
-    if anchor_element_bid:
-        anchor_element = _load_latest_active_element_row(anchor_element_bid)
-        if anchor_element is not None:
-            follow_up_elements = find_follow_up_element_rows(
-                attend_id,
-                anchor_element_bid,
-            )
-
-    element_context = _load_ask_context(
-        anchor_element,
-        follow_up_elements,
-        ask_max_history_len,
-    )
-    if element_context is not None:
-        for msg in element_context:
-            llm_messages.append(msg)
-            provider_messages.append(msg)
-    else:
-        # Fallback: load from LearnGeneratedBlock
-        history_scripts: list[LearnGeneratedBlock] = (
-            LearnGeneratedBlock.query.filter(
-                LearnGeneratedBlock.progress_record_bid == attend_id,
-                LearnGeneratedBlock.deleted == 0,
-            )
-            .order_by(LearnGeneratedBlock.id.desc())
-            .limit(ask_max_history_len)
-            .all()
-        )
-        history_scripts.reverse()
-        for script in history_scripts:
-            if script.type in [BLOCK_TYPE_MDASK_VALUE, BLOCK_TYPE_MDINTERACTION_VALUE]:
-                history_message = {
-                    "role": "user",
-                    "content": script.generated_content,
-                }
-                llm_messages.append(history_message)
-                provider_messages.append(history_message)
-            elif script.type in [
-                BLOCK_TYPE_MDANSWER_VALUE,
-                BLOCK_TYPE_MDCONTENT_VALUE,
-            ]:
-                history_message = {
-                    "role": "assistant",
-                    "content": script.generated_content,
-                }
-                llm_messages.append(history_message)
-                provider_messages.append(history_message)
+    llm_messages = list(conversation_context.llm_messages)
+    provider_messages = list(conversation_context.provider_messages)
 
     # RAG retrieval has been removed from this system
 
@@ -434,7 +337,7 @@ def handle_input_ask(
     # Append language instruction to user input if use_learner_language is enabled
     user_content = format_constraint + escaped_input
     if use_learner_language:
-        output_language = get_markdownflow_output_language()
+        output_language = conversation_context.output_language
         user_content += f"\n\n(IMPORTANT: You MUST respond in {output_language}.)"
     user_message = {
         "role": "user",
@@ -447,8 +350,9 @@ def handle_input_ask(
 
     # Get model for follow-up Q&A
     follow_up_model = follow_up_info.ask_model
-    if not follow_up_model:
-        follow_up_model = app.config.get("DEFAULT_LLM_MODEL", "")
+    from flaskr.api.llm.model_selection import resolve_selection
+
+    follow_up_usage_metadata = dict(getattr(follow_up_info, "usage_metadata", {}))
 
     # Create ask block
     ask_block = _create_ask_block(
@@ -591,12 +495,18 @@ def handle_input_ask(
         apply_knowledge_to_messages,
     )
 
-    def _chat_llm_stream(stream_messages: list[dict[str, Any]]):
+    def _chat_llm_stream(
+        stream_messages: list[dict[str, Any]],
+    ) -> Generator[Any, None, None]:
+        # External provider-only answers do not depend on LLM configuration.
+        # Guardrail rejections resolve through invoke_llm in check_text instead.
+        model, metadata = resolve_selection(follow_up_model, follow_up_usage_metadata)
         return chat_llm_func(
             app,
             user_info.user_id,
             span,
-            model=follow_up_model,  # Use configured model
+            model=model,
+            usage_metadata=metadata,
             json=True,
             stream=True,  # Enable streaming output
             temperature=follow_up_info.model_args[

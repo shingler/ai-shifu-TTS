@@ -1,12 +1,20 @@
 {
   "default": "en-US",
   "locales": {
+    "ar-SA": {
+      "label": "العربية",
+      "rtl": true
+    },
     "en-US": {
       "label": "English",
       "rtl": false
     },
     "fr-FR": {
       "label": "Français",
+      "rtl": false
+    },
+    "th-TH": {
+      "label": "ไทย",
       "rtl": false
     },
     "zh-CN": {
@@ -18,6 +26,7 @@
     "common.core",
     "common.errors",
     "common.language",
+    "component.courseCreationChoiceDialog",
     "component.createShifuDialog",
     "component.header",
     "component.menus",
@@ -62,6 +71,7 @@
     "server.learn",
     "server.llm",
     "server.metering",
+    "server.modelGateway",
     "server.openapi",
     "server.order",
     "server.outline",

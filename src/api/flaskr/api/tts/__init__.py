@@ -7,6 +7,8 @@ This module provides integration with multiple Text-to-Speech providers:
 - Aliyun (NLS RESTful TTS API)
 - Tencent (TRTC conversational SSE API)
 - Tencent TextToVoice (standard Tencent Cloud TTS API)
+- ElevenLabs (create-speech REST API)
+- Gemini (generateContent speech API)
 
 The provider can be selected per-Shifu configuration.
 """
@@ -14,6 +16,7 @@ The provider can be selected per-Shifu configuration.
 import contextlib
 import json
 import logging
+from collections.abc import Iterator
 from decimal import Decimal, InvalidOperation
 
 from flask import has_request_context, request
@@ -27,6 +30,9 @@ from flaskr.api.tts.base import (
 from flaskr.api.tts.base import (
     BaseTTSProvider as BaseTTSProvider,
 )
+from flaskr.api.tts.base import (
+    ProviderCapabilities as ProviderCapabilities,
+)
 
 # Re-export base classes for backward compatibility
 from flaskr.api.tts.base import (
@@ -38,6 +44,8 @@ from flaskr.api.tts.base import (
 from flaskr.api.tts.base import (
     VoiceSettings as VoiceSettings,
 )
+from flaskr.api.tts.elevenlabs_provider import ElevenLabsTTSProvider
+from flaskr.api.tts.gemini_provider import GeminiTTSProvider
 from flaskr.api.tts.minimax_provider import MinimaxTTSProvider
 from flaskr.api.tts.tencent_provider import TencentTTSProvider
 from flaskr.api.tts.tencent_texttovoice_provider import TencentTextToVoiceProvider
@@ -47,7 +55,7 @@ from flaskr.common.config import get_config
 from flaskr.common.log import AppLoggerProxy
 from flaskr.i18n import get_current_language
 from flaskr.service.billing.consts import BILLING_METRIC_TTS_OUTPUT_CHARS
-from flaskr.service.billing.rate_references import load_llm_credit_1x_unit_cost
+from flaskr.service.common.credit_rate_references import load_llm_credit_1x_unit_cost
 from flaskr.service.metering.consts import BILL_USAGE_SCENE_PROD, BILL_USAGE_TYPE_TTS
 from flaskr.util.datetime import now_utc
 
@@ -63,6 +71,8 @@ _PROVIDER_REGISTRY = {
     "aliyun": AliyunTTSProvider,
     "tencent": TencentTTSProvider,
     "tencent_texttovoice": TencentTextToVoiceProvider,
+    "elevenlabs": ElevenLabsTTSProvider,
+    "gemini": GeminiTTSProvider,
 }
 _PROVIDER_PRIORITY = (
     "minimax",
@@ -72,13 +82,57 @@ _PROVIDER_PRIORITY = (
     "aliyun",
     "tencent",
     "tencent_texttovoice",
+    "elevenlabs",
+    "gemini",
 )
-_AUTO_DETECT_PROVIDER_PRIORITY = (
-    "minimax",
-    "volcengine",
-    "volcengine_http",
-    "baidu",
-    "aliyun",
+
+
+def get_provider_capabilities(provider_name: str) -> ProviderCapabilities:
+    """Return the declared capabilities of a registered provider.
+
+    Unknown or empty names return the conservative defaults so callers can
+    branch on capability flags without first checking registration.
+    """
+    provider_cls = _PROVIDER_REGISTRY.get(_normalize_provider_name(provider_name))
+    if provider_cls is None:
+        return ProviderCapabilities()
+    return _capabilities_of(provider_cls)
+
+
+def _capabilities_of(provider_cls: object) -> ProviderCapabilities:
+    # Registry entries are duck-typed (tests substitute minimal fakes), so a
+    # class without a declaration gets the conservative defaults.
+    capabilities = getattr(provider_cls, "capabilities", None)
+    if isinstance(capabilities, ProviderCapabilities):
+        return capabilities
+    return ProviderCapabilities()
+
+
+def list_provider_names() -> tuple[str, ...]:
+    """Return registered provider names in default selection order."""
+    return tuple(name for name in _PROVIDER_PRIORITY if name in _PROVIDER_REGISTRY)
+
+
+def _auto_detectable_provider_names() -> tuple[str, ...]:
+    return tuple(
+        name
+        for name in list_provider_names()
+        if _capabilities_of(_PROVIDER_REGISTRY[name]).auto_detectable
+    )
+
+
+# Derived views kept for callers and tests that inspect the registry shape.
+# The source of truth is each provider's ``capabilities`` declaration.
+_AUTO_DETECT_PROVIDER_PRIORITY = _auto_detectable_provider_names()
+_CONFIG_REQUIRES_CONFIGURED_PROVIDER = frozenset(
+    name
+    for name in list_provider_names()
+    if _capabilities_of(_PROVIDER_REGISTRY[name]).expose_only_when_configured
+)
+_CONFIG_REQUIRES_ALLOWED_MODEL = frozenset(
+    name
+    for name in list_provider_names()
+    if _capabilities_of(_PROVIDER_REGISTRY[name]).restrict_models_to_allowlist
 )
 
 # Provider instances (lazy initialized)
@@ -119,22 +173,25 @@ def _resolve_provider_name(provider_name: str = "") -> str:
     return normalized or _auto_detect_provider_name()
 
 
-def _iter_provider_classes(*, include_explicit_only: bool = True):
+def _iter_provider_classes(
+    *, include_explicit_only: bool = True
+) -> Iterator[tuple[str, type[BaseTTSProvider]]]:
     provider_priority = (
-        _PROVIDER_PRIORITY if include_explicit_only else _AUTO_DETECT_PROVIDER_PRIORITY
+        list_provider_names()
+        if include_explicit_only
+        else _auto_detectable_provider_names()
     )
     for name in provider_priority:
-        provider_cls = _PROVIDER_REGISTRY.get(name)
-        if provider_cls:
-            yield name, provider_cls
+        yield name, _PROVIDER_REGISTRY[name]
 
 
 def get_tts_provider(provider_name: str = "") -> BaseTTSProvider:
     """Get a TTS provider instance.
 
     Args:
-        provider_name: Provider name ("minimax", "volcengine", "volcengine_http", "baidu", "aliyun", "tencent").
-                      If empty, auto-detects.
+        provider_name: Provider name ("minimax", "volcengine", "volcengine_http",
+                      "baidu", "aliyun", "tencent", "tencent_texttovoice",
+                      "elevenlabs", "gemini"). If empty, auto-detects.
 
     Returns:
         TTS provider instance
@@ -149,7 +206,8 @@ def get_tts_provider(provider_name: str = "") -> BaseTTSProvider:
     if provider_name not in _provider_instances:
         provider_cls = _PROVIDER_REGISTRY.get(provider_name)
         if not provider_cls:
-            raise ValueError(f"Unknown TTS provider: {provider_name}")
+            message = f"Unknown TTS provider: {provider_name}"
+            raise ValueError(message)
         _provider_instances[provider_name] = provider_cls()
 
     return _provider_instances[provider_name]
@@ -296,7 +354,7 @@ def _parse_tts_display_names() -> dict:
     return normalized
 
 
-def _iter_tts_display_language_candidates():
+def _iter_tts_display_language_candidates() -> Iterator[str]:
     if has_request_context():
         for value in (
             request.args.get("language"),
@@ -443,7 +501,11 @@ def _load_usage_rate_unit_cost(
 
 def _format_credit_multiplier_label(value: Decimal) -> str:
     rounded = value.quantize(Decimal("0.01"))
-    text = format(rounded.normalize(), "f").rstrip("0").rstrip(".")
+    if rounded == rounded.to_integral_value():
+        # Whole numbers must not lose trailing zeros: stripping "30" to "3".
+        text = str(int(rounded))
+    else:
+        text = format(rounded.normalize(), "f").rstrip("0").rstrip(".")
     return f"{text or '0'}x"
 
 
@@ -526,12 +588,30 @@ def get_all_provider_configs() -> dict:
     """
     providers = []
     provider_payloads: list[tuple[str, dict]] = []
+    allowed_model_keys = set(_parse_allowed_tts_model_keys())
 
     # Get config from each provider
     for name, provider_cls in _iter_provider_classes():
         try:
             provider = provider_cls()
+            capabilities = _capabilities_of(provider_cls)
+            if (
+                capabilities.expose_only_when_configured
+                and not provider.is_configured()
+            ):
+                continue
             payload = provider.get_provider_config().to_dict()
+            if capabilities.restrict_models_to_allowlist and allowed_model_keys:
+                allowed_models = [
+                    item
+                    for item in payload.get("models") or []
+                    if isinstance(item, dict)
+                    and _normalize_tts_model_key(name, str(item.get("value") or ""))
+                    in allowed_model_keys
+                ]
+                if not allowed_models:
+                    continue
+                payload["models"] = allowed_models
             providers.append(payload)
             provider_payloads.append((name, payload))
         except Exception as e:

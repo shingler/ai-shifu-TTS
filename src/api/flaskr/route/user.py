@@ -1,14 +1,27 @@
+"""Expose user HTTP routes."""
+
 import contextlib
+from collections.abc import Callable
+from dataclasses import dataclass
 from functools import wraps
+from typing import ParamSpec, TypeVar
 
-from flask import Flask, current_app, make_response, request
+from flask import Flask, Response, current_app, make_response, request
 
+from flaskr.common.client_ip import resolve_client_ip
+from flaskr.common.http import sensitive_body
 from flaskr.common.public_urls import resolve_request_origin
 from flaskr.common.shifu_context import with_shifu_context
 from flaskr.dao import db
+from flaskr.dao.uow import unit_of_work
 from flaskr.i18n import _translations, set_language
 from flaskr.service.common.dtos import OAuthStartDTO, UserToken
-from flaskr.service.common.models import raise_error, raise_param_error
+from flaskr.service.common.models import (
+    ERROR_CODE,
+    AppError,
+    raise_error,
+    raise_param_error,
+)
 from flaskr.service.common.phone_numbers import normalize_phone_identifier
 from flaskr.service.feedback.funs import submit_feedback
 from flaskr.service.order.consts import ORDER_STATUS_SUCCESS
@@ -18,23 +31,15 @@ from flaskr.service.profile.funcs import (
     get_user_profile_labels,
     update_user_profile_with_lable,
 )
-from flaskr.service.profile.learner_profile import (
-    clear_learner_profile,
-    get_learner_profile,
-    replace_learner_profile,
-)
-from flaskr.service.profile.learner_profile_optimizer import optimize_learner_profile
-from flaskr.service.profile.learner_profile_optimizer_admission import (
-    learner_profile_optimization_admission,
-)
-from flaskr.service.profile.onboarding import (
-    complete_profile_onboarding,
-    get_profile_onboarding_status,
-)
 from flaskr.service.referral.service import extract_referral_post_auth_fields
 from flaskr.service.shifu.models import PublishedShifu, ShifuUserArchive
+from flaskr.service.user import password_flow
 from flaskr.service.user.auth import get_provider
-from flaskr.service.user.auth.base import OAuthCallbackRequest, VerificationRequest
+from flaskr.service.user.auth.base import (
+    ChallengeRequest,
+    OAuthCallbackRequest,
+    VerificationRequest,
+)
 from flaskr.service.user.auth.providers.google import (
     resolve_state_return_origin,
 )
@@ -43,28 +48,31 @@ from flaskr.service.user.captcha import (
     verify_captcha_code,
 )
 from flaskr.service.user.common import update_user_info, validate_user
-from flaskr.service.user.consts import CREDENTIAL_STATE_VERIFIED
-from flaskr.service.user.models import AuthCredential
+from flaskr.service.user.device_auth import (
+    approve_device_authorization,
+    create_device_authorization,
+    deny_device_authorization,
+    get_device_authorization,
+    poll_device_authorization,
+)
+from flaskr.service.user.models import UserInfo
 from flaskr.service.user.onboarding import (
     ONBOARDING_VERSION,
     build_onboarding_status,
     complete_onboarding_scene,
 )
-from flaskr.service.user.password_utils import (
-    hash_password,
-    validate_password_strength,
-    verify_password,
-)
+from flaskr.service.user.password_utils import validate_password_strength
 from flaskr.service.user.post_auth import PostAuthContext, run_post_auth_extensions
 from flaskr.service.user.repository import (
     build_user_info_from_aggregate,
-    find_credential,
-    get_password_hash,
-    list_credentials,
     load_user_aggregate,
-    load_user_aggregate_by_identifier,
-    set_password_hash,
 )
+from flaskr.service.user.sessions import (
+    list_user_sessions,
+    revoke_other_user_sessions,
+    revoke_user_session,
+)
+from flaskr.service.user.token_store import token_store
 from flaskr.service.user.user import (
     generate_temp_user,
     update_user_open_id,
@@ -72,29 +80,61 @@ from flaskr.service.user.user import (
 )
 from flaskr.service.user.utils import (
     ensure_admin_creator_and_demo_permissions,
-    send_email_code,
-    send_sms_code,
+    persist_token,
 )
-from flaskr.service.user.verification_codes import consume_verification_code
-from flaskr.util.uuid import generate_id
 
 from .common import by_pass_login_func, bypass_token_validation, make_common_response
+from .profile import register_profile_routes
 
-_DEFAULT_SUPPORTED_RUNTIME_LANGUAGES = ("zh-CN", "en-US", "fr-FR")
+P = ParamSpec("P")
+R = TypeVar("R")
+
+_AUTH_SENSITIVE_BODY_MAX_BYTES = 32 * 1024
+
+_DEFAULT_SUPPORTED_RUNTIME_LANGUAGES = (
+    "zh-CN",
+    "en-US",
+    "fr-FR",
+    "ar-SA",
+    "th-TH",
+)
+
+_OPTIONAL_TOKEN_AUTH_ERROR_CODES = frozenset(
+    {
+        ERROR_CODE["server.user.userNotFound"],
+        ERROR_CODE["server.user.userNotLogin"],
+        ERROR_CODE["server.user.userTokenExpired"],
+    }
+)
 
 
-def _request_json_object(parameter_name: str) -> dict:
-    payload = request.get_json(silent=True)
-    if not isinstance(payload, dict):
-        raise_param_error(parameter_name)
-    return payload
+@dataclass(frozen=True, slots=True)
+class _VerificationLoginConfig:
+    provider_name: str
+    source: str
+    identifier_field: str
+    code_field: str
+    normalize_identifier: Callable[[str | None], str]
 
 
-def _reject_unknown_fields(
-    payload: dict, *, allowed_fields: set[str], parameter_name: str
-) -> None:
-    if set(payload) - allowed_fields:
-        raise_param_error(parameter_name)
+def _normalize_email_identifier(email: str | None) -> str:
+    return str(email or "").strip().lower()
+
+
+_SMS_LOGIN_CONFIG = _VerificationLoginConfig(
+    provider_name="phone",
+    source="sms",
+    identifier_field="mobile",
+    code_field="sms_code",
+    normalize_identifier=normalize_phone_identifier,
+)
+_EMAIL_LOGIN_CONFIG = _VerificationLoginConfig(
+    provider_name="email",
+    source="email",
+    identifier_field="email",
+    code_field="code",
+    normalize_identifier=_normalize_email_identifier,
+)
 
 
 def _normalize_runtime_language_code(language_code: str) -> str:
@@ -135,6 +175,31 @@ def _resolve_supported_runtime_language(raw_language: str | None) -> str | None:
     return normalized_language
 
 
+def _resolve_profile_onboarding_runtime_language(
+    user: UserInfo, raw_language: str | None
+) -> str:
+    """Resolve profile research to a bounded application-supported locale."""
+    supported_languages = (
+        tuple(_translations.keys()) or _DEFAULT_SUPPORTED_RUNTIME_LANGUAGES
+    )
+    if raw_language is not None:
+        resolved_language = _resolve_supported_runtime_language(raw_language)
+        if resolved_language in supported_languages:
+            return resolved_language
+        raise_param_error("language")
+
+    request_language = _extract_request_language({})
+    for candidate in (
+        request_language,
+        getattr(user, "language", None),
+        "en-US",
+    ):
+        resolved_language = _resolve_supported_runtime_language(candidate)
+        if resolved_language in supported_languages:
+            return resolved_language
+    return supported_languages[0]
+
+
 def _extract_request_language(payload: dict | None = None) -> str | None:
     raw_language = None
     if isinstance(payload, dict):
@@ -161,7 +226,7 @@ def _apply_request_language(payload: dict | None = None) -> None:
         set_language(language)
 
 
-def _resolve_runtime_language(user, payload: dict | None = None) -> str:
+def _resolve_runtime_language(user: object, payload: dict | None = None) -> str:
     """Prefer the current client language for this request without mutating the profile."""
     if payload is None and request.is_json:
         json_data = request.get_json(silent=True) or {}
@@ -172,42 +237,65 @@ def _resolve_runtime_language(user, payload: dict | None = None) -> str:
     )
 
 
-def _request_client_ip() -> str:
-    if "X-Forwarded-For" in request.headers:
-        return request.headers["X-Forwarded-For"].split(",")[0].strip()
-    return str(request.remote_addr or "").strip()
-
-
 def _extract_referral_post_auth_fields(payload: dict) -> dict[str, str]:
     return extract_referral_post_auth_fields(
         payload,
-        client_ip=_request_client_ip(),
+        client_ip=resolve_client_ip(),
         user_agent=request.headers.get("User-Agent"),
     )
 
 
-def optional_token_validation(f):
+def _extract_request_token() -> str | None:
+    """Read the request's token from every place a client may supply it."""
+    token = request.cookies.get("token", None)
+    if not token:
+        token = request.args.get("token", None)
+    if not token:
+        token = request.headers.get("Token", None)
+    if not token and request.method.upper() == "POST" and request.is_json:
+        payload = request.get_json(silent=True)
+        if isinstance(payload, dict):
+            token = payload.get("token", None)
+    return token
+
+
+def _optional_token_validation(
+    f: Callable[P, R], *, ignore_auth_errors: bool
+) -> Callable[P, R]:
+    """Attach valid optional identity, with route-specific stale-token handling."""
+
     @wraps(f)
-    def decorated_function(*args, **kwargs):
-        token = request.cookies.get("token", None)
-        if not token:
-            token = request.args.get("token", None)
-        if not token:
-            token = request.headers.get("Token", None)
-        if not token and request.method.upper() == "POST" and request.is_json:
-            token = request.get_json().get("token", None)
+    def decorated_function(*args: object, **kwargs: object) -> R:
+        token = _extract_request_token()
 
         if token:
             token = str(token)
-            user = validate_user(current_app, token)
-            set_language(_resolve_runtime_language(user))
-            request.user = user
+            try:
+                user = validate_user(current_app, token)
+            except AppError as error:
+                if not ignore_auth_errors or (
+                    error.code not in _OPTIONAL_TOKEN_AUTH_ERROR_CODES
+                ):
+                    raise
+            else:
+                set_language(_resolve_runtime_language(user))
+                request.user = user
         return f(*args, **kwargs)
 
     return decorated_function
 
 
-def _best_effort_password_login_user(app: Flask):
+def optional_token_validation(f: Callable[P, R]) -> Callable[P, R]:
+    """Accept an optional token while preserving authentication failures."""
+    return _optional_token_validation(f, ignore_auth_errors=False)
+
+
+def recovery_optional_token_validation(f: Callable[P, R]) -> Callable[P, R]:
+    """Treat a stale optional token as signed out on account-recovery routes."""
+    return _optional_token_validation(f, ignore_auth_errors=True)
+
+
+def _best_effort_password_login_user(app: Flask) -> UserInfo | None:
     """Resolve the explicitly authenticated guest without blocking login."""
     token = request.headers.get("Token", None)
     if not token:
@@ -220,8 +308,10 @@ def _best_effort_password_login_user(app: Flask):
 
 
 def register_user_handler(app: Flask, path_prefix: str) -> Flask:
+    """Register the user routes on the Flask application."""
+
     @app.before_request
-    def before_request():
+    def before_request() -> None:
         if request.path.startswith("/internal/"):
             return
         if (
@@ -249,9 +339,17 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         set_language(_resolve_runtime_language(user))
         request.user = user
 
+    register_profile_routes(
+        app,
+        path_prefix,
+        resolve_onboarding_language=_resolve_profile_onboarding_runtime_language,
+    )
+
     @app.route(path_prefix + "/info", methods=["GET"])
-    def info():
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def info() -> str:
         """Get user information.
+
         ---
         tags:
             - user
@@ -274,8 +372,9 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         return make_common_response(request.user)
 
     @app.route(path_prefix + "/ensure_admin_creator", methods=["POST"])
-    def ensure_admin_creator():
+    def ensure_admin_creator() -> str:
         """Ensure admin creator permissions for the current user.
+
         ---
         tags:
             - user
@@ -284,13 +383,13 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
                 description: ensure admin creator permissions
         """
         language = getattr(request.user, "language", None) or "en-US"
-        creator_granted_now = ensure_admin_creator_and_demo_permissions(
-            app,
-            request.user.user_id,
-            language,
-            "admin",
-        )
-        db.session.commit()
+        with unit_of_work():
+            creator_granted_now = ensure_admin_creator_and_demo_permissions(
+                app,
+                request.user.user_id,
+                language,
+                "admin",
+            )
         run_post_auth_extensions(
             app,
             PostAuthContext(
@@ -305,7 +404,7 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         return make_common_response({"granted": True})
 
     @app.route(path_prefix + "/onboarding/status", methods=["GET"])
-    def onboarding_status():
+    def onboarding_status() -> str:
         return make_common_response(
             build_onboarding_status(
                 app,
@@ -315,7 +414,7 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         )
 
     @app.route(path_prefix + "/onboarding/complete", methods=["POST"])
-    def complete_onboarding():
+    def complete_onboarding() -> str:
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             payload = {}
@@ -331,8 +430,10 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         )
 
     @app.route(path_prefix + "/update_info", methods=["POST"])
-    def update_info():
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def update_info() -> str:
         """Update user information.
+
         ---
         tags:
             - user
@@ -383,105 +484,13 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
             update_user_info(app, request.user, name, email, mobile, language, avatar)
         )
 
-    @app.route(path_prefix + "/profile-onboarding", methods=["GET"])
-    def profile_onboarding_status_api():
-        """Get platform-level profile onboarding state for current user.
-        ---
-        tags:
-            - user
-        responses:
-            200:
-                description: onboarding config and current user state
-        """
-        return make_common_response(
-            get_profile_onboarding_status(app, user_id=request.user.user_id)
-        )
-
-    @app.route(path_prefix + "/profile-onboarding/complete", methods=["POST"])
-    def complete_profile_onboarding_api():
-        """Complete or skip platform-level profile onboarding.
-        ---
-        tags:
-            - user
-        responses:
-            200:
-                description: onboarding completion result
-        """
-        payload = request.get_json(silent=True) or {}
-        if not isinstance(payload, dict):
-            raise_param_error("profile_onboarding")
-        result = complete_profile_onboarding(
-            app,
-            user_id=request.user.user_id,
-            skipped=bool(payload.get("skipped", False)),
-            variables=payload.get("variables") or {},
-        )
-        db.session.commit()
-        return make_common_response(result)
-
-    @app.route(path_prefix + "/learner-profile", methods=["GET"])
-    def learner_profile_api():
-        """Return the current user's canonical learning profile."""
-        return make_common_response(get_learner_profile(user_id=request.user.user_id))
-
-    @app.route(path_prefix + "/learner-profile", methods=["PUT"])
-    def update_learner_profile_api():
-        """Replace the current user's canonical learning profile."""
-        payload = _request_json_object("learner_profile")
-        _reject_unknown_fields(
-            payload,
-            allowed_fields={"learner_profile", "nickname"},
-            parameter_name="learner_profile",
-        )
-        learner_profile = payload.get("learner_profile")
-        if not isinstance(learner_profile, str):
-            raise_param_error("learner_profile")
-        nickname = payload.get("nickname")
-        if "nickname" in payload and not isinstance(nickname, str):
-            raise_param_error("nickname")
-        return make_common_response(
-            replace_learner_profile(
-                app,
-                user_id=request.user.user_id,
-                learner_profile=learner_profile,
-                nickname=nickname,
-            )
-        )
-
-    @app.route(path_prefix + "/learner-profile", methods=["DELETE"])
-    def clear_learner_profile_api():
-        """Clear the profile while keeping profile-v2 handled."""
-        return make_common_response(clear_learner_profile(user_id=request.user.user_id))
-
-    @app.route(path_prefix + "/learner-profile/optimize", methods=["POST"])
-    def optimize_learner_profile_api():
-        """Return an LLM-optimized draft without saving profile state."""
-        payload = _request_json_object("learner_profile")
-        _reject_unknown_fields(
-            payload,
-            allowed_fields={"learner_profile"},
-            parameter_name="learner_profile",
-        )
-        learner_profile = payload.get("learner_profile")
-        if not isinstance(learner_profile, str):
-            raise_param_error("learner_profile")
-        with learner_profile_optimization_admission(
-            app,
-            user_id=request.user.user_id,
-        ):
-            result = optimize_learner_profile(
-                app,
-                user_id=request.user.user_id,
-                learner_profile=learner_profile,
-                output_language=getattr(request.user, "language", None),
-            )
-        return make_common_response(result)
-
     @app.route(path_prefix + "/require_tmp", methods=["POST"])
     @bypass_token_validation
     @with_shifu_context()
-    def require_tmp():
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def require_tmp() -> Response:
         """Temp login user.
+
         ---
         tags:
             - user
@@ -519,8 +528,6 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
                                     $ref: "#/components/schemas/UserToken"
             400:
                 description: parameter error
-
-
         """
         parsed_payload = request.get_json(silent=True)
         payload = parsed_payload if isinstance(parsed_payload, dict) else {}
@@ -528,14 +535,11 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         source = str(payload.get("source") or "web").strip() or "web"
         wx_code = payload.get("wxcode", None)
         language = payload.get("language") or "en-US"
-        masked_wx_code = None
-        if isinstance(wx_code, str) and wx_code:
-            masked_wx_code = f"***{wx_code[-4:]}" if len(wx_code) > 4 else "***"
         app.logger.info(
-            "require_tmp tmp_id: %s, source: %s, wx_code: %s",
-            tmp_id,
-            source,
-            masked_wx_code,
+            "auth_event=temp_user_requested has_temp_id=%s has_source=%s has_wechat_code=%s",
+            bool(tmp_id),
+            bool(payload.get("source")),
+            bool(wx_code),
         )
         if not tmp_id:
             raise_param_error("temp_id")
@@ -544,8 +548,10 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
 
     @app.route(path_prefix + "/captcha", methods=["GET"])
     @bypass_token_validation
-    def captcha_api():
+    @sensitive_body()
+    def captcha_api() -> str:
         """Create image captcha.
+
         ---
         tags:
            - user
@@ -555,8 +561,10 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
 
     @app.route(path_prefix + "/captcha/verify", methods=["POST"])
     @bypass_token_validation
-    def captcha_verify_api():
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def captcha_verify_api() -> str:
         """Verify image captcha and return one-time ticket.
+
         ---
         tags:
            - user
@@ -578,9 +586,11 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
     # specification.
     @app.route(path_prefix + "/send_sms_code", methods=["POST"])
     @bypass_token_validation
-    @optional_token_validation
-    def send_sms_code_api():
+    @recovery_optional_token_validation
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def send_sms_code_api() -> str:
         """Send SMS Captcha.
+
         ---
         tags:
            - user
@@ -632,19 +642,26 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         captcha_ticket = payload.get("captcha_ticket", None)
         if not mobile:
             raise_param_error("mobile")
-        if "X-Forwarded-For" in request.headers:
-            client_ip = request.headers["X-Forwarded-For"].split(",")[0].strip()
-        else:
-            client_ip = request.remote_addr
-        return make_common_response(
-            send_sms_code(app, mobile, client_ip, captcha_ticket)
+        challenge = get_provider("phone").send_challenge(
+            app,
+            ChallengeRequest(
+                identifier=mobile,
+                metadata={
+                    "ip": resolve_client_ip(),
+                    "captcha_ticket": captcha_ticket,
+                    "require_captcha": True,
+                },
+            ),
         )
+        return make_common_response({"expire_in": challenge.expire_in})
 
     @app.route(path_prefix + "/console_send_sms_code", methods=["POST"])
     @bypass_token_validation
-    @optional_token_validation
-    def console_send_sms_code_api():
+    @recovery_optional_token_validation
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def console_send_sms_code_api() -> str:
         """Send SMS verification code for console clients without image captcha.
+
         ---
         tags:
            - user
@@ -655,85 +672,93 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         mobile = normalize_phone_identifier(payload.get("mobile", None))
         if not mobile:
             raise_param_error("mobile")
-        if "X-Forwarded-For" in request.headers:
-            client_ip = request.headers["X-Forwarded-For"].split(",")[0].strip()
-        else:
-            client_ip = request.remote_addr
-        return make_common_response(
-            send_sms_code(app, mobile, client_ip, require_captcha=False)
+        challenge = get_provider("phone").send_challenge(
+            app,
+            ChallengeRequest(
+                identifier=mobile,
+                metadata={
+                    "ip": resolve_client_ip(),
+                    "require_captcha": False,
+                },
+            ),
         )
+        return make_common_response({"expire_in": challenge.expire_in})
 
     @app.route(path_prefix + "/send_email_code", methods=["POST"])
     @bypass_token_validation
-    @optional_token_validation
-    def send_email_code_api():
+    @recovery_optional_token_validation
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def send_email_code_api() -> str:
         """Send email verification code.
+
         ---
         tags:
            - user
         """
-        email = request.get_json().get("email", None)
-        language = request.get_json().get("language", None)
+        payload = request.get_json(silent=True)
+        payload = payload if isinstance(payload, dict) else {}
+        _apply_request_language(payload)
+        email = _normalize_email_identifier(payload.get("email", None))
+        language = payload.get("language", None)
         if not email:
             raise_param_error("email")
+        challenge = get_provider("email").send_challenge(
+            app,
+            ChallengeRequest(
+                identifier=email,
+                metadata={
+                    "ip": resolve_client_ip(),
+                    "language": language,
+                },
+            ),
+        )
+        return make_common_response({"expire_in": challenge.expire_in})
 
-        # Best-effort language override for the email subject.
-        if language:
-            with contextlib.suppress(Exception):
-                set_language(language)
-
-        if "X-Forwarded-For" in request.headers:
-            client_ip = request.headers["X-Forwarded-For"].split(",")[0].strip()
-        else:
-            client_ip = request.remote_addr
-
-        return make_common_response(send_email_code(app, email, client_ip, language))
-
-    def _handle_sms_login():
+    def _handle_verification_login(config: _VerificationLoginConfig) -> Response:
         with app.app_context():
             payload = request.get_json(silent=True)
             payload = payload if isinstance(payload, dict) else {}
-            mobile = normalize_phone_identifier(payload.get("mobile", None))
-            sms_code = payload.get("sms_code", None)
+            identifier = config.normalize_identifier(
+                payload.get(config.identifier_field, None)
+            )
+            verification_code = payload.get(config.code_field, None)
             course_id = payload.get("course_id", None)
             language = payload.get("language", None)
             login_context = payload.get("login_context", None)
             referral_fields = _extract_referral_post_auth_fields(payload)
             current_user = getattr(request, "user", None)
-            # Only pass an anonymous/guest token through SMS login so temporary
-            # learning records can be claimed. If a real authenticated account
-            # reaches the login page and verifies another phone number, this
-            # endpoint must behave as login, not implicit phone rebinding.
+            # Only a guest may pass its ID through so temporary learning data
+            # can be claimed. Real accounts log in without rebinding identity.
             user_id = None
             if current_user is not None and not (
                 getattr(current_user, "mobile", "")
                 or getattr(current_user, "email", "")
             ):
                 user_id = current_user.user_id
-            if not mobile:
-                raise_param_error("mobile")
-            if not sms_code:
-                raise_param_error("sms_code")
-            provider = get_provider("phone")
-            auth_result = provider.verify(
-                app,
-                VerificationRequest(
-                    identifier=mobile,
-                    code=sms_code,
-                    metadata={
-                        "user_id": user_id,
-                        "course_id": course_id,
-                        "language": language,
-                        "login_context": login_context,
-                    },
-                ),
-            )
-            db.session.commit()
+            if not identifier:
+                raise_param_error(config.identifier_field)
+            if not verification_code:
+                raise_param_error(config.code_field)
+            provider = get_provider(config.provider_name)
+            with unit_of_work():
+                auth_result = provider.verify(
+                    app,
+                    VerificationRequest(
+                        identifier=identifier,
+                        code=verification_code,
+                        metadata={
+                            "user_id": user_id,
+                            "course_id": course_id,
+                            "language": language,
+                            "login_context": login_context,
+                        },
+                    ),
+                )
             run_post_auth_extensions(
                 app,
                 PostAuthContext(
                     user_id=auth_result.user.user_id,
-                    source="sms",
+                    source=config.source,
                     login_context=login_context,
                     created_new_user=bool(auth_result.is_new_user),
                     creator_granted_now=bool(
@@ -745,79 +770,204 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
             )
             return make_response(make_common_response(auth_result.token))
 
-    def _handle_email_login():
-        with app.app_context():
-            payload = request.get_json(silent=True)
-            payload = payload if isinstance(payload, dict) else {}
-            email = (payload.get("email", None) or "").strip().lower()
-            email_code = payload.get("code", None)
-            course_id = payload.get("course_id", None)
-            language = payload.get("language", None)
-            login_context = payload.get("login_context", None)
-            user_id = (
-                None if getattr(request, "user", None) is None else request.user.user_id
-            )
-            if not email:
-                raise_param_error("email")
-            if not email_code:
-                raise_param_error("code")
-            provider = get_provider("email")
-            auth_result = provider.verify(
-                app,
-                VerificationRequest(
-                    identifier=email,
-                    code=email_code,
-                    metadata={
-                        "user_id": user_id,
-                        "course_id": course_id,
-                        "language": language,
-                        "login_context": login_context,
-                    },
-                ),
-            )
-            db.session.commit()
-            run_post_auth_extensions(
-                app,
-                PostAuthContext(
-                    user_id=auth_result.user.user_id,
-                    source="email",
-                    login_context=login_context,
-                    created_new_user=bool(auth_result.is_new_user),
-                    creator_granted_now=bool(
-                        auth_result.metadata.get("creator_granted_now")
-                    ),
-                    language=language or getattr(auth_result.user, "language", None),
-                ),
-            )
-            resp = make_response(make_common_response(auth_result.token))
-            return resp
-
     @app.route(path_prefix + "/login_sms", methods=["POST"])
     @bypass_token_validation
-    @optional_token_validation
-    def login_sms_api():
+    @recovery_optional_token_validation
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def login_sms_api() -> Response:
         """Login through SMS verification code for web clients.
+
         ---
         tags:
            - user
         """
-        return _handle_sms_login()
+        return _handle_verification_login(_SMS_LOGIN_CONFIG)
 
     @app.route(path_prefix + "/login_email", methods=["POST"])
     @bypass_token_validation
-    @optional_token_validation
-    def login_email_api():
-        """
-        Login through email verification code for web clients
+    @recovery_optional_token_validation
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def login_email_api() -> Response:
+        """Login through email verification code for web clients.
+
         ---
         tags:
            - user
         """
-        return _handle_email_login()
+        return _handle_verification_login(_EMAIL_LOGIN_CONFIG)
+
+    @app.route(path_prefix + "/device/authorize", methods=["POST"])
+    @bypass_token_validation
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def device_authorize_api() -> str:
+        """Start a device authorization request for a command-line client.
+
+        ---
+        tags:
+           - user
+        """
+        payload = request.get_json(silent=True)
+        payload = payload if isinstance(payload, dict) else {}
+        _apply_request_language(payload)
+        return make_common_response(
+            create_device_authorization(
+                app,
+                device_name=payload.get("device_name"),
+                device_os=payload.get("device_os"),
+                client_version=payload.get("client_version"),
+                client_ip=resolve_client_ip(),
+                registration_attribution=payload.get("registration_attribution"),
+            )
+        )
+
+    @app.route(path_prefix + "/device/token", methods=["POST"])
+    @bypass_token_validation
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def device_token_api() -> str:
+        """Poll a pending device authorization until it is resolved.
+
+        Returns the current status instead of an error while the request is
+        still pending, so the polling client does not have to treat the normal
+        waiting state as a failure.
+        ---
+        tags:
+           - user
+        """
+        payload = request.get_json(silent=True)
+        payload = payload if isinstance(payload, dict) else {}
+        _apply_request_language(payload)
+        return make_common_response(
+            poll_device_authorization(app, device_code=payload.get("device_code"))
+        )
+
+    @app.route(path_prefix + "/device/pending", methods=["GET"])
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def device_pending_api() -> str:
+        """Describe the pending authorization behind a pairing code.
+
+        ---
+        tags:
+           - user
+        """
+        return make_common_response(
+            get_device_authorization(
+                app,
+                user_code=request.args.get("user_code"),
+                client_ip=resolve_client_ip(),
+            )
+        )
+
+    @app.route(path_prefix + "/device/approve", methods=["POST"])
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def device_approve_api() -> str:
+        """Approve a pending device authorization for the signed-in user.
+
+        ---
+        tags:
+           - user
+        """
+        payload = request.get_json(silent=True)
+        payload = payload if isinstance(payload, dict) else {}
+        _apply_request_language(payload)
+        return make_common_response(
+            approve_device_authorization(
+                app,
+                user_code=payload.get("user_code"),
+                user_id=request.user.user_id,
+                client_ip=resolve_client_ip(),
+            )
+        )
+
+    @app.route(path_prefix + "/device/deny", methods=["POST"])
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def device_deny_api() -> str:
+        """Reject a pending device authorization.
+
+        ---
+        tags:
+           - user
+        """
+        payload = request.get_json(silent=True)
+        payload = payload if isinstance(payload, dict) else {}
+        _apply_request_language(payload)
+        return make_common_response(
+            deny_device_authorization(
+                app,
+                user_code=payload.get("user_code"),
+                client_ip=resolve_client_ip(),
+            )
+        )
+
+    def _current_request_token() -> str:
+        """Identify the session making this request, so it can be marked.
+
+        This must follow the same order as token validation, JSON body
+        included. Reading a different source would leave the marker empty for
+        a request authenticated that way, and ending every other session would
+        then end the caller's own session too.
+        """
+        return str(_extract_request_token() or "")
+
+    @app.route(path_prefix + "/sessions", methods=["GET"])
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def list_sessions_api() -> str:
+        """List the sign-in sessions belonging to the current user.
+
+        ---
+        tags:
+           - user
+        """
+        return make_common_response(
+            list_user_sessions(
+                user_id=request.user.user_id,
+                current_token=_current_request_token(),
+            )
+        )
+
+    @app.route(path_prefix + "/sessions/revoke", methods=["POST"])
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def revoke_session_api() -> str:
+        """End one of the current user's sign-in sessions.
+
+        ---
+        tags:
+           - user
+        """
+        payload = request.get_json(silent=True)
+        payload = payload if isinstance(payload, dict) else {}
+        _apply_request_language(payload)
+        return make_common_response(
+            revoke_user_session(
+                app,
+                user_id=request.user.user_id,
+                session_bid=payload.get("session_bid"),
+            )
+        )
+
+    @app.route(path_prefix + "/sessions/revoke-others", methods=["POST"])
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def revoke_other_sessions_api() -> str:
+        """End every session except the one making this request.
+
+        ---
+        tags:
+           - user
+        """
+        payload = request.get_json(silent=True)
+        _apply_request_language(payload if isinstance(payload, dict) else {})
+        return make_common_response(
+            revoke_other_user_sessions(
+                app,
+                user_id=request.user.user_id,
+                current_token=_current_request_token(),
+            )
+        )
 
     @app.route(path_prefix + "/get_profile", methods=["GET"])
-    def get_profile():
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def get_profile() -> str:
         """Get user profile.
+
         ---
         tags:
             - user
@@ -843,7 +993,6 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
                                     description: return message
                                 data:
                                     $ref: "#/components/schemas/UserProfileLabelDTO"
-
         """
         course_id = request.args.get("course_id", None)
         if not course_id:
@@ -956,8 +1105,10 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
             return make_common_response(result)
 
     @app.route(path_prefix + "/update_profile", methods=["POST"])
-    def update_profile():
+    @sensitive_body()
+    def update_profile() -> str:
         """Update user profile.
+
         ---
         tags:
             - user
@@ -1004,21 +1155,22 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         course_id = request.get_json().get("course_id", None)
         if not profiles:
             raise_param_error("profiles")
-        with app.app_context():
-            ret = update_user_profile_with_lable(
+        with unit_of_work():
+            update_user_profile_with_lable(
                 app,
                 request.user.user_id,
                 profiles,
                 update_all=True,
                 course_id=course_id,
             )
-            db.session.commit()
-            ret = get_user_profile_labels(app, request.user.user_id, course_id)
-            return make_common_response(ret.__json__())
+        ret = get_user_profile_labels(app, request.user.user_id, course_id)
+        return make_common_response(ret.__json__())
 
     @app.route(path_prefix + "/upload_avatar", methods=["POST"])
-    def upload_avatar():
+    @sensitive_body()
+    def upload_avatar() -> str:
         """Upload avatar.
+
         ---
         tags:
             - user
@@ -1054,8 +1206,10 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
 
     @app.route(path_prefix + "/update_openid", methods=["POST"])
     @with_shifu_context()
-    def update_wechat_openid():
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def update_wechat_openid() -> str:
         """Update Wechat OpenID.
+
         ---
         summary: update wechat openid
         tags:
@@ -1088,7 +1242,7 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
                                     description: openid
         """
         code = request.get_json().get("wxcode", None)
-        app.logger.info("update_wechat_openid code: %s", code)
+        app.logger.info("auth_event=wechat_openid_update_requested")
         if not code:
             raise_param_error("wxcode")
         return make_common_response(
@@ -1096,10 +1250,12 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         )
 
     @app.route(path_prefix + "/submit-feedback", methods=["POST"])
+    @sensitive_body()
     @bypass_token_validation
-    @optional_token_validation
-    def sumbit_feedback_api():
+    @recovery_optional_token_validation
+    def sumbit_feedback_api() -> str:
         """Submit feedback.
+
         ---
         tags:
             - user
@@ -1147,7 +1303,8 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
     @app.route(path_prefix + "/oauth/google", methods=["GET"])
     @bypass_token_validation
     @optional_token_validation
-    def google_oauth_start():
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def google_oauth_start() -> str:
         provider = get_provider("google")
         metadata = {}
         redirect_uri = request.args.get("redirect_uri")
@@ -1178,7 +1335,8 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
 
     @app.route(path_prefix + "/oauth/google/callback-origin", methods=["GET"])
     @bypass_token_validation
-    def google_oauth_callback_origin():
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def google_oauth_callback_origin() -> str:
         """Resolve which domain a pending Google login should return to.
 
         Every domain shares one Google callback, so the page that receives it
@@ -1195,7 +1353,8 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
     @app.route(path_prefix + "/oauth/google/callback", methods=["GET"])
     @bypass_token_validation
     @optional_token_validation
-    def google_oauth_callback():
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def google_oauth_callback() -> str:
         provider = get_provider("google")
         current_user = getattr(request, "user", None)
         current_user_id = None
@@ -1208,12 +1367,8 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
             raw_request_args=request.args.to_dict(flat=True),
             current_user_id=current_user_id,
         )
-        try:
+        with unit_of_work():
             auth_result = provider.handle_oauth_callback(app, callback_request)
-            db.session.commit()
-        except Exception:
-            db.session.rollback()
-            raise
         run_post_auth_extensions(
             app,
             PostAuthContext(
@@ -1234,8 +1389,10 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
 
     @app.route(path_prefix + "/login_password", methods=["POST"])
     @bypass_token_validation
-    def login_password():
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def login_password() -> str:
         """Login with password.
+
         ---
         tags:
             - user
@@ -1252,28 +1409,37 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
             raise_param_error("password")
         provider = get_provider("password")
         vr = VerificationRequest(identifier=identifier, code=password)
-        # TODO(geyunfei): Add rate-limiting and failed login attempt tracking
-        # (record identifier, request.remote_addr, timestamp on failure)
         auth_result = provider.verify(app, vr)
-        current_user = _best_effort_password_login_user(app)
-        current_user_id = (
-            getattr(current_user, "user_id", None) if current_user is not None else None
-        )
-        if current_user_id and current_user_id != auth_result.user.user_id:
-            merge_learner_profile_for_sign_in(
-                source_user_id=current_user_id,
-                target_user_id=auth_result.user.user_id,
-            )
-            refreshed = load_user_aggregate(auth_result.user.user_id)
-            if not refreshed:
-                raise_error("USER.USER_NOT_FOUND")
-            refreshed_user = build_user_info_from_aggregate(refreshed)
-            auth_result.user = refreshed_user
-            auth_result.token = UserToken(
-                userInfo=refreshed_user,
-                token=auth_result.token.token,
-            )
-        db.session.commit()
+        try:
+            with unit_of_work():
+                persist_token(
+                    app,
+                    user_id=auth_result.user.user_id,
+                    token=auth_result.token.token,
+                )
+                current_user = _best_effort_password_login_user(app)
+                current_user_id = (
+                    getattr(current_user, "user_id", None)
+                    if current_user is not None
+                    else None
+                )
+                if current_user_id and current_user_id != auth_result.user.user_id:
+                    merge_learner_profile_for_sign_in(
+                        source_user_id=current_user_id,
+                        target_user_id=auth_result.user.user_id,
+                    )
+                    refreshed = load_user_aggregate(auth_result.user.user_id)
+                    if not refreshed:
+                        raise_error("USER.USER_NOT_FOUND")
+                    refreshed_user = build_user_info_from_aggregate(refreshed)
+                    auth_result.user = refreshed_user
+                    auth_result.token = UserToken(
+                        user_info=refreshed_user,
+                        token=auth_result.token.token,
+                    )
+        except Exception:
+            token_store.discard_uncommitted(app, auth_result.token.token)
+            raise
         run_post_auth_extensions(
             app,
             PostAuthContext(
@@ -1290,8 +1456,10 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
         return make_common_response(auth_result.token)
 
     @app.route(path_prefix + "/set_password", methods=["POST"])
-    def set_password():
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def set_password() -> str:
         """Set password for logged-in user (first time only).
+
         ---
         tags:
             - user
@@ -1305,75 +1473,20 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
             raise_param_error("new_password")
         validate_password_strength(new_password)
 
-        user = request.user
-        user_bid = user.user_id
-
-        # Find user's phone/email credential to get identifier
-        creds = list_credentials(user_bid=user_bid)
-        available_identifiers = []
-        for c in creds:
-            if c.provider_name in ("phone", "email") and c.identifier:
-                normalized = (
-                    c.identifier.lower()
-                    if c.provider_name == "email"
-                    else normalize_phone_identifier(c.identifier)
-                )
-                available_identifiers.append(normalized)
-
-        selected_identifier = None
-        if identifier:
-            normalized = (
-                identifier.strip().lower()
-                if "@" in identifier
-                else normalize_phone_identifier(identifier)
-            )
-            if normalized not in available_identifiers:
-                # Avoid leaking whether another account exists for the identifier.
-                raise_error("server.user.invalidCredentials")
-            selected_identifier = normalized
-        else:
-            selected_identifier = (
-                available_identifiers[0] if available_identifiers else None
-            )
-
-        if not selected_identifier:
-            raise_param_error("identifier")
-
-        # Reject if user already has a password credential (use change_password instead)
-        pwd_cred = find_credential(
-            provider_name="password", identifier=selected_identifier, user_bid=user_bid
+        password_flow.set_password(
+            app,
+            user_bid=request.user.user_id,
+            identifier=identifier,
+            code=code,
+            new_password=new_password,
         )
-        if pwd_cred and get_password_hash(pwd_cred):
-            raise_error("server.user.passwordAlreadySet")
-
-        # Validate ownership by consuming a verification code for the chosen identifier.
-        consume_verification_code(app, identifier=selected_identifier, code=code)
-
-        subject_format = "email" if "@" in selected_identifier else "phone"
-
-        if pwd_cred:
-            set_password_hash(pwd_cred, hash_password(new_password))
-        else:
-            pwd_cred = AuthCredential(
-                credential_bid=generate_id(app),
-                user_bid=user_bid,
-                provider_name="password",
-                subject_id=selected_identifier,
-                subject_format=subject_format,
-                identifier=selected_identifier,
-                raw_profile="",
-                state=CREDENTIAL_STATE_VERIFIED,
-                deleted=0,
-            )
-            db.session.add(pwd_cred)
-            set_password_hash(pwd_cred, hash_password(new_password))
-
-        db.session.commit()
         return make_common_response({"success": True})
 
     @app.route(path_prefix + "/change_password", methods=["POST"])
-    def change_password():
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def change_password() -> str:
         """Change password for logged-in user (requires old password).
+
         ---
         tags:
             - user
@@ -1387,27 +1500,20 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
 
         validate_password_strength(new_password)
 
-        user = request.user
-        user_bid = user.user_id
-
-        # Find user's password credential
-        creds = list_credentials(user_bid=user_bid, provider_name="password")
-        if not creds:
-            raise_error("server.user.invalidCredentials")
-
-        pwd_cred = creds[0]
-        current_hash = get_password_hash(pwd_cred)
-        if not current_hash or not verify_password(old_password, current_hash):
-            raise_error("server.user.invalidCredentials")
-
-        set_password_hash(pwd_cred, hash_password(new_password))
-        db.session.commit()
+        password_flow.change_password(
+            app,
+            user_bid=request.user.user_id,
+            old_password=old_password,
+            new_password=new_password,
+        )
         return make_common_response({"success": True})
 
     @app.route(path_prefix + "/reset_password", methods=["POST"])
     @bypass_token_validation
-    def reset_password():
+    @sensitive_body(max_bytes=_AUTH_SENSITIVE_BODY_MAX_BYTES)
+    def reset_password() -> str:
         """Reset password via verification code.
+
         ---
         tags:
             - user
@@ -1424,57 +1530,15 @@ def register_user_handler(app: Flask, path_prefix: str) -> Flask:
 
         validate_password_strength(new_password)
 
-        raw_identifier = identifier.strip()
-        normalized_identifier = (
-            raw_identifier.lower()
-            if "@" in raw_identifier
-            else normalize_phone_identifier(raw_identifier)
+        password_flow.reset_password(
+            app, identifier=identifier, code=code, new_password=new_password
         )
-
-        # Reset is only allowed for existing users. New users must go through
-        # phone-code / Google login first.
-        aggregate = load_user_aggregate_by_identifier(
-            normalized_identifier, providers=["phone", "email"]
-        )
-        if not aggregate:
-            raise_error("server.user.userNotFound")
-
-        # Verify identity via verification code without creating/merging users.
-        consume_verification_code(app, identifier=normalized_identifier, code=code)
-
-        user_bid = aggregate.user_bid
-        subject_format = "email" if "@" in normalized_identifier else "phone"
-
-        # Find or create password credential
-        pwd_cred = find_credential(
-            provider_name="password",
-            identifier=normalized_identifier,
-            user_bid=user_bid,
-        )
-        if pwd_cred:
-            set_password_hash(pwd_cred, hash_password(new_password))
-        else:
-            pwd_cred = AuthCredential(
-                credential_bid=generate_id(app),
-                user_bid=user_bid,
-                provider_name="password",
-                subject_id=normalized_identifier,
-                subject_format=subject_format,
-                identifier=normalized_identifier,
-                raw_profile="",
-                state=CREDENTIAL_STATE_VERIFIED,
-                deleted=0,
-            )
-            db.session.add(pwd_cred)
-            set_password_hash(pwd_cred, hash_password(new_password))
-
-        db.session.commit()
         return make_common_response({"success": True})
 
     # health check
     @app.route("/health", methods=["GET"])
     @bypass_token_validation
-    def health():
+    def health() -> str:
         app.logger.info("health")
         return make_common_response("ok")
 

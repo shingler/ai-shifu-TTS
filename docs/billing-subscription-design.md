@@ -56,7 +56,7 @@ v1.1 再补充下列扩展能力：
 | `creator_catalog` | `active` | `GET /api/billing/catalog` | on | 是 | creator 可以查看当前可售套餐和积分包 |
 | `creator_subscription_checkout` | `active` | `/api/billing/overview`、`/subscriptions/checkout`、`/subscriptions/cancel`、`/subscriptions/resume` | on | 是 | 套餐购买、取消、恢复和 overview 当前正式可达 |
 | `creator_wallet_ledger` | `active` | `GET /api/billing/wallet-buckets`、`GET /api/billing/ledger` | on | 是 | 账户积分桶和账本明细当前正式可达 |
-| `creator_orders` | `active` | `POST /api/billing/topups/checkout`、`POST /api/billing/orders/*/sync`、`POST /api/billing/orders/*/checkout`、`POST /api/billing/orders/*/refund` | on | 是 | creator topup、补单 checkout、sync、refund 当前正式可达 |
+| `creator_orders` | `active` | `POST /api/billing/topups/checkout`、`POST /api/billing/orders/*/sync`、`POST /api/billing/orders/*/checkout` | on | 是 | creator topup、补单 checkout 和 sync 当前正式可达；退款接口在积分冲正规则完成前暂停开放 |
 | `admin_subscriptions` | `active` | `GET /api/admin/billing/subscriptions` | on | 是 | admin 订阅审查当前正式可达 |
 | `admin_orders` | `active` | `GET /api/admin/billing/orders` | on | 是 | admin 订单审查当前正式可达 |
 | `admin_ledger_adjust` | `active` | `POST /api/admin/billing/ledger/adjust` | on | 是 | admin 手工账本调整当前正式可达 |
@@ -303,7 +303,7 @@ v1 冻结 subscription lifecycle 规则：
 - `resume` 只允许从 `cancel_scheduled` 或 provider 标记的 `paused` 状态恢复；恢复时必须清空 `cancel_at_period_end`，把订阅回到 `active`，并重新启用后续 `renewal`
 - provider 把订阅推进到 `past_due` 后，v1 一律进入宽限期模式：`grace_period_end_at` 默认等于当前 `current_period_end_at`，原 `renewal/cancel_effective/downgrade_effective` 事件让位给 `retry`，直到续费成功或订阅被取消/过期
 - `paused` 属于 provider 驱动状态，当前批次不提供主动 pause API；若 provider 事件把订阅置为 `paused`，creator 只能通过已有 `resume` 接口恢复
-- 退款规则固定为：`POST /billing/orders/{bill_order_bid}/refund` 当前只支持 Stripe 已支付订单，Pingxx 必须返回 `unsupported`；若退款订单绑定了订阅，则关联订阅立即进入 `canceled` 并取消后续 renewal event，不再保留 `cancel_scheduled` 或宽限期
+- 退款底层规则暂时保留：Stripe 已支付订单可进入退款流程，Pingxx 返回 `unsupported`；若退款订单绑定了订阅，则关联订阅立即进入 `canceled` 并取消后续 renewal event，不再保留 `cancel_scheduled` 或宽限期。老师侧公开退款接口在积分冲正规则完成前暂停注册；运营审核后在线下支付渠道人工退款时，必须同时核对并通过后台人工调整积分账本
 - refund 造成的积分返还不恢复原 subscription/topup bucket；如需返还 credit，一律按上一节的 `refund return -> free bucket` 规则执行
 
 ### 3.3 `bill_orders`
@@ -874,6 +874,11 @@ v1 需要新增的改造点：
   - creator 订阅状态
 - admission 拒绝后，不进入新的 billable LLM/TTS 调用
 - 当前实现已落到 `src/api/flaskr/service/billing/admission.py`，并接入 `src/api/flaskr/service/learn/routes.py` 与 `src/api/flaskr/service/shifu/route.py` 的 billable 入口
+- `POST /api/shifu/ask/preview` 和 `POST /api/shifu/tts/preview` 是需要登录的课程设置调试入口，使用 `debug(1201)` 场景。请求体必须包含 `shifu_bid`，后端以同一个规范化后的课程 ID 校验当前用户的编辑权限、解析课程负责人并写入用量记录。缺失课程 ID、无编辑权限或找不到负责人时拒绝请求，不回退到调用者账户。
+- 设置调试的付款主体是课程负责人，是否由负责人本人调用、调用者是否有老师身份都不改变付款主体。先检查负责人的调试限额，再按其既有 subscription / credits 规则准入；拒绝时不调用外部知识服务、LLM 或 TTS，也不开始 SSE。前端只对课程负责人应用本人的账户预检查，协作者由后端检查课程负责人账户；错误提示使用协作者文案。
+- 设置调试产生的 LLM/TTS usage 固定传入 `billable=1`，`user_bid` 保留真实操作者，`shifu_bid` 指向已校验的课程，结算使用既有课程负责人归属规则。追问的直接 LLM、知识合成和失败后 LLM 回退共用此契约；仅调用外部知识服务不会凭空产生平台 LLM usage。TTS 私有克隆音色仍校验调用者的音色访问权限，付款主体变更不会授予他人私有音色权限。
+- 客户端不能通过 `creator_bid`、`user_bid`、`billable`、内部调用标记或查询参数覆盖请求体课程的准入与计费归属。显式 `billable=0` 只保留给服务端代码直接调用底层 LLM / metering 的内部操作；设置调试不会因选择内置演示课程而免费。
+- 课程预览 `POST /api/shifu/shifus/<shifu_bid>/preview` 保留课程查看权限、课程负责人计费及既有内置演示课程例外。设置调试客户端与 API 应协调发布；旧客户端缺少 `shifu_bid` 时会返回参数错误，不允许通过兼容回退恢复个人扣费或免费调用。
 - usage 落库成功后，统一投递 Celery settlement task，再由 task 消费 `bill_usage` 并写入 `credit_ledger_entries`
 - 不允许在 learn / preview / debug 的请求线程内直接扣减积分、更新 `credit_wallet_buckets` 或刷新 `credit_wallets`
 - 当前 `src/api/flaskr/service/metering/recorder.py` 仍只负责 `bill_usage` 持久化，不触碰 `credit_wallets`、`credit_wallet_buckets`、`credit_ledger_entries`
@@ -1164,11 +1169,11 @@ interface BillingPaymentProviderAdapter {
 
 当前前端的已知事实：
 
-- App Router 入口集中在 `src/cook-web/src/app/`
-- 接口定义集中在 `src/cook-web/src/api/api.ts`
-- 请求封装集中在 `src/cook-web/src/lib/request.ts`
-- 运行时配置通过 `src/cook-web/src/lib/initializeEnvData.ts` 写入 `envStore`
-- 管理端统一布局在 `src/cook-web/src/app/admin/layout.tsx`
+- App Router 入口集中在 `src/web/src/app/`
+- 接口定义集中在 `src/web/src/api/api.ts`
+- 请求封装集中在 `src/web/src/lib/request.ts`
+- 运行时配置通过 `src/web/src/lib/initializeEnvData.ts` 写入 `envStore`
+- 管理端统一布局在 `src/web/src/app/admin/layout.tsx`
 - 现有订单管理页已经使用 `Table + Sheet + 本地状态/搜索参数` 的管理端交互模式
 - `/admin` 现有创作中心首页已经接近目标结构；当前批次只做 Figma `方案1` 浅色稿对齐，不重做信息架构
 
@@ -1177,15 +1182,15 @@ v1 前端不新建全局 billing store，默认采用：
 - 读接口：SWR
 - 写接口：统一 `api` 方法 + 成功后 `mutate`
 - 页面局部状态：`useState`
-- 公共类型：新增 `src/cook-web/src/types/billing.ts`
+- 公共类型：新增 `src/web/src/types/billing.ts`
 
 #### 7.5.1 v1 路由与页面结构
 
 当前批次固定采用 Figma `方案1` 浅色稿，对 creator admin 侧只落一个 Billing Center 单路由，避免一开始拆太多子页面。
 
-- 新增 `src/cook-web/src/app/admin/billing/page.tsx`
-- 在 `src/cook-web/src/app/admin/layout.tsx` 侧边栏新增常驻 `我的会员` 卡片
-- 在 `src/cook-web/src/app/admin/layout.tsx` 侧边栏新增 `会员与积分` 菜单，统一跳转到 `/admin/billing`
+- 新增 `src/web/src/app/admin/billing/page.tsx`
+- 在 `src/web/src/app/admin/layout.tsx` 侧边栏新增常驻 `我的会员` 卡片
+- 在 `src/web/src/app/admin/layout.tsx` 侧边栏新增 `会员与积分` 菜单，统一跳转到 `/admin/billing`
 - Billing Center 使用 `Tabs` 拆成两个视图：
   - `套餐与积分`
   - `积分明细`
@@ -1204,9 +1209,50 @@ v1 前端不新建全局 billing store，默认采用：
   - 展示 bucket 来源摘要、积分流水、来源类型、余额变化，以及最近 activity
   - usage 类明细通过右侧 detail sheet 展开
 
-#### 7.5.2 v1 组件拆分
+#### 7.5.2 侧边账务卡片导航埋点
 
-当前 `src/cook-web/src/components/billing/` 的主要组件包括：
+- Business question：管理后台侧边账务卡片是否是值得保留的套餐入口。
+- Metric definition：按滚动 7 天和 30 天统计被接受的套餐入口原始交互次数；当前没有曝光事件，因此不得将其解释为点击率，也不得和 checkout 事件组成精确漏斗。
+- Event name：`creator_billing_sidebar_packages_click`。
+- Actor and surface：账务能力开启时可看到卡片的已登录后台用户，固定为管理后台侧边账务卡片的套餐入口；运营管理员不额外排除。
+- Trigger：套餐主链接接收到一次有效的鼠标主键、键盘 Enter、带修饰键的主键或鼠标中键激活时，在浏览器执行原生导航前发送。通过浏览器上下文菜单打开新标签页无法被页面观察，明确排除。
+- Population：仅在账务卡片实际渲染时可触发；guest、登录状态未确认、账务能力关闭、卡片隐藏、用户菜单覆盖或没有发生用户激活时不发送。
+- Count unit：一次被接受的链接激活。后续重复的主动激活分别计数。
+- Deduplication：每个 DOM 激活最多发送一次；不跨点击、页面或会话去重。键盘路径只监听链接产生的 `click`，不额外监听 `keydown`，避免双计。
+- Correlation：无 feature-owned correlation ID，不与 checkout 做逐次关联；共享 helper 的既有 transport fields 不作为新 consumer 依赖。
+- Consumers：产品与账务团队的管理后台套餐入口原始流量趋势分析。
+- Compatibility：新增 v1 事件，不复用或改写既有 `creator_billing_checkout_click`。
+- Verification：聚焦组件测试覆盖普通点击、Enter、Space、Meta/Ctrl/Shift 修饰键、鼠标中键、非导航辅助点击、详情链接排除、精确空载荷，以及同步抛错和异步拒绝时原生链接仍可继续导航；布局测试覆盖账务能力关闭时不渲染入口。
+
+Feature-owned payload 固定为 `{}`。共享 `useTracking` 仍会自动添加既有的 `user_type`、`user_id`、`device` 和 `timeStamp` transport fields；这些字段不是本事件新增的契约字段，新 consumer 不得依赖它们。不得添加 URL、query、referrer、账务数据、用户输入、错误原文或关联 ID；埋点始终 fail-open，不得阻塞或改变导航。
+
+#### 7.5.3 海外订阅自动续订管理埋点
+
+- Business question：海外老师是否能够成功自助取消或恢复 Stripe 自动续订，以及失败是否集中在某一种操作。
+- Metric definition：按滚动 7 天和 30 天分别统计取消、恢复操作的尝试数、成功数和失败数；成功率为同一 action 的成功 result 数除以 attempt 数。由于浏览器关闭等原因，attempt 与 result 可能无法严格一一对应。
+- Event names：`creator_subscription_renewal_attempt`、`creator_subscription_renewal_result`。
+- Actor and surface：仅账务渠道为纯 Stripe、持有可管理有效订阅并进入“积分详情”的已登录老师；国内站、guest、无订阅、manual 订阅和失效订阅排除。
+- Trigger：老师在二次确认框确认取消或恢复时发送 attempt；平台接口确认成功或失败时发送唯一 terminal result。打开或关闭确认框不发送。
+- Count unit：一次被接受的取消或恢复请求。
+- Deduplication：提交期间禁用重复操作；每次确认最多一个 attempt 和一个 terminal result，不跨独立请求去重。
+- Correlation：使用 `subscription_bid` 关联同一订阅的 attempt/result；不得用于识别用户，老师身份继续由共享 tracking context 提供。
+- Consumers：产品和账务团队的海外订阅自助管理成功率与失败趋势。
+- Compatibility：新增 v1 事件，不改变 checkout 事件语义。
+- Verification：组件测试覆盖海外显隐、国内排除、取消/恢复请求、精确事件名和 allowlist payload、失败结果，以及埋点异常不影响订阅操作。
+
+| Field | Type | Allowed values | Cardinality | Privacy class | Why required |
+| --- | --- | --- | --- | --- | --- |
+| `action` | string | `cancel`, `resume` | low | non-personal | 区分取消与恢复 |
+| `source_surface` | string | `credit_details` | low | non-personal | 固定入口归因 |
+| `payment_provider` | string | `stripe` | low | non-personal | 明确仅海外 Stripe 流程 |
+| `subscription_bid` | string | 稳定业务 ID | high | pseudonymous | 关联同次订阅的尝试与结果 |
+| `outcome` | string | `success`, `failed`；仅 result | low | non-personal | 计算终态成功率 |
+
+不得发送套餐名称、邮箱、手机号、错误原文、URL、query 或 referrer。埋点始终 fail-open，不得阻塞、延迟或改变取消/恢复结果。
+
+#### 7.5.4 v1 组件拆分
+
+当前 `src/web/src/components/billing/` 的主要组件包括：
 
 - `BillingSidebarCard.tsx`
 - `BillingAlertsBanner.tsx`
@@ -1225,9 +1271,9 @@ v1 前端不新建全局 billing store，默认采用：
 - 详情查看沿用现有订单页的 `Sheet` 交互，不使用新窗口跳转
 - 购买动作统一在 dialog 中确认，再调用 checkout API
 
-#### 7.5.3 API 接入与前端类型
+#### 7.5.4 API 接入与前端类型
 
-需要在 `src/cook-web/src/api/api.ts` 增加：
+需要在 `src/web/src/api/api.ts` 增加：
 
 - `getBillingCatalog`
 - `getBillingOverview`
@@ -1243,7 +1289,7 @@ v1 前端不新建全局 billing store，默认采用：
 - `getAdminBillingOrders`
 - `adjustAdminBillingLedger`
 
-需要在 `src/cook-web/src/types/billing.ts` 定义：
+需要在 `src/web/src/types/billing.ts` 定义：
 
 - `BillingPlan`
 - `BillingTopupProduct`
@@ -1261,13 +1307,13 @@ v1 前端不新建全局 billing store，默认采用：
 - `getBillingLedger` 在 `Details` tab 激活时懒加载；order sync / checkout 由 Stripe result、Pingxx polling 和 checkout dialog 按需触发
 - 写操作成功后只刷新受影响的 SWR key，不全页硬刷新
 
-#### 7.5.4 Stripe 支付回跳
+#### 7.5.5 Stripe 支付回跳
 
-当前现有 Stripe 回跳页 `src/cook-web/src/app/payment/stripe/result/page.tsx` 是学员购课专用，成功后会跳到课程页，不适合 creator billing 直接复用。
+当前现有 Stripe 回跳页 `src/web/src/app/payment/stripe/result/page.tsx` 是学员购课专用，成功后会跳到课程页，不适合 creator billing 直接复用。
 
 v1 前端方案：
 
-- 新增 `src/cook-web/src/app/payment/stripe/billing-result/page.tsx`
+- 新增 `src/web/src/app/payment/stripe/billing-result/page.tsx`
 - 后端从 `HOST_URL` 派生 Stripe billing result URL
 - billing result 页职责：
   - 从 query 读取 `bill_order_bid` / `session_id`
@@ -1276,7 +1322,7 @@ v1 前端方案：
   - 成功后跳回 `/admin/billing`
   - 待支付或失败时展示明确状态和重试入口
 
-#### 7.5.5 v1.1 前端扩展
+#### 7.5.6 v1.1 前端扩展
 
 v1.1 继续沿用 `/admin/billing`，在同一路由上增加扩展 tab：
 
@@ -1286,10 +1332,10 @@ v1.1 继续沿用 `/admin/billing`，在同一路由上增加扩展 tab：
 
 当前实现状态：
 
-- `src/cook-web/src/app/admin/billing/page.tsx` 当前运行时只保留 2-tab shell：`Plans`、`Details`
+- `src/web/src/app/admin/billing/page.tsx` 当前运行时只保留 2-tab shell：`Plans`、`Details`
 - creator 侧 live surface 收敛为 overview checkout、Pingxx polling、Stripe billing result sync，以及 details 页中的 wallet / ledger activity
 - creator 侧 `Orders`、`Entitlements`、`Domains`、`Reports` 扩展 tab 当前不接线，也不宣称为 shipped UI
-- `src/cook-web/src/app/admin/billing/admin/page.tsx` 现已扩展为 6-tab ops console：`Subscriptions`、`Orders`、`Exceptions`、`Entitlements`、`Domains`、`Reports`
+- `src/web/src/app/admin/billing/admin/page.tsx` 现已扩展为 6-tab ops console：`Subscriptions`、`Orders`、`Exceptions`、`Entitlements`、`Domains`、`Reports`
 - admin `Entitlements` tab 已接入 `GET /admin/billing/entitlements`，查看跨 creator 的有效权益快照
 - admin `Domains` tab 已接入 `GET /admin/billing/domain-audits`，审核跨 creator 的自定义域名状态与 entitlement gate
 - admin `Reports` tab 已接入 `GET /admin/billing/reports/usage-daily` 与 `GET /admin/billing/reports/ledger-daily`，查看跨 creator usage / ledger 汇总
@@ -1302,7 +1348,7 @@ v1.1 继续沿用 `/admin/billing`，在同一路由上增加扩展 tab：
 - admin `/admin/billing/admin`
   - 保留 `Subscriptions`、`Orders`、`Exceptions`、`Entitlements`、`Domains`、`Reports` 六个 ops tab
 
-#### 7.5.6 i18n 与状态展示
+#### 7.5.7 i18n 与状态展示
 
 前端新增文案统一使用 `module.billing.*` 命名空间，至少覆盖：
 
@@ -1329,7 +1375,6 @@ v1.1 继续沿用 `/admin/billing`，在同一路由上增加扩展 tab：
 - `GET /billing/ledger`
 - `POST /billing/orders/{bill_order_bid}/sync`
 - `POST /billing/orders/{bill_order_bid}/checkout`
-- `POST /billing/orders/{bill_order_bid}/refund`
 - `POST /billing/subscriptions/checkout`
 - `POST /billing/subscriptions/cancel`
 - `POST /billing/subscriptions/resume`
@@ -1348,7 +1393,7 @@ v1.1 继续沿用 `/admin/billing`，在同一路由上增加扩展 tab：
 - `GET /billing/ledger`：按时间倒序分页返回账本流水
 - `POST /billing/orders/{bill_order_bid}/sync`：按 `bill_order_bid` 和 provider reference 主动同步支付状态
 - `POST /billing/orders/{bill_order_bid}/checkout`：对已创建的待支付订单继续发起 provider checkout
-- `POST /billing/orders/{bill_order_bid}/refund`：creator 对已支付 billing 订单发起退款；当前批次仅 Stripe 支持，Pingxx 返回 `unsupported`
+- 老师侧 billing 订单退款接口当前暂停注册；运营审核后在线下支付渠道人工退款时，必须同时核对并通过后台人工调整积分账本，待积分冲正规则完成后再恢复受控入口
 - `POST /billing/subscriptions/checkout`：新开订阅、升级补差或恢复订阅
 - `POST /billing/subscriptions/cancel` / `POST /billing/subscriptions/resume`：creator 取消或恢复订阅；manual trial subscription 不支持 cancel/resume；退款成功后如有关联订阅，当前批次会同步把订阅标记为 `canceled`
 - `POST /billing/topups/checkout`：在当前有效套餐周期内发起一次性积分包购买支付
@@ -1416,6 +1461,7 @@ type BillingSubscription = {
   subscription_bid: string;
   product_bid: string;
   product_code: string;
+  product_name_key?: string;
   status: 'draft' | 'active' | 'past_due' | 'paused' | 'cancel_scheduled' | 'canceled' | 'expired';
   billing_provider: string;
   current_period_start_at: string | null;

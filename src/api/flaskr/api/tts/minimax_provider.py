@@ -13,9 +13,11 @@ from urllib.parse import urlencode
 import requests
 
 from flaskr.api.tts.base import (
+    REQUEST_SCOPED_STREAM_MINIMAX_HTTP,
     AudioSettings,
     BaseTTSProvider,
     ParamRange,
+    ProviderCapabilities,
     ProviderConfig,
     TTSResult,
     VoiceSettings,
@@ -102,7 +104,7 @@ def _build_minimax_voice_setting(
     voice_settings: VoiceSettings,
     *,
     model: str,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     voice_setting_dict: dict[str, Any] = {
         "voice_id": voice_settings.voice_id,
         "speed": voice_settings.speed,
@@ -216,14 +218,14 @@ def _build_minimax_tts_url() -> str:
     return f"{MINIMAX_TTS_API_URL}?{urlencode({'GroupId': group_id})}"
 
 
-def _ensure_minimax_base_resp(message: dict[str, Any], prefix: str) -> None:
+def _ensure_minimax_base_resp(message: dict[str, object], prefix: str) -> None:
     base_resp = message.get("base_resp") or {}
     status_code = int(base_resp.get("status_code") or 0)
     if status_code != 0:
         raise ValueError(_format_minimax_error(message, prefix))
 
 
-def _format_minimax_error(message: dict[str, Any], prefix: str) -> str:
+def _format_minimax_error(message: dict[str, object], prefix: str) -> str:
     base_resp = message.get("base_resp") or {}
     status_code = base_resp.get("status_code", "unknown")
     status_msg = base_resp.get("status_msg", "Unknown error")
@@ -232,7 +234,7 @@ def _format_minimax_error(message: dict[str, Any], prefix: str) -> str:
     return f"{prefix}: {status_code} - {status_msg}{trace_suffix}"
 
 
-def _fetch_minimax_subtitle_file(url: str) -> list[dict[str, Any]]:
+def _fetch_minimax_subtitle_file(url: str) -> list[dict[str, object]]:
     if not url:
         return []
     try:
@@ -259,7 +261,7 @@ def _fetch_minimax_subtitle_file(url: str) -> list[dict[str, Any]]:
     return []
 
 
-def _looks_like_subtitle_item(value: dict[str, Any]) -> bool:
+def _looks_like_subtitle_item(value: dict[str, object]) -> bool:
     if not str(value.get("text", "") or "").strip():
         return False
     return any(
@@ -277,7 +279,7 @@ def _looks_like_subtitle_item(value: dict[str, Any]) -> bool:
     )
 
 
-def _collect_subtitle_items(value: Any) -> list[dict[str, Any]]:
+def _collect_subtitle_items(value: object) -> list[dict[str, object]]:
     if isinstance(value, list):
         return [item for item in value if isinstance(item, dict)]
     if isinstance(value, dict):
@@ -292,7 +294,7 @@ def _collect_subtitle_items(value: Any) -> list[dict[str, Any]]:
     return []
 
 
-def _extract_minimax_subtitles(message: dict[str, Any]) -> list[dict[str, Any]]:
+def _extract_minimax_subtitles(message: dict[str, object]) -> list[dict[str, object]]:
     for container in (
         message.get("data"),
         message.get("extra_info"),
@@ -314,8 +316,16 @@ def _extract_minimax_subtitles(message: dict[str, Any]) -> list[dict[str, Any]]:
 class MinimaxTTSProvider(BaseTTSProvider):
     """TTS provider using Minimax API."""
 
+    capabilities = ProviderCapabilities(
+        requires_model=True,
+        skip_non_speakable_text=True,
+        auto_detectable=True,
+        request_scoped_stream=REQUEST_SCOPED_STREAM_MINIMAX_HTTP,
+    )
+
     @property
     def provider_name(self) -> str:
+        """Return the provider's stable configuration name."""
         return "MiniMax"
 
     def is_configured(self) -> bool:
@@ -376,7 +386,8 @@ class MinimaxTTSProvider(BaseTTSProvider):
 
         """
         if not text or not text.strip():
-            raise ValueError("Text cannot be empty")
+            message = "Text cannot be empty"
+            raise ValueError(message)
 
         # Call API with hex output format
         result = self._call_api(
@@ -392,7 +403,8 @@ class MinimaxTTSProvider(BaseTTSProvider):
         audio_hex = data.get("audio")
 
         if not audio_hex:
-            raise ValueError("No audio data in API response")
+            message = "No audio data in API response"
+            raise ValueError(message)
 
         # Decode hex to bytes
         audio_data = bytes.fromhex(audio_hex)
@@ -436,11 +448,13 @@ class MinimaxTTSProvider(BaseTTSProvider):
         decodable audio segments before sending them to the frontend.
         """
         if not text or not text.strip():
-            raise ValueError("Text cannot be empty")
+            error_message = "Text cannot be empty"
+            raise ValueError(error_message)
 
         api_key = get_config("MINIMAX_API_KEY")
         if not api_key:
-            raise ValueError("MINIMAX_API_KEY is not configured")
+            error_message = "MINIMAX_API_KEY is not configured"
+            raise ValueError(error_message)
 
         tts_model = _resolve_minimax_model(model)
         voice_settings = voice_settings or self.get_default_voice_settings()
@@ -489,54 +503,68 @@ class MinimaxTTSProvider(BaseTTSProvider):
             stream=True,
             timeout=(10, 90),
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
 
-        for raw_line in response.iter_lines(decode_unicode=True):
-            line = str(raw_line or "").strip()
-            if not line:
-                continue
-            if line.startswith("data:"):
-                line = line[5:].strip()
-            if line == "[DONE]":
-                break
+            for raw_line in response.iter_lines(decode_unicode=True):
+                line = str(raw_line or "").strip()
+                if not line:
+                    continue
+                if line.startswith("data:"):
+                    line = line[5:].strip()
+                if line == "[DONE]":
+                    break
 
-            try:
-                message = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(
-                    "Invalid MiniMax HTTP streaming JSON response"
-                ) from exc
+                try:
+                    message = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    error_message = "Invalid MiniMax HTTP streaming JSON response"
+                    raise ValueError(error_message) from exc
 
-            _ensure_minimax_base_resp(message, "MiniMax HTTP streaming error")
-            data = message.get("data") or {}
-            extra_info = message.get("extra_info") or {}
-            audio_hex = data.get("audio") or ""
-            try:
-                audio_data = bytes.fromhex(audio_hex) if audio_hex else b""
-            except ValueError as exc:
-                raise ValueError("Invalid MiniMax HTTP streaming audio hex") from exc
+                _ensure_minimax_base_resp(message, "MiniMax HTTP streaming error")
+                data = message.get("data") or {}
+                extra_info = message.get("extra_info") or {}
+                audio_hex = data.get("audio") or ""
+                try:
+                    audio_data = bytes.fromhex(audio_hex) if audio_hex else b""
+                except ValueError as exc:
+                    error_message = "Invalid MiniMax HTTP streaming audio hex"
+                    raise ValueError(error_message) from exc
 
-            status = int(data.get("status") or 0)
-            is_final = status == 2 or bool(extra_info) or bool(message.get("is_final"))
-            subtitles = _extract_minimax_subtitles(message)
-            yield MinimaxHTTPStreamChunk(
-                audio_data=audio_data,
-                is_final=is_final,
-                duration_ms=int(extra_info.get("audio_length") or 0),
-                sample_rate=int(
-                    extra_info.get("audio_sample_rate")
-                    or audio_settings.sample_rate
-                    or 24000
-                ),
-                format=str(
-                    extra_info.get("audio_format") or audio_settings.format or "mp3"
-                ),
-                word_count=int(extra_info.get("word_count") or 0),
-                usage_characters=int(extra_info.get("usage_characters") or 0),
-                subtitles=subtitles,
-                extra_info=extra_info,
-                trace_id=str(message.get("trace_id") or ""),
-            )
+                status = int(data.get("status") or 0)
+                is_final = (
+                    status == 2 or bool(extra_info) or bool(message.get("is_final"))
+                )
+                subtitles = _extract_minimax_subtitles(message)
+                yield MinimaxHTTPStreamChunk(
+                    audio_data=audio_data,
+                    is_final=is_final,
+                    duration_ms=int(extra_info.get("audio_length") or 0),
+                    sample_rate=int(
+                        extra_info.get("audio_sample_rate")
+                        or audio_settings.sample_rate
+                        or 24000
+                    ),
+                    format=str(
+                        extra_info.get("audio_format") or audio_settings.format or "mp3"
+                    ),
+                    word_count=int(extra_info.get("word_count") or 0),
+                    usage_characters=int(extra_info.get("usage_characters") or 0),
+                    subtitles=subtitles,
+                    extra_info=extra_info,
+                    trace_id=str(message.get("trace_id") or ""),
+                )
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    # Cleanup must preserve completed audio and the original error.
+                    logger.warning(
+                        "Failed to close MiniMax TTS streaming response",
+                        exc_info=True,
+                    )
 
     def _call_api(
         self,
@@ -545,7 +573,7 @@ class MinimaxTTSProvider(BaseTTSProvider):
         audio_settings: AudioSettings | None = None,
         output_format: str = "hex",
         model: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Call Minimax TTS API.
 
         Args:
@@ -567,7 +595,8 @@ class MinimaxTTSProvider(BaseTTSProvider):
         tts_model = _resolve_minimax_model(model)
 
         if not api_key:
-            raise ValueError("MINIMAX_API_KEY is not configured")
+            error_message = "MINIMAX_API_KEY is not configured"
+            raise ValueError(error_message)
 
         if not voice_settings:
             voice_settings = self.get_default_voice_settings()
@@ -621,11 +650,13 @@ class MinimaxTTSProvider(BaseTTSProvider):
             # or foreign clone id that passed local shape validation). Surface it
             # as an actionable message instead of a generic API error.
             if status_code == 2054:
-                raise ValueError(
+                message = (
                     "Minimax TTS voice is not available "
                     f"(voice id does not exist on provider): {status_msg}"
                 )
-            raise ValueError(f"Minimax TTS API error: {status_code} - {status_msg}")
+                raise ValueError(message)
+            message = f"Minimax TTS API error: {status_code} - {status_msg}"
+            raise ValueError(message)
 
         return result
 

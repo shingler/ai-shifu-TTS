@@ -1,10 +1,16 @@
+"""Validate provider price mapping persistence and lifecycle transitions."""
+
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 import pytest
-from flask import Flask
 from flaskr.dao import db
+from flaskr.service.config import config_overrides
+
+if TYPE_CHECKING:
+    from flask import Flask
 from flaskr.service.billing.consts import (
     BILLING_INTERVAL_MONTH,
     BILLING_MODE_RECURRING,
@@ -25,9 +31,11 @@ from flaskr.service.billing.provider_catalog import (
 )
 from flaskr.service.billing.provider_price_mappings import (
     ProviderPriceMappingError,
+    _infer_stripe_livemode_from_secret_key,
     _select_single_active_mapping,
     activate_provider_price_mapping,
     get_active_provider_price_mapping,
+    restore_retired_provider_price_mapping,
     upsert_provider_price_mapping,
     validate_provider_price_mapping_by_bid,
 )
@@ -46,6 +54,7 @@ class _FakeStripeCatalogAdapter(StripeCatalogReadAdapter):
         provider_product_id: str,
         provider_price_id: str,
     ) -> ProviderCatalogSnapshot:
+        _ = app
         self.calls.append(
             {
                 "provider_product_id": provider_product_id,
@@ -53,6 +62,23 @@ class _FakeStripeCatalogAdapter(StripeCatalogReadAdapter):
             }
         )
         return self.snapshot
+
+
+@pytest.mark.parametrize(
+    ("secret_key", "expected_livemode"),
+    [
+        ("sk_live_123", True),
+        ("sk_test_123", False),
+        ("", False),
+        ("not-a-stripe-key", False),
+    ],
+)
+def test_infer_stripe_livemode_from_secret_key_prefix(
+    secret_key: str,
+    expected_livemode: bool,
+) -> None:
+    with config_overrides({"STRIPE_SECRET_KEY": secret_key}):
+        assert _infer_stripe_livemode_from_secret_key() is expected_livemode
 
 
 def _product(product_bid: str = "bill-product-mapping-growth") -> BillingProduct:
@@ -136,7 +162,7 @@ def _bind_mapping(
     return mapping
 
 
-def test_provider_price_mapping_upsert_is_idempotent(app) -> None:
+def test_provider_price_mapping_upsert_is_idempotent(app: object) -> None:
     product_bid = "bill-product-mapping-idempotent"
     with app.app_context():
         db.session.add(_product(product_bid))
@@ -172,7 +198,9 @@ def test_provider_price_mapping_upsert_is_idempotent(app) -> None:
         )
 
 
-def test_provider_price_mapping_rebind_resets_invalid_lifecycle_state(app) -> None:
+def test_provider_price_mapping_rebind_resets_invalid_lifecycle_state(
+    app: object,
+) -> None:
     product_bid = "bill-product-mapping-rebind-invalid"
     with app.app_context():
         db.session.add(_product(product_bid))
@@ -210,7 +238,7 @@ def test_provider_price_mapping_rebind_resets_invalid_lifecycle_state(app) -> No
         assert rebound.metadata_json == {"source": "rebound"}
 
 
-def test_provider_price_mapping_rejects_retired_rebind(app) -> None:
+def test_provider_price_mapping_rejects_retired_rebind(app: object) -> None:
     product_bid = "bill-product-mapping-rebind-retired"
     with app.app_context():
         db.session.add(_product(product_bid))
@@ -238,8 +266,148 @@ def test_provider_price_mapping_rejects_retired_rebind(app) -> None:
         assert mapping.provider_product_id == "prod_growth"
 
 
+def test_provider_price_mapping_restores_retired_mapping_to_draft(app: object) -> None:
+    product_bid = "bill-product-mapping-restore-retired"
+    with app.app_context():
+        db.session.add(_product(product_bid))
+        db.session.commit()
+        mapping = _bind_mapping(
+            product_bid=product_bid,
+            provider_price_id="price_restore_retired",
+        )
+        mapping.status = BILLING_PROVIDER_PRICE_STATUS_RETIRED
+        mapping.validated_at = now_utc()
+        mapping.activated_at = now_utc()
+        mapping.retired_at = now_utc()
+        mapping.validation_error = "stale"
+        db.session.commit()
+
+        restored = restore_retired_provider_price_mapping(mapping.provider_price_bid)
+        db.session.commit()
+
+        assert restored.provider_price_bid == mapping.provider_price_bid
+        assert restored.status == BILLING_PROVIDER_PRICE_STATUS_DRAFT
+        assert restored.validated_at is None
+        assert restored.activated_at is None
+        assert restored.retired_at is None
+        assert restored.validation_error == ""
+        assert restored.provider_price_id == "price_restore_retired"
+
+
+def test_provider_price_mapping_restore_is_idempotent_for_draft_mapping(
+    app: object,
+) -> None:
+    product_bid = "bill-product-mapping-restore-draft"
+    with app.app_context():
+        db.session.add(_product(product_bid))
+        db.session.commit()
+        mapping = _bind_mapping(
+            product_bid=product_bid,
+            provider_price_id="price_restore_draft",
+        )
+        mapping.validated_at = now_utc()
+        mapping.activated_at = now_utc()
+        mapping.retired_at = now_utc()
+        mapping.validation_error = "stale"
+        db.session.commit()
+
+        restored = restore_retired_provider_price_mapping(mapping.provider_price_bid)
+
+        assert restored.provider_price_bid == mapping.provider_price_bid
+        assert mapping.status == BILLING_PROVIDER_PRICE_STATUS_DRAFT
+        assert mapping.validated_at is None
+        assert mapping.activated_at is None
+        assert mapping.retired_at is None
+        assert mapping.validation_error == ""
+
+
+def test_provider_price_mapping_restore_rejects_active_mapping(app: object) -> None:
+    product_bid = "bill-product-mapping-restore-active"
+    with app.app_context():
+        db.session.add(_product(product_bid))
+        db.session.commit()
+        mapping = _bind_mapping(
+            product_bid=product_bid,
+            provider_price_id="price_restore_active",
+        )
+        mapping.status = BILLING_PROVIDER_PRICE_STATUS_ACTIVE
+        db.session.commit()
+
+        with pytest.raises(ProviderPriceMappingError) as exc_info:
+            restore_retired_provider_price_mapping(mapping.provider_price_bid)
+
+        assert exc_info.value.code == "provider_price_mapping_not_retired"
+        assert mapping.status == BILLING_PROVIDER_PRICE_STATUS_ACTIVE
+
+
+def test_provider_price_validate_keeps_retired_mapping_terminal(app: Flask) -> None:
+    product_bid = "bill-product-mapping-validate-retired"
+    with app.app_context():
+        product = _product(product_bid)
+        db.session.add(product)
+        db.session.commit()
+        mapping = _bind_mapping(
+            product_bid=product_bid,
+            provider_price_id="price_validate_retired",
+        )
+        retired_at = now_utc()
+        mapping.status = BILLING_PROVIDER_PRICE_STATUS_RETIRED
+        mapping.retired_at = retired_at
+        mapping.validation_error = ""
+        db.session.commit()
+
+        result = validate_provider_price_mapping_by_bid(
+            mapping.provider_price_bid,
+            adapter=_FakeStripeCatalogAdapter(
+                _snapshot(
+                    price_id="price_validate_retired",
+                    unit_amount=6900,
+                    product_code=product.product_code,
+                )
+            ),
+        )
+        db.session.commit()
+
+        assert result.valid is False
+        assert {issue["code"] for issue in result.errors} == {
+            "retired_mapping_cannot_be_validated"
+        }
+        assert mapping.status == BILLING_PROVIDER_PRICE_STATUS_RETIRED
+        assert mapping.retired_at == retired_at
+        assert mapping.validation_error == ""
+
+
+def test_provider_price_activation_rejects_retired_mapping(app: Flask) -> None:
+    product_bid = "bill-product-mapping-activate-retired"
+    with app.app_context():
+        product = _product(product_bid)
+        db.session.add(product)
+        db.session.commit()
+        mapping = _bind_mapping(
+            product_bid=product_bid,
+            provider_price_id="price_activate_retired",
+        )
+        mapping.status = BILLING_PROVIDER_PRICE_STATUS_RETIRED
+        mapping.retired_at = now_utc()
+        db.session.commit()
+
+        with pytest.raises(ProviderPriceMappingError) as exc_info:
+            activate_provider_price_mapping(
+                mapping.provider_price_bid,
+                adapter=_FakeStripeCatalogAdapter(
+                    _snapshot(
+                        price_id="price_activate_retired",
+                        product_code=product.product_code,
+                    )
+                ),
+            )
+
+        assert exc_info.value.code == "retired_mapping_cannot_be_activated"
+        assert mapping.status == BILLING_PROVIDER_PRICE_STATUS_RETIRED
+
+
 def test_provider_price_mapping_rejects_rebinding_price_to_different_product(
-    app,
+    app: object,
 ) -> None:
     first_product_bid = "bill-product-mapping-price-original"
     second_product_bid = "bill-product-mapping-price-other"
@@ -268,7 +436,7 @@ def test_provider_price_mapping_rejects_rebinding_price_to_different_product(
         assert mapping.provider_product_id == "prod_growth"
 
 
-def test_provider_price_activation_retires_existing_active_mapping(app) -> None:
+def test_provider_price_activation_retires_existing_active_mapping(app: object) -> None:
     product_bid = "bill-product-mapping-activate"
     with app.app_context():
         product = _product(product_bid)
@@ -313,7 +481,7 @@ def test_provider_price_activation_retires_existing_active_mapping(app) -> None:
 
 
 def test_provider_price_activation_failure_preserves_existing_active_mapping(
-    app,
+    app: object,
 ) -> None:
     product_bid = "bill-product-mapping-activate-failure"
     with app.app_context():
@@ -359,7 +527,7 @@ def test_provider_price_activation_failure_preserves_existing_active_mapping(
         )
 
 
-def test_provider_price_validate_keeps_valid_draft_as_draft(app) -> None:
+def test_provider_price_validate_keeps_valid_draft_as_draft(app: object) -> None:
     product_bid = "bill-product-mapping-validate"
     with app.app_context():
         product = _product(product_bid)
@@ -388,7 +556,42 @@ def test_provider_price_validate_keeps_valid_draft_as_draft(app) -> None:
         assert mapping.validation_error == ""
 
 
-def test_active_provider_price_validate_failure_invalidates_mapping(app) -> None:
+def test_provider_price_validate_moves_recovered_invalid_mapping_to_draft(
+    app: object,
+) -> None:
+    product_bid = "bill-product-mapping-recovered-invalid"
+    with app.app_context():
+        product = _product(product_bid)
+        db.session.add(product)
+        db.session.commit()
+        mapping = _bind_mapping(
+            product_bid=product_bid,
+            provider_price_id="price_growth_month_recovered_invalid",
+        )
+        mapping.status = BILLING_PROVIDER_PRICE_STATUS_INVALID
+        mapping.validation_error = '[{"code":"stripe_catalog_retrieve_failed"}]'
+        db.session.commit()
+
+        result = validate_provider_price_mapping_by_bid(
+            mapping.provider_price_bid,
+            adapter=_FakeStripeCatalogAdapter(
+                _snapshot(
+                    price_id="price_growth_month_recovered_invalid",
+                    product_code=product.product_code,
+                )
+            ),
+        )
+        db.session.commit()
+
+        assert result.valid is True
+        assert mapping.status == BILLING_PROVIDER_PRICE_STATUS_DRAFT
+        assert mapping.validated_at is not None
+        assert mapping.validation_error == ""
+
+
+def test_active_provider_price_validate_failure_invalidates_mapping(
+    app: object,
+) -> None:
     product_bid = "bill-product-mapping-active-invalid"
     with app.app_context():
         product = _product(product_bid)
@@ -436,3 +639,50 @@ def test_active_provider_price_selection_fails_closed_for_multiple_rows() -> Non
         _select_single_active_mapping(rows, product_bid="bill-product-corrupt")
 
     assert exc_info.value.code == "multiple_active_provider_prices"
+
+
+def test_admin_provider_price_create_infers_account_and_mode_from_stripe(
+    app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from flaskr.service.billing import admin_provider_prices
+
+    product_bid = "bill-product-mapping-admin-infer"
+
+    def fake_read_snapshot(
+        _app: Flask, *, provider_product_id: str, provider_price_id: str
+    ) -> ProviderCatalogSnapshot:
+        assert provider_product_id == "prod_admin_infer"
+        assert provider_price_id == "price_admin_infer"
+        return _snapshot(
+            account_id="acct_admin_infer",
+            product_id="prod_admin_infer",
+            price_id="price_admin_infer",
+        )
+
+    monkeypatch.setattr(
+        admin_provider_prices,
+        "_read_provider_snapshot",
+        fake_read_snapshot,
+    )
+
+    with app.app_context():
+        db.session.add(_product(product_bid))
+        db.session.commit()
+
+        result = admin_provider_prices.create_admin_billing_provider_price_mapping(
+            app,
+            payload={
+                "product_bid": product_bid,
+                "provider_product_id": "prod_admin_infer",
+                "provider_price_id": "price_admin_infer",
+            },
+        )
+        db.session.commit()
+
+        mapping = result["mapping"]
+        assert result["created"] is True
+        assert mapping["provider_account_id"] == "acct_admin_infer"
+        assert mapping["livemode"] is False
+        assert mapping["provider_product_id"] == "prod_admin_infer"
+        assert mapping["provider_price_id"] == "price_admin_infer"

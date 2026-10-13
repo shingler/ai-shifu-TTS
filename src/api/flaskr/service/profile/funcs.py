@@ -1,3 +1,5 @@
+"""Implement business operations for learner profiles."""
+
 import datetime
 import logging
 
@@ -8,7 +10,7 @@ from flaskr.api.check import (
     check_text,
 )
 from flaskr.dao import db
-from flaskr.i18n import _
+from flaskr.i18n import _, get_locale_labels
 from flaskr.service.check_risk.funcs import add_risk_control_result
 from flaskr.service.common import raise_error
 from flaskr.service.profile.dtos import ProfileToSave
@@ -24,7 +26,11 @@ from flaskr.service.user.repository import (
 )
 from flaskr.util.uuid import generate_id
 
-from .constants import SYS_USER_LANGUAGE, SYS_USER_NICKNAME
+from .constants import SYS_USER_BACKGROUND, SYS_USER_LANGUAGE, SYS_USER_NICKNAME
+from .learner_profile import (
+    apply_learner_profile_system_value,
+    validate_learner_profile_system_value,
+)
 from .models import VariableValue
 
 logger = logging.getLogger(__name__)
@@ -35,8 +41,7 @@ def _get_latest_variable_value(
     variable_key: str,
     shifu_bid: str,
 ) -> VariableValue | None:
-    """Return the newest variable value row from a pre-fetched, id-desc sorted
-    collection.
+    """Return the newest variable value row from a pre-fetched, id-desc sorted collection.
 
     Matching is by key only (not variable_bid) so the newest row for the
     logical profile field wins even if the underlying Variable definition was
@@ -77,7 +82,7 @@ def _ensure_user_aggregate(user_id: str) -> UserAggregate | None:
 
 
 def _update_aggregate_field(
-    aggregate: UserAggregate | None, mapping: str, value
+    aggregate: UserAggregate | None, mapping: str, value: object
 ) -> None:
     if not aggregate:
         return
@@ -89,9 +94,13 @@ def _update_aggregate_field(
         aggregate.language = value or ""
     elif mapping == "user_birth":
         aggregate.birthday = value
+    elif mapping == "learner_profile":
+        aggregate.learner_profile = str(value or "")
 
 
-def _normalize_core_value(mapping: str, value):
+def _normalize_core_value(
+    mapping: str, value: str | datetime.date | None
+) -> str | datetime.date | None:
     if mapping == "user_birth":
         if isinstance(value, datetime.date):
             return value
@@ -104,7 +113,16 @@ def _normalize_core_value(mapping: str, value):
     return value or ""
 
 
-def _apply_core_mapping(user_id: str, mapping: str, value):
+def _apply_core_mapping(
+    user_id: str,
+    mapping: str,
+    value: str | datetime.date | None,
+) -> str | datetime.date | None:
+    if mapping == "learner_profile":
+        return apply_learner_profile_system_value(
+            user_id=user_id,
+            learner_profile=str(value or ""),
+        )
     entity = ensure_user_entity(user_id)
     normalized = _normalize_core_value(mapping, value)
     if mapping == "name":
@@ -118,7 +136,9 @@ def _apply_core_mapping(user_id: str, mapping: str, value):
     return normalized
 
 
-def _current_core_value(aggregate: UserAggregate | None, mapping: str):
+def _current_core_value(
+    aggregate: UserAggregate | None, mapping: str
+) -> str | datetime.date | None:
     if not aggregate:
         return None
     if mapping == "name":
@@ -129,6 +149,8 @@ def _current_core_value(aggregate: UserAggregate | None, mapping: str):
         return aggregate.language
     if mapping == "user_birth":
         return aggregate.birthday
+    if mapping == "learner_profile":
+        return str(aggregate.learner_profile or "")
     return None
 
 
@@ -136,7 +158,8 @@ def check_text_content(
     app: Flask,
     user_id: str,
     user_input: str,
-):
+) -> bool:
+    """Check text content."""
     check_id = generate_id(app)
     res = check_text(app, check_id, user_input, user_id)
     add_risk_control_result(
@@ -153,14 +176,15 @@ def check_text_content(
     return res.check_result != CHECK_RESULT_REJECT
 
 
-def get_profile_labels():
+def get_profile_labels() -> dict[str, dict[str, object]]:
+    """Return profile labels."""
+    locale_labels = get_locale_labels()
     return {
         "sys_user_nickname": {
             "label": _("server.profile.nickname"),
             "mapping": "name",
             "default": "",
         },
-        "sys_user_background": {"label": _("server.profile.userBackground")},
         "sex": {
             "label": _("server.profile.sex"),
             "mapping": "user_sex",
@@ -190,14 +214,15 @@ def get_profile_labels():
         },
         "language": {
             "label": _("server.profile.language"),
-            "items": ["中文", "English", "Français"],
+            "items": list(locale_labels.values()),
             "mapping": "user_language",
-            "items_mapping": {
-                "zh-CN": "中文",
-                "en-US": "English",
-                "fr-FR": "Français",
-            },
+            "items_mapping": locale_labels,
             "default": "zh-CN",
+        },
+        "sys_user_background": {
+            "label": _("server.profile.userBackground"),
+            "mapping": "learner_profile",
+            "default": "",
         },
         "sys_user_style": {
             "label": _("server.profile.style"),
@@ -208,8 +233,16 @@ def get_profile_labels():
 def save_user_profiles(
     app: Flask, user_id: str, course_id: str, profiles: list[ProfileToSave]
 ) -> bool:
+    """Persist user profiles."""
     profile_labels = get_profile_labels()
-    app.logger.info("save user profiles:%s", profiles)
+    app.logger.info("save user profiles count=%s", len(profiles))
+    for profile in profiles:
+        if profile.key == SYS_USER_BACKGROUND:
+            profile.value = validate_learner_profile_system_value(
+                app,
+                user_id=user_id,
+                learner_profile=profile.value,
+            )
     aggregate = _ensure_user_aggregate(user_id)
     profiles_items = get_profile_item_definition_list(app, course_id)
 
@@ -240,6 +273,13 @@ def save_user_profiles(
         )
         target_shifu = "" if profile.key in profile_labels else (course_id or "")
 
+        if profile.key == SYS_USER_BACKGROUND:
+            profile.value = apply_learner_profile_system_value(
+                user_id=user_id,
+                learner_profile=str(profile.value or ""),
+            )
+            _update_aggregate_field(aggregate, "learner_profile", profile.value)
+
         latest_value = _get_latest_variable_value(
             user_values,
             variable_key=profile.key,
@@ -258,7 +298,7 @@ def save_user_profiles(
             db.session.add(user_value)
             user_values.insert(0, user_value)
 
-        if profile.key in profile_labels:
+        if profile.key in profile_labels and profile.key != SYS_USER_BACKGROUND:
             profile_lable = profile_labels[profile.key]
             if profile_lable.get("mapping"):
                 if profile_lable.get("items_mapping"):
@@ -266,7 +306,9 @@ def save_user_profiles(
                         profile.value, profile.value
                     )
                 normalized = _apply_core_mapping(
-                    user_id, profile_lable["mapping"], profile.value
+                    user_id,
+                    profile_lable["mapping"],
+                    profile.value,
                 )
                 _update_aggregate_field(aggregate, profile_lable["mapping"], normalized)
 
@@ -346,6 +388,10 @@ def get_user_profiles(app: Flask, user_id: str, course_id: str) -> dict:
         result[SYS_USER_LANGUAGE] = aggregate.user_language
         result[SYS_USER_NICKNAME] = aggregate.nickname or ""
 
+    # The historical variable row is write-only compatibility data.  Even a
+    # missing aggregate must not make it the runtime source of truth again.
+    result[SYS_USER_BACKGROUND] = aggregate.learner_profile if aggregate else ""
+
     # Ensure system variables are always available.
     if result.get(SYS_USER_LANGUAGE) is None:
         result[SYS_USER_LANGUAGE] = aggregate.user_language if aggregate else "en-US"
@@ -356,20 +402,45 @@ def get_user_profiles(app: Flask, user_id: str, course_id: str) -> dict:
     return result
 
 
+def _resolve_profile_language_label(
+    language: str | None,
+    locale_labels: dict[str, str],
+    default: str,
+) -> str:
+    """Resolve legacy codes without treating locale insertion order as a default."""
+    normalized = str(language or "").strip().replace("_", "-").casefold()
+    for code, label in locale_labels.items():
+        if normalized in (code.casefold(), label.casefold()):
+            return label
+
+    primary = normalized.split("-", maxsplit=1)[0]
+    for code, label in locale_labels.items():
+        if code.casefold().split("-", maxsplit=1)[0] == primary:
+            return label
+
+    return locale_labels.get(default, "")
+
+
 def get_user_profile_labels(
     app: Flask,
     user_id: str,
     course_id: str,
     *,
     include_nickname: bool = True,
+    include_background: bool = True,
 ) -> UserProfileLabelDTO:
-    """Get user profile labels
+    """Get user profile labels.
+
     Args:
         app: Flask application instance
         user_id: User id
         course_id: Course id
+        include_nickname: Whether to include the stored nickname label.
+        include_background: Whether to include the canonical learner profile.
+
     Returns:
-        list: User profile labels.
+        UserProfileLabelDTO: User profile labels and resolved language.
+
     """
     app.logger.info("get user profile labels:%s", course_id)
     candidate_shifus = [course_id or ""]
@@ -394,13 +465,15 @@ def get_user_profile_labels(
     aggregate = load_user_aggregate(user_id)
     language_value = aggregate.user_language if aggregate else "en-US"
     result = UserProfileLabelDTO(profiles=[], language=language_value)
-    mapping_keys = []
+    aggregate_mapping_keys = [
+        key
+        for key, meta in profile_labels.items()
+        if meta.get("mapping") and meta.get("mapping") != "user_sex"
+    ]
     if aggregate:
-        for key, meta in profile_labels.items():
-            mapping = meta.get("mapping")
-            if not mapping:
-                continue
-            mapping_keys.append(key)
+        for key in aggregate_mapping_keys:
+            meta = profile_labels[key]
+            mapping = meta["mapping"]
             raw_value = _current_core_value(aggregate, mapping)
             if raw_value is None:
                 value_entry = (
@@ -415,7 +488,11 @@ def get_user_profile_labels(
                 if value_entry:
                     raw_value = value_entry.value
             display_value = raw_value
-            if meta.get("items_mapping"):
+            if mapping == "user_language":
+                display_value = _resolve_profile_language_label(
+                    raw_value, meta["items_mapping"], meta["default"]
+                )
+            elif meta.get("items_mapping"):
                 mapping_items = meta.get("items", [])
                 default_value = mapping_items[0] if mapping_items else ""
                 display_value = meta["items_mapping"].get(raw_value, default_value)
@@ -429,7 +506,7 @@ def get_user_profile_labels(
                 )
             )
     for key in profile_labels:
-        if key in mapping_keys:
+        if key in aggregate_mapping_keys:
             continue
         profile_key = key
         item = {
@@ -442,6 +519,8 @@ def get_user_profile_labels(
             "value": "",
             "items": profile_labels[profile_key].get("items"),
         }
+        if profile_key == "sex":
+            item["value"] = next(iter(profile_labels[profile_key]["items"]), "")
         user_value = None
         profile_item = next(
             (item for item in profiles_items if item.profile_key == profile_key), None
@@ -462,7 +541,18 @@ def get_user_profile_labels(
                 shifu_bid="",
             )
         if user_value:
-            item["value"] = user_value.value
+            if profile_key == "sex":
+                meta = profile_labels[profile_key]
+                items_mapping = meta.get("items_mapping", {})
+                mapping_items = meta.get("items", [])
+                default_value = mapping_items[0] if mapping_items else ""
+                try:
+                    normalized_value = int(user_value.value)
+                except (TypeError, ValueError):
+                    normalized_value = None
+                item["value"] = items_mapping.get(normalized_value, default_value)
+            else:
+                item["value"] = user_value.value
         result.profiles.append(
             UserProfileLabelItemDTO(
                 key=item["key"],
@@ -473,9 +563,16 @@ def get_user_profile_labels(
             )
         )
 
+    profile_order = {key: index for index, key in enumerate(profile_labels)}
+    result.profiles.sort(key=lambda profile: profile_order[profile.key])
+
     if not include_nickname:
         result.profiles = [
             profile for profile in result.profiles if profile.key != SYS_USER_NICKNAME
+        ]
+    if not include_background:
+        result.profiles = [
+            profile for profile in result.profiles if profile.key != SYS_USER_BACKGROUND
         ]
     return result
 
@@ -486,8 +583,17 @@ def update_user_profile_with_lable(
     profiles: list,
     update_all: bool = False,
     course_id: str | None = None,
-):
-    app.logger.info("update user profile with lable:%s", course_id)
+) -> bool:
+    """Update user profile with lable."""
+    app.logger.info(
+        "update user profiles course_scoped=%s count=%s",
+        bool(course_id),
+        len(profiles.profiles or [])
+        if isinstance(profiles, UserProfileLabelDTO)
+        else 1
+        if isinstance(profiles, UserProfileLabelItemDTO)
+        else len(profiles),
+    )
     profile_labels = get_profile_labels()
     if isinstance(profiles, UserProfileLabelDTO):
         profiles = profiles.profiles or []
@@ -496,6 +602,14 @@ def update_user_profile_with_lable(
 
     if profiles and isinstance(profiles[0], UserProfileLabelItemDTO):
         profiles = [item.__json__() for item in profiles]
+
+    for profile in profiles:
+        if profile.get("key") == SYS_USER_BACKGROUND:
+            profile["value"] = validate_learner_profile_system_value(
+                app,
+                user_id=user_id,
+                learner_profile=profile.get("value"),
+            )
 
     aggregate = _ensure_user_aggregate(user_id)
     profile_items = get_profile_item_definition_list(app, course_id)
@@ -507,12 +621,6 @@ def update_user_profile_with_lable(
     nickname = next((p for p in profiles if p.get("key") == SYS_USER_NICKNAME), None)
     if nickname and not check_text_content(app, user_id, nickname.get("value")):
         raise_error("server.common.nicknameNotAllowed")
-
-    background = next(
-        (p for p in profiles if p.get("key") == "sys_user_background"), None
-    )
-    if background and not check_text_content(app, user_id, background.get("value")):
-        raise_error("server.common.backgroundNotAllowed")
 
     candidate_shifus = [course_id or ""]
     if course_id:
@@ -546,8 +654,6 @@ def update_user_profile_with_lable(
             None,
         )
 
-        app.logger.info("update user profile:%s-%s", key, profile_value)
-
         profile_lable = profile_labels.get(key, None)
         default_value = profile_lable.get("default", None) if profile_lable else None
 
@@ -557,31 +663,35 @@ def update_user_profile_with_lable(
                     profile_value = source_value
                     break
 
-        app.logger.info("profile_value:%s", profile_value)
         mapping = profile_lable.get("mapping") if profile_lable else None
-        if mapping and (
-            update_all
-            or (
-                profile_value != default_value
-                and _current_core_value(aggregate, mapping) != profile_value
-            )
-        ):
-            app.logger.info(
-                "update user info: %s - %s",
-                key,
+        mapping_already_applied = False
+        if mapping == "learner_profile":
+            profile_value = _apply_core_mapping(
+                user_id,
+                mapping,
                 profile_value,
             )
+            _update_aggregate_field(aggregate, mapping, profile_value)
+            mapping_already_applied = True
+        if mapping and (
+            not mapping_already_applied
+            and (
+                update_all
+                or (
+                    profile_value != default_value
+                    and _current_core_value(aggregate, mapping) != profile_value
+                )
+            )
+        ):
             normalized = _apply_core_mapping(user_id, mapping, profile_value)
             _update_aggregate_field(aggregate, mapping, normalized)
-        elif not profile_lable:
-            app.logger.info("profile_lable not found:%s", key)
 
         # System variables (in profile_labels) are global; custom variables
         # are scoped to the course.  This must match save_user_profiles() so
         # that the run interface reads the same value the settings page wrote.
         target_shifu = "" if key in profile_labels else (course_id or "")
 
-        should_persist_value = (
+        should_persist_value = key == SYS_USER_BACKGROUND or (
             profile_value not in (None, "") and profile_value != default_value
         )
         if should_persist_value:

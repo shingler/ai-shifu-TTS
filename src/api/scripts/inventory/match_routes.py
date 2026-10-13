@@ -2,7 +2,7 @@
 """Cross-reference backend routes against ALL known consumer surfaces.
 
 Surfaces:
-1. cook-web  : src/cook-web/src/api/api.ts catalog + any raw '/api/...' string
+1. web       : src/web/src/api/api.ts catalog + any raw '/api/...' string
 2. cli       : the skills repo (shifu-cli.py uses /api/shifu as base for
                relative '/shifus...' paths; also full /api/... refs)
 3. miniprogram: the mini-program client repo (grep /api/ paths)
@@ -31,7 +31,8 @@ SKILLS = os.environ.get("SKILLS_REPO", str((Path(ROOT) / ".." / "skills").resolv
 MINIAPP = os.environ.get("MINIAPP_REPO", "")
 
 
-def norm(path):
+def norm(path: object) -> object:
+    """Normalize a route path into comparable segments."""
     path = path.split("?")[0].rstrip("/")
     segs = []
     for s in path.split("/"):
@@ -44,7 +45,8 @@ def norm(path):
     return tuple(segs)
 
 
-def grep_paths(root, extra_args=None):
+def grep_paths(root: object) -> set[tuple[str, ...]]:
+    """Return source paths reported by the route search."""
     if not Path(root).is_dir():
         return set()
     # no quote anchoring: f-strings like f"{base}/api/x/{bid}/export" must hit
@@ -65,12 +67,10 @@ def grep_paths(root, extra_args=None):
 
 surfaces = {}
 
-# --- cook-web ---------------------------------------------------------------
+# --- web frontend -----------------------------------------------------------
 fe = set()
 cat = None
-with (Path(ROOT) / "src/cook-web/src/api/api.ts").open(
-    encoding="utf-8"
-) as catalog_file:
+with (Path(ROOT) / "src/web/src/api/api.ts").open(encoding="utf-8") as catalog_file:
     cat = catalog_file.read()
 for m in re.finditer(
     r"'(GET|POST|PUT|DELETE|PATCH|STREAM|STREAMLINE|PROXY)\s+([^']+)'", cat
@@ -79,8 +79,8 @@ for m in re.finditer(
     if not p.startswith("http"):
         p = "/api" + p
     fe.add(norm(p))
-fe |= grep_paths(str(Path(ROOT) / "src/cook-web/src"))
-surfaces["cook-web"] = fe
+fe |= grep_paths(str(Path(ROOT) / "src/web/src"))
+surfaces["web"] = fe
 
 # --- skills CLI --------------------------------------------------------------
 cli = grep_paths(SKILLS)
@@ -111,7 +111,8 @@ with Path(BACKEND_ROUTES).open(encoding="utf-8") as backend_routes:
         be.append((method, path, norm(path), src))
 
 
-def match(be_segs, fe_segs):
+def match(be_segs: object, fe_segs: object) -> object:
+    """Return whether backend and consumer route segments match."""
     if len(be_segs) != len(fe_segs):
         return False
     return all(
@@ -142,9 +143,9 @@ for c, n in sorted(counts.items(), key=lambda x: -x[1]):
     print(f"  {c}: {n}")
 print(f"  TOTAL endpoints: {len(rows)}")
 print()
-print("## endpoints NOT referenced by cook-web (with consumer column)")
+print("## endpoints NOT referenced by web (with consumer column)")
 print(f"{'METHOD':7s} {'PATH':80s} CONSUMER  [handler]")
 for method, path, cons, src in sorted(rows, key=lambda r: (r[2], r[1])):
-    if "used-by-cook-web" in cons:
+    if "used-by-web" in cons:
         continue
     print(f"{method:7s} {path:80s} {cons}  [{src}]")

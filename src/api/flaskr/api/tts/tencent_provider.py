@@ -10,25 +10,23 @@ import base64
 import datetime as dt
 import hashlib
 import hmac
-import io
 import json
 import logging
 import time
 import unicodedata
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 import requests
-
-try:
-    from pydub import AudioSegment as PydubAudioSegment
-except ImportError:  # pragma: no cover - exercised only in minimal deployments
-    PydubAudioSegment = None
 
 from flaskr.api.tts.base import (
     AudioSettings,
     BaseTTSProvider,
     ParamRange,
+    ProviderCapabilities,
     ProviderConfig,
     TTSResult,
     VoiceSettings,
@@ -38,6 +36,8 @@ from flaskr.common.log import AppLoggerProxy
 from flaskr.service.tts import resolve_tts_billable_chars
 from flaskr.service.tts.audio_utils import (
     concat_audio_best_effort,
+    export_pcm_to_mp3,
+    pcm_duration_ms,
     try_get_audio_duration_ms,
 )
 from flaskr.service.tts.subtitle_utils import normalize_subtitle_cues
@@ -154,7 +154,7 @@ TENCENT_SSE_REQUEST_CODEC = "pcm"
 TENCENT_ENABLE_SUBTITLE = True
 TENCENT_MAX_SESSION_CHARS = 255
 
-_TERMINAL_PUNCTUATION = set(".!?;。！？；")
+_TERMINAL_PUNCTUATION = set(".!?;。！？；")  # noqa: RUF001 - intentional fullwidth Chinese punctuation
 
 TENCENT_EMOTIONS = [
     {
@@ -214,6 +214,8 @@ TENCENT_EMOTIONS = [
 
 @dataclass(frozen=True)
 class TencentTTSCredentials:
+    """Carry credentials for Tencent TTS."""
+
     app_id: int
     secret_id: str
     secret_key: str
@@ -221,6 +223,8 @@ class TencentTTSCredentials:
 
 @dataclass(frozen=True)
 class TencentSSEStreamChunk:
+    """Represent one streamed chunk from Tencent SSE stream."""
+
     audio_data: bytes
     is_final: bool = False
     subtitles: list[dict[str, Any]] = field(default_factory=list)
@@ -230,14 +234,22 @@ class TencentSSEStreamChunk:
 
 
 class TencentTTSError(ValueError):
+    """Signal that Tencent speech synthesis returned invalid data."""
+
     def __init__(
         self,
         *,
-        code: Any,
+        code: object,
         message: str = "",
         request_id: str = "",
         message_id: str = "",
     ) -> None:
+        """Normalize provider error details and retain request metadata.
+
+        Builds the exception message from the error code and normalized provider
+        message, appending request and message IDs when supplied. Retains the code
+        and IDs for callers.
+        """
         safe_message = str(message or "provider error").strip()
         detail = f"Tencent TTS error {code}: {safe_message}"
         if request_id:
@@ -250,7 +262,7 @@ class TencentTTSError(ValueError):
         self.message_id = message_id
 
 
-def _tencent_codec(value: Any = None) -> str:
+def _tencent_codec(value: object = None) -> str:
     codec = str(value or TENCENT_DEFAULT_CODEC).lower()
     if codec != TENCENT_DEFAULT_CODEC:
         logger.warning(
@@ -275,41 +287,32 @@ def _concat_tencent_audio_segments(
 
 
 def _tencent_pcm_duration_ms(audio_data: bytes, *, sample_rate: int) -> int:
-    if not audio_data:
-        return 0
-    bytes_per_second = max(int(sample_rate or TENCENT_DEFAULT_SAMPLE_RATE), 1) * 2
-    return round(len(audio_data) * 1000 / bytes_per_second)
+    return pcm_duration_ms(
+        audio_data,
+        sample_rate=int(sample_rate or TENCENT_DEFAULT_SAMPLE_RATE),
+    )
 
 
 def _export_tencent_pcm_to_mp3(audio_data: bytes, *, sample_rate: int) -> bytes:
-    if not audio_data:
-        return b""
-    if PydubAudioSegment is None:
-        raise ValueError("pydub is required to convert Tencent TTS PCM audio to MP3")
-
-    segment = PydubAudioSegment(
-        data=audio_data,
-        sample_width=2,
-        frame_rate=int(sample_rate or TENCENT_DEFAULT_SAMPLE_RATE),
-        channels=1,
+    return export_pcm_to_mp3(
+        audio_data,
+        sample_rate=int(sample_rate or TENCENT_DEFAULT_SAMPLE_RATE),
     )
-    output = io.BytesIO()
-    segment.export(output, format=TENCENT_DEFAULT_CODEC, bitrate="128k")
-    return output.getvalue()
 
 
-def _coerce_app_id(app_id: Any) -> int:
+def _coerce_app_id(app_id: object) -> int:
     try:
         return int(app_id)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"Invalid Tencent TTS AppId: {app_id!r}") from exc
+        message = f"Invalid Tencent TTS AppId: {app_id!r}"
+        raise ValueError(message) from exc
 
 
 def _clamp_float(value: float, minimum: float, maximum: float) -> float:
     return min(max(float(value), minimum), maximum)
 
 
-def _tencent_flow_speed(value: Any) -> float:
+def _tencent_flow_speed(value: object) -> float:
     try:
         legacy_speed = float(value or 0)
     except (TypeError, ValueError):
@@ -321,7 +324,7 @@ def _tencent_flow_speed(value: Any) -> float:
     return round(_clamp_float(mapped, 0.5, 2.0), 2)
 
 
-def _tencent_flow_volume(value: Any) -> float:
+def _tencent_flow_volume(value: object) -> float:
     try:
         volume = float(value or 0)
     except (TypeError, ValueError):
@@ -339,7 +342,7 @@ def _tencent_voice_language(voice_id: str) -> str:
     return "zh"
 
 
-def _normalize_tencent_voice_id(voice_id: Any) -> str:
+def _normalize_tencent_voice_id(voice_id: object) -> str:
     normalized_voice_id = str(voice_id or "").strip()
     if not normalized_voice_id:
         return TENCENT_DEFAULT_VOICE_ID
@@ -354,7 +357,7 @@ def _resolve_tencent_model(model: str | None, emotion: str = "") -> str:
     return TENCENT_DEFAULT_MODEL
 
 
-def _normalize_tencent_emotion(emotion: Any) -> str:
+def _normalize_tencent_emotion(emotion: object) -> str:
     normalized = str(emotion or "").strip()
     emotion_aliases = {
         "fear": "fearful",
@@ -372,12 +375,13 @@ def _normalize_tencent_emotion(emotion: Any) -> str:
 
 def build_tencent_sse_payload(
     *,
-    app_id: Any,
+    app_id: object,
     text: str,
     voice_settings: VoiceSettings,
     audio_settings: AudioSettings,
     model: str | None = None,
-) -> dict[str, Any]:
+) -> dict[str, object]:
+    """Build tencent SSE payload."""
     voice_id = _normalize_tencent_voice_id(
         getattr(voice_settings, "voice_id", "") or TENCENT_DEFAULT_VOICE_ID
     )
@@ -413,7 +417,8 @@ def build_tencent_sse_payload(
     return params
 
 
-def encode_tencent_sse_payload(payload: dict[str, Any]) -> str:
+def encode_tencent_sse_payload(payload: dict[str, object]) -> str:
+    """Encode tencent SSE payload."""
     return json.dumps(
         payload,
         ensure_ascii=False,
@@ -437,6 +442,7 @@ def build_tencent_tc3_headers(
     secret_key: str,
     timestamp: int | None = None,
 ) -> dict[str, str]:
+    """Build tencent TC3 headers."""
     request_timestamp = int(timestamp if timestamp is not None else time.time())
     request_date = dt.datetime.fromtimestamp(
         request_timestamp,
@@ -498,6 +504,7 @@ def _contains_cjk(text: str) -> bool:
 
 
 def ensure_tencent_terminal_punctuation(text: str) -> str:
+    """Ensure tencent terminal punctuation."""
     normalized = str(text or "").strip()
     if not normalized:
         return normalized
@@ -571,8 +578,8 @@ def _tencent_speech_weight(text: str) -> int:
 
 
 def _normalize_tencent_grouping_cues(
-    cues: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+    cues: list[dict[str, object]],
+) -> list[dict[str, object]]:
     normalized: list[dict[str, Any]] = []
     for raw_item in list(cues or []):
         if not isinstance(raw_item, dict):
@@ -610,10 +617,10 @@ def _normalize_tencent_grouping_cues(
 
 
 def _group_tencent_subtitle_cues_by_source_indices(
-    cues: list[dict[str, Any]],
+    cues: list[dict[str, object]],
     *,
     source_text: str,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, object]]:
     sentence_ranges = _split_tencent_sentence_units_with_ranges(source_text)
     indexed_cues = [
         cue
@@ -654,10 +661,10 @@ def _group_tencent_subtitle_cues_by_source_indices(
 
 
 def _group_tencent_subtitle_cues_by_source_text(
-    cues: list[dict[str, Any]],
+    cues: list[dict[str, object]],
     *,
     source_text: str,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, object]]:
     normalized_cues = _normalize_tencent_grouping_cues(cues)
     sentence_units = _split_tencent_sentence_units(source_text)
     if not normalized_cues or not sentence_units:
@@ -770,7 +777,7 @@ def _group_tencent_subtitle_cues_by_source_text(
     return normalize_subtitle_cues(grouped)
 
 
-def _tencent_subtitle_text(raw_item: dict[str, Any]) -> str:
+def _tencent_subtitle_text(raw_item: dict[str, object]) -> str:
     for key in ("Text", "text", "Word", "word", "Sentence", "sentence"):
         text = str(raw_item.get(key, "") or "").strip()
         if text:
@@ -779,7 +786,7 @@ def _tencent_subtitle_text(raw_item: dict[str, Any]) -> str:
 
 
 def _tencent_subtitle_time_ms(
-    raw_item: dict[str, Any], keys: tuple[str, ...], default_ms: int = 0
+    raw_item: dict[str, object], keys: tuple[str, ...], default_ms: int = 0
 ) -> int:
     for key in keys:
         if key not in raw_item:
@@ -795,7 +802,7 @@ def _tencent_subtitle_time_ms(
 
 
 def _tencent_subtitle_index(
-    raw_item: dict[str, Any], keys: tuple[str, ...]
+    raw_item: dict[str, object], keys: tuple[str, ...]
 ) -> int | None:
     for key in keys:
         if key not in raw_item:
@@ -811,13 +818,14 @@ def _tencent_subtitle_index(
 
 
 def normalize_tencent_subtitle_cues(
-    subtitles: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None,
+    subtitles: list[dict[str, object]] | tuple[dict[str, object], ...] | None,
     *,
     offset_ms: int = 0,
     segment_index: int = 0,
     position: int = 0,
     source_text: str = "",
-) -> list[dict[str, Any]]:
+) -> list[dict[str, object]]:
+    """Normalize tencent subtitle cues."""
     cues: list[dict[str, Any]] = []
     seen_cue_keys: set[tuple[str, int, int, int | None, int | None]] = set()
     for raw_item in list(subtitles or []):
@@ -906,8 +914,8 @@ def normalize_tencent_subtitle_cues(
 
 
 def _group_tencent_subtitle_cues_by_sentence(
-    cues: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+    cues: list[dict[str, object]],
+) -> list[dict[str, object]]:
     grouped: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
 
@@ -943,14 +951,14 @@ def _group_tencent_subtitle_cues_by_sentence(
     return normalize_subtitle_cues(grouped)
 
 
-def _coerce_int(value: Any, default: int = 0) -> int:
+def _coerce_int(value: object, default: int = 0) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
         return int(default or 0)
 
 
-def _coerce_bool(value: Any) -> bool:
+def _coerce_bool(value: object) -> bool:
     if isinstance(value, bool):
         return value
     if value is None:
@@ -960,14 +968,14 @@ def _coerce_bool(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y"}
 
 
-def _get_first_present(payload: dict[str, Any], *keys: str) -> Any:
+def _get_first_present(payload: dict[str, object], *keys: str) -> object:
     for key in keys:
         if key in payload:
             return payload.get(key)
     return None
 
 
-def _is_nonzero_tencent_code(value: Any) -> bool:
+def _is_nonzero_tencent_code(value: object) -> bool:
     if value is None:
         return False
     if isinstance(value, (int, float)):
@@ -976,24 +984,24 @@ def _is_nonzero_tencent_code(value: Any) -> bool:
     return bool(normalized) and normalized != "0"
 
 
-def _unwrap_tencent_sse_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def _unwrap_tencent_sse_payload(payload: dict[str, object]) -> dict[str, object]:
     response = payload.get("Response") or payload.get("response")
     if isinstance(response, dict):
         return response
     return payload
 
 
-def _decode_tencent_sse_line(raw_line: Any) -> str:
+def _decode_tencent_sse_line(raw_line: object) -> str:
     if isinstance(raw_line, bytes):
         return raw_line.decode("utf-8", errors="replace").strip()
     return str(raw_line or "").strip()
 
 
 def _extract_tencent_sse_subtitles(
-    payload: dict[str, Any],
+    payload: dict[str, object],
     *,
     request_text: str,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, object]]:
     result = payload.get("Result") or payload.get("result") or {}
     subtitle_items = payload.get("Subtitles") or payload.get("subtitles")
     if subtitle_items is None and isinstance(result, dict):
@@ -1057,10 +1065,11 @@ def _extract_tencent_sse_subtitles(
 
 
 def parse_tencent_sse_message(
-    payload: dict[str, Any],
+    payload: dict[str, object],
     *,
     request_text: str,
 ) -> TencentSSEStreamChunk | None:
+    """Parse tencent SSE message."""
     message = _unwrap_tencent_sse_payload(payload)
     error_payload = _get_first_present(message, "Error", "error")
     message_type = str(
@@ -1105,7 +1114,8 @@ def parse_tencent_sse_message(
             base64.b64decode(audio_value, validate=True) if audio_value else b""
         )
     except ValueError as exc:
-        raise ValueError("Invalid Tencent TTS SSE audio base64") from exc
+        error_message = "Invalid Tencent TTS SSE audio base64"
+        raise ValueError(error_message) from exc
     if not audio_data and not subtitles and not has_final_field:
         return None
 
@@ -1130,16 +1140,26 @@ def parse_tencent_sse_message(
 
 
 class TencentTTSProvider(BaseTTSProvider):
+    """Stream synthesized speech through Tencent TTS."""
+
+    capabilities = ProviderCapabilities(
+        retry_on_empty_audio=True,
+        skip_non_speakable_text=True,
+    )
+
     @property
     def provider_name(self) -> str:
+        """Return the provider's stable configuration name."""
         return "tencent"
 
     def get_credentials(self) -> TencentTTSCredentials:
+        """Return the configured provider credentials."""
         app_id = get_config("TENCENT_TTS_APP_ID", "")
         secret_id = str(get_config("TENCENT_TTS_SECRET_ID", "") or "").strip()
         secret_key = str(get_config("TENCENT_TTS_SECRET_KEY", "") or "").strip()
         if not secret_id or not secret_key:
-            raise ValueError("Tencent TTS credentials are not configured")
+            message = "Tencent TTS credentials are not configured"
+            raise ValueError(message)
         return TencentTTSCredentials(
             app_id=_coerce_app_id(app_id),
             secret_id=secret_id,
@@ -1147,6 +1167,7 @@ class TencentTTSProvider(BaseTTSProvider):
         )
 
     def is_configured(self) -> bool:
+        """Return whether this provider has usable credentials."""
         try:
             self.get_credentials()
         except ValueError:
@@ -1154,6 +1175,7 @@ class TencentTTSProvider(BaseTTSProvider):
         return True
 
     def get_default_voice_settings(self) -> VoiceSettings:
+        """Return this provider's default voice settings."""
         return VoiceSettings(
             voice_id=TENCENT_DEFAULT_VOICE_ID,
             speed=0,
@@ -1163,6 +1185,7 @@ class TencentTTSProvider(BaseTTSProvider):
         )
 
     def get_default_audio_settings(self) -> AudioSettings:
+        """Return this provider's default audio settings."""
         return AudioSettings(
             format=_tencent_codec(),
             sample_rate=TENCENT_DEFAULT_SAMPLE_RATE,
@@ -1171,12 +1194,15 @@ class TencentTTSProvider(BaseTTSProvider):
         )
 
     def get_supported_emotions(self) -> list[str]:
+        """Return the emotions exposed by this provider."""
         return [item["value"] for item in TENCENT_EMOTIONS if item["value"]]
 
     def get_supported_voices(self) -> list[dict[str, str]]:
+        """Return the voices exposed by this provider."""
         return [dict(voice) for voice in TENCENT_PREMIUM_VOICES]
 
     def get_provider_config(self) -> ProviderConfig:
+        """Return the provider's public configuration."""
         return ProviderConfig(
             name=self.provider_name,
             label="腾讯云语音合成",
@@ -1204,12 +1230,15 @@ class TencentTTSProvider(BaseTTSProvider):
         voice_settings: VoiceSettings | None = None,
         audio_settings: AudioSettings | None = None,
         model: str | None = None,
-    ):
+    ) -> Iterator[TencentSSEStreamChunk]:
+        """Stream synthesized speech from this provider."""
         if not self.is_configured():
-            raise ValueError("Tencent TTS is not configured")
+            error_message = "Tencent TTS is not configured"
+            raise ValueError(error_message)
         request_text = str(text or "").strip()
         if not request_text:
-            raise ValueError("Text cannot be empty")
+            error_message = "Text cannot be empty"
+            raise ValueError(error_message)
 
         credentials = self.get_credentials()
         effective_voice_settings = voice_settings or self.get_default_voice_settings()
@@ -1246,10 +1275,9 @@ class TencentTTSProvider(BaseTTSProvider):
             stream=True,
             timeout=(10, 90),
         )
-        response.raise_for_status()
-
         received_audio = False
         try:
+            response.raise_for_status()
             for raw_line in response.iter_lines(decode_unicode=True):
                 line = _decode_tencent_sse_line(raw_line)
                 if not line:
@@ -1267,23 +1295,33 @@ class TencentTTSProvider(BaseTTSProvider):
                 try:
                     message = json.loads(line)
                 except json.JSONDecodeError as exc:
-                    raise ValueError("Invalid Tencent TTS SSE JSON response") from exc
+                    error_message = "Invalid Tencent TTS SSE JSON response"
+                    raise ValueError(error_message) from exc
                 chunk = parse_tencent_sse_message(message, request_text=request_text)
                 if chunk is None:
                     continue
                 if chunk.audio_data:
                     received_audio = True
                 if chunk.is_final and not received_audio:
-                    raise ValueError("No audio data received from Tencent TTS")
+                    error_message = "No audio data received from Tencent TTS"
+                    raise ValueError(error_message)
                 yield chunk
                 if chunk.is_final:
                     break
             if not received_audio:
-                raise ValueError("No audio data received from Tencent TTS")
+                error_message = "No audio data received from Tencent TTS"
+                raise ValueError(error_message)
         finally:
             close = getattr(response, "close", None)
             if callable(close):
-                close()
+                try:
+                    close()
+                except Exception:
+                    # Cleanup must preserve completed audio and the original error.
+                    logger.warning(
+                        "Failed to close Tencent TTS streaming response",
+                        exc_info=True,
+                    )
 
     def synthesize(
         self,
@@ -1292,11 +1330,14 @@ class TencentTTSProvider(BaseTTSProvider):
         audio_settings: AudioSettings | None = None,
         model: str | None = None,
     ) -> TTSResult:
+        """Synthesize speech with this provider."""
         if not self.is_configured():
-            raise ValueError("Tencent TTS is not configured")
+            message = "Tencent TTS is not configured"
+            raise ValueError(message)
         request_text = str(text or "").strip()
         if not request_text:
-            raise ValueError("Text cannot be empty")
+            message = "Text cannot be empty"
+            raise ValueError(message)
 
         effective_voice_settings = voice_settings or self.get_default_voice_settings()
         if not effective_voice_settings.voice_id:
@@ -1336,13 +1377,15 @@ class TencentTTSProvider(BaseTTSProvider):
                 segment for segment in chunk_pcm_segments if segment
             )
             if not chunk_pcm_audio:
-                raise ValueError("No audio data received from Tencent TTS")
+                message = "No audio data received from Tencent TTS"
+                raise ValueError(message)
             chunk_mp3_audio = _export_tencent_pcm_to_mp3(
                 chunk_pcm_audio,
                 sample_rate=sample_rate,
             )
             if not chunk_mp3_audio:
-                raise ValueError("No decodable audio data received from Tencent TTS")
+                message = "No decodable audio data received from Tencent TTS"
+                raise ValueError(message)
             audio_segments.append(chunk_mp3_audio)
 
             duration_ms = _tencent_pcm_duration_ms(
@@ -1381,7 +1424,8 @@ class TencentTTSProvider(BaseTTSProvider):
             audio_segments, output_format=output_format
         )
         if not final_audio:
-            raise ValueError("No decodable audio data received from Tencent TTS")
+            message = "No decodable audio data received from Tencent TTS"
+            raise ValueError(message)
         if duration_total_ms <= 0:
             decoded_duration_ms = try_get_audio_duration_ms(
                 final_audio,
@@ -1400,7 +1444,7 @@ class TencentTTSProvider(BaseTTSProvider):
         )
 
     @staticmethod
-    def _subtitle_cues_end_ms(subtitle_cues: list[dict[str, Any]]) -> int:
+    def _subtitle_cues_end_ms(subtitle_cues: list[dict[str, object]]) -> int:
         normalized = normalize_subtitle_cues(subtitle_cues)
         if not normalized:
             return 0

@@ -1,6 +1,9 @@
+"""Expose HTTP routes for learning sessions."""
+
 import json
 import sys
 import uuid
+from collections.abc import Iterator
 
 from flask import Flask, Response, request, stream_with_context
 from flaskr.common.shifu_context import get_shifu_context_snapshot, with_shifu_context
@@ -14,6 +17,7 @@ from flaskr.framework.plugin.inject import inject
 from flaskr.i18n import get_current_language
 from flaskr.route.common import bypass_token_validation, make_common_response
 from flaskr.service.billing.admission import admit_creator_usage
+from flaskr.service.billing.api import admit_creator_preview_usage
 from flaskr.service.common import raise_error
 from flaskr.service.common.models import AppError, raise_param_error
 from flaskr.service.learn.context_v2 import RunScriptPreviewContextV2
@@ -52,7 +56,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 
-def _normalize_user_input(value):
+def _normalize_user_input(value: object) -> dict[str, list[str]] | None:
     if value is None:
         return None
     if isinstance(value, dict):
@@ -73,7 +77,7 @@ def _normalize_user_input(value):
     return {"user_input": [str(value)]}
 
 
-def _to_sse_data_line(message) -> str:
+def _to_sse_data_line(message: object) -> str:
     payload = message.__json__() if hasattr(message, "__json__") else message
     return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
 
@@ -99,13 +103,13 @@ def _release_db_session(app: Flask, *, source: str) -> None:
 def _stream_sse_response(
     app: Flask,
     *,
-    message_iter_factory,
+    message_iter_factory: object,
     close_log: str,
     error_log: str,
-    error_event_factory=None,
-    terminal_event_factory=None,
+    error_event_factory: object = None,
+    terminal_event_factory: object = None,
 ) -> Response:
-    def event_stream():
+    def event_stream() -> Iterator[str]:
         try:
             for message in message_iter_factory():
                 yield _to_sse_data_line(message)
@@ -146,11 +150,11 @@ def _stream_sse_response(
 def _stream_passthrough_response(
     app: Flask,
     *,
-    message_iter_factory,
+    message_iter_factory: object,
     close_log: str,
     error_log: str,
 ) -> Response:
-    def event_stream():
+    def event_stream() -> Iterator[str]:
         try:
             yield from message_iter_factory()
         except GeneratorExit:
@@ -182,10 +186,22 @@ def _stream_passthrough_response(
     )
 
 
+def _normalize_learning_mode(value: object, *, listen: bool = False) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"read", "listen", "classroom"}:
+        return normalized
+    return "listen" if listen else "read"
+
+
 @inject
 def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
     """Register learn routes."""
     app.logger.info("register learn routes %s", path_prefix)
+    from flaskr.service.learn.live_follow_up_routes import (
+        register_live_follow_up_routes,
+    )
+
+    register_live_follow_up_routes(app, path_prefix)
     preview_service = RunScriptPreviewContextV2(app)
 
     def _require_shifu_owner(shifu_bid: str) -> str:
@@ -203,29 +219,35 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
             raise_error("server.shifu.noPermission")
         return user_bid
 
-    def _ensure_outline_belongs_to_shifu(shifu_bid: str, outline_bid: str) -> None:
-        """Validate that outline belongs to the specified shifu."""
-        in_draft = db.session.execute(
-            select(DraftOutlineItem.id).where(
-                DraftOutlineItem.shifu_bid == shifu_bid,
-                DraftOutlineItem.outline_item_bid == outline_bid,
-                DraftOutlineItem.deleted == 0,
-            )
-        ).first()
-        if in_draft:
-            return
-        in_published = db.session.execute(
-            select(PublishedOutlineItem.id).where(
-                PublishedOutlineItem.shifu_bid == shifu_bid,
-                PublishedOutlineItem.outline_item_bid == outline_bid,
-                PublishedOutlineItem.deleted == 0,
-            )
-        ).first()
-        if not in_published:
-            raise_error("server.shifu.lessonNotFoundInCourse")
+    def _ensure_outline_belongs_to_shifu(
+        shifu_bid: str,
+        outline_bid: str,
+        *,
+        preview_mode: bool | None = None,
+    ) -> None:
+        """Validate that the requested lesson version belongs to the course."""
+        models = (
+            (DraftOutlineItem, PublishedOutlineItem)
+            if preview_mode is None
+            else (DraftOutlineItem if preview_mode else PublishedOutlineItem,)
+        )
+        for model in models:
+            found = db.session.execute(
+                select(model.id).where(
+                    model.shifu_bid == shifu_bid,
+                    model.outline_item_bid == outline_bid,
+                    model.deleted == 0,
+                )
+            ).first()
+            if found:
+                return
+        raise_error("server.shifu.lessonNotFoundInCourse")
 
     def _admit_creator_usage_for_shifu(shifu_bid: str, usage_scene: int) -> None:
         if is_builtin_demo_shifu(app, shifu_bid):
+            return
+        if usage_scene == BILL_USAGE_SCENE_PREVIEW:
+            admit_creator_preview_usage(app, shifu_bid=shifu_bid)
             return
         admit_creator_usage(
             app,
@@ -236,8 +258,9 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
     @app.route(path_prefix + "/shifu/<shifu_bid>", methods=["GET"])
     @bypass_token_validation
     @with_shifu_context()
-    def get_shifu_api(shifu_bid: str):
+    def get_shifu_api(shifu_bid: str) -> str:
         """Get shifu.
+
         ---
         tags:
             - learn
@@ -271,15 +294,25 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
             "get shifu, shifu_bid: %s, preview_mode: %s", shifu_bid, preview_mode
         )
         preview_mode = preview_mode.lower() == "true"
+        viewer_user_bid = ""
         if preview_mode:
             user = resolve_preview_request_user(app)
             require_shifu_preview_permission(app, user.user_id, shifu_bid)
-        return make_common_response(get_shifu_info(app, shifu_bid, preview_mode))
+            viewer_user_bid = user.user_id
+        return make_common_response(
+            get_shifu_info(
+                app,
+                shifu_bid,
+                preview_mode,
+                viewer_user_bid=viewer_user_bid,
+            )
+        )
 
     @app.route(path_prefix + "/shifu/<shifu_bid>/outline-item-tree", methods=["GET"])
     @with_shifu_context()
-    def get_outline_item_tree_api(shifu_bid: str):
+    def get_outline_item_tree_api(shifu_bid: str) -> str:
         """Get outline item tree.
+
         ---
         tags:
             - learn
@@ -322,8 +355,9 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
 
     @app.route(path_prefix + "/shifu/<shifu_bid>/run/<outline_bid>", methods=["PUT"])
     @with_shifu_context()
-    def run_outline_item_api(shifu_bid: str, outline_bid: str):
+    def run_outline_item_api(shifu_bid: str, outline_bid: str) -> Response:
         """Run the MarkdownFlow of the outline.
+
         ---
         tags:
             - learn
@@ -382,6 +416,10 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
             listen = False
         else:
             listen = bool(listen_raw)
+        learning_mode = _normalize_learning_mode(
+            payload.get("learning_mode"),
+            listen=listen,
+        )
         preview_mode = request.args.get("preview_mode", "False")
         app.logger.info(
             "run outline item, shifu_bid: %s, outline_bid: %s, preview_mode: %s, listen: %s",
@@ -393,6 +431,11 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
         preview_mode = preview_mode.lower() == "true"
         if preview_mode:
             require_shifu_preview_permission(app, user_bid, shifu_bid)
+        _ensure_outline_belongs_to_shifu(
+            shifu_bid,
+            outline_bid,
+            preview_mode=preview_mode,
+        )
         _admit_creator_usage_for_shifu(
             shifu_bid,
             BILL_USAGE_SCENE_PREVIEW if preview_mode else BILL_USAGE_SCENE_PROD,
@@ -415,6 +458,7 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
                 reload_generated_block_bid=reload_generated_block_bid,
                 reload_element_bid=reload_element_bid,
                 listen=listen,
+                learning_mode=learning_mode,
                 preview_mode=preview_mode,
                 shifu_context_snapshot=shifu_context_snapshot,
                 language=request_language,
@@ -428,8 +472,9 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
         methods=["POST"],
     )
     @with_shifu_context()
-    def preview_outline_block_api(shifu_bid: str, outline_bid: str):
+    def preview_outline_block_api(shifu_bid: str, outline_bid: str) -> Response:
         """Preview a specific outline block.
+
         ---
         tags:
             - learn
@@ -480,14 +525,6 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
                         type: string
                         required: false
                         description: override interaction error prompt
-                    model:
-                        type: string
-                        required: false
-                        description: override LLM model
-                    temperature:
-                        type: number
-                        required: false
-                        description: override LLM temperature (0.0-2.0)
                     visual_mode:
                         type: boolean
                         required: false
@@ -524,8 +561,6 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
             "document_prompt": payload.get("document_prompt"),
             "interaction_prompt": payload.get("interaction_prompt"),
             "interaction_error_prompt": payload.get("interaction_error_prompt"),
-            "model": payload.get("model"),
-            "temperature": payload.get("temperature"),
             "visual_mode": visual_mode,
         }
         try:
@@ -583,8 +618,9 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
         methods=["GET"],
     )
     @with_shifu_context()
-    def get_run_status_api(shifu_bid: str, outline_bid: str):
+    def get_run_status_api(shifu_bid: str, outline_bid: str) -> str:
         """Get run status.
+
         ---
         tags:
             - learn
@@ -621,8 +657,9 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
         path_prefix + "/shifu/<shifu_bid>/records/<outline_bid>", methods=["GET"]
     )
     @with_shifu_context()
-    def get_record_api(shifu_bid: str, outline_bid: str):
+    def get_record_api(shifu_bid: str, outline_bid: str) -> str:
         """Get learn records of the outline.
+
         ---
         tags:
             - learn
@@ -655,7 +692,6 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
                                     description: message
                                 data:
                                     $ref: "#/components/schemas/LearnElementRecordDTO"
-
         """
         preview_mode = request.args.get("preview_mode", "False")
         include_non_navigable = request.args.get("include_non_navigable", "False")
@@ -685,8 +721,9 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
         path_prefix + "/shifu/<shifu_bid>/records/<outline_bid>", methods=["DELETE"]
     )
     @with_shifu_context()
-    def delete_record_api(shifu_bid: str, outline_bid: str):
+    def delete_record_api(shifu_bid: str, outline_bid: str) -> str:
         """Reset the record of the outline.
+
         ---
         tags:
             - learn
@@ -710,7 +747,6 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
                                 message:
                                     type: string
                                     description: message
-
         """
         user_bid = request.user.user_id
         return make_common_response(
@@ -722,8 +758,9 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
         methods=["POST"],
     )
     @with_shifu_context()
-    def submit_lesson_feedback_api(shifu_bid: str, outline_bid: str):
+    def submit_lesson_feedback_api(shifu_bid: str, outline_bid: str) -> str:
         """Submit lesson feedback.
+
         ---
         tags:
             - learn
@@ -783,8 +820,9 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
 
     @app.route(path_prefix + "/shifu/<shifu_bid>/lesson-feedbacks", methods=["GET"])
     @with_shifu_context()
-    def list_lesson_feedbacks_api(shifu_bid: str):
+    def list_lesson_feedbacks_api(shifu_bid: str) -> str:
         """List lesson feedbacks for a course (teacher/authoring side).
+
         ---
         tags:
             - learn
@@ -836,8 +874,11 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
         methods=["POST"],
     )
     @with_shifu_context()
-    def generate_content_api(shifu_bid: str, generated_block_bid: str, action: str):
+    def generate_content_api(
+        shifu_bid: str, generated_block_bid: str, action: str
+    ) -> str:
         """Generate the content of the generated block.
+
         ---
         tags:
             - learn
@@ -880,8 +921,9 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
         methods=["GET"],
     )
     @with_shifu_context()
-    def get_generated_content_api(shifu_bid: str, generated_block_bid: str):
+    def get_generated_content_api(shifu_bid: str, generated_block_bid: str) -> str:
         """Get the content of the generated block.
+
         ---
         tags:
             - learn
@@ -930,8 +972,11 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
         methods=["POST"],
     )
     @with_shifu_context()
-    def synthesize_generated_block_audio_api(shifu_bid: str, generated_block_bid: str):
+    def synthesize_generated_block_audio_api(
+        shifu_bid: str, generated_block_bid: str
+    ) -> Response:
         """Synthesize audio for a generated block (C-end, persisted).
+
         ---
         tags:
             - learn
@@ -997,8 +1042,9 @@ def register_learn_routes(app: Flask, path_prefix: str = "/api/learn") -> Flask:
 
     @app.route(path_prefix + "/shifu/<shifu_bid>/tts/preview", methods=["POST"])
     @with_shifu_context()
-    def synthesize_preview_tts_audio_api(shifu_bid: str):
+    def synthesize_preview_tts_audio_api(shifu_bid: str) -> Response:
         """Synthesize audio for an arbitrary text (editor preview, not persisted).
+
         ---
         tags:
             - learn

@@ -5,10 +5,9 @@ Split mechanically out of the former giant module (backend overhaul B5).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from flaskr.dao import db
 from flaskr.service.common.models import (
@@ -46,6 +45,7 @@ from flaskr.service.shifu.admin_shared import (
     OPERATOR_USER_ROLE_LEARNER,
     OPERATOR_USER_ROLE_OPERATOR,
     OPERATOR_USER_ROLE_REGULAR,
+    OPERATOR_USER_STATUS_CANCELLED,
     OPERATOR_USER_STATUS_UNKNOWN,
     OPERATOR_USER_SUPPORTED_LOGIN_METHOD_PROVIDERS,
     USER_STATE_TO_OPERATOR_STATUS,
@@ -70,6 +70,12 @@ from flaskr.service.user.models import (
 )
 from flaskr.util.datetime import NAIVE_DATETIME_MIN, now_utc
 from sqlalchemy import case, or_
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from sqlalchemy.sql.elements import ColumnElement
+    from sqlalchemy.sql.selectable import Subquery
 
 
 def _load_course_user_contact_map(
@@ -245,7 +251,7 @@ def _resolve_course_user_learning_status(
     return COURSE_USER_LEARNING_STATUS_NOT_STARTED
 
 
-def _build_course_order_amount_expr():
+def _build_course_order_amount_expr() -> ColumnElement[Any]:
     return case(
         (Order.paid_price > 0, Order.paid_price),
         (Order.payable_price > 0, Order.payable_price),
@@ -351,7 +357,7 @@ def _resolve_operator_user_role(
     )[0]
 
 
-def _build_learner_user_bid_subquery():
+def _build_learner_user_bid_subquery() -> Subquery:
     order_query = db.session.query(Order.user_bid.label("user_bid")).filter(
         Order.deleted == 0,
         Order.status == ORDER_STATUS_SUCCESS,
@@ -375,7 +381,7 @@ def _build_recent_learning_active_user_bid_subquery(
     *,
     since: datetime,
     until: datetime,
-):
+) -> Subquery:
     activity_at = db.func.coalesce(
         LearnProgressRecord.updated_at,
         LearnProgressRecord.created_at,
@@ -398,7 +404,7 @@ def _build_recent_paid_user_bid_subquery(
     *,
     since: datetime,
     until: datetime,
-):
+) -> Subquery:
     return (
         db.session.query(Order.user_bid.label("user_bid"))
         .filter(
@@ -413,7 +419,7 @@ def _build_recent_paid_user_bid_subquery(
     )
 
 
-def _build_registered_user_timestamp_subquery():
+def _build_registered_user_timestamp_subquery() -> Subquery:
     registered_states = [USER_STATE_REGISTERED, USER_STATE_TRAIL, USER_STATE_PAID]
     credential_subquery = (
         db.session.query(
@@ -654,7 +660,7 @@ def _load_operator_user_contact_map(
     *,
     users: Sequence[UserEntity] | None = None,
     credential_rows: Sequence[AuthCredential] | None = None,
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, dict[str, object]]:
     if not user_bids:
         return {}
 
@@ -754,13 +760,13 @@ def _find_matching_user_bids_by_identifier(keyword: str) -> set[str] | None:
 
 def _build_operator_user_summary(
     user: UserEntity,
-    contact_map: dict[str, dict[str, Any]],
+    contact_map: dict[str, dict[str, object]],
     learner_user_bids: set[str],
     registration_source_map: dict[str, str],
     last_login_map: dict[str, datetime],
     total_paid_amount_map: dict[str, Decimal],
     last_learning_map: dict[str, datetime],
-    credit_summary_map: dict[str, dict[str, Any]],
+    credit_summary_map: dict[str, dict[str, object]],
     *,
     learning_courses_map: dict[str, list[AdminOperationUserCourseSummaryDTO]]
     | None = None,
@@ -768,6 +774,7 @@ def _build_operator_user_summary(
     | None = None,
     learning_course_count_map: dict[str, int] | None = None,
     created_course_count_map: dict[str, int] | None = None,
+    cancellation_map: dict[str, dict[str, object]] | None = None,
 ) -> AdminOperationUserSummaryDTO:
     user_bid = str(user.user_bid or "").strip()
     contact = contact_map.get(user.user_bid or "", {})
@@ -776,12 +783,17 @@ def _build_operator_user_summary(
     has_credit_account = bool(user.is_creator) or credit_summary is not None
     learning_courses = list((learning_courses_map or {}).get(user_bid, []) or [])
     created_courses = list((created_courses_map or {}).get(user_bid, []) or [])
+    cancellation = (cancellation_map or {}).get(user_bid, {})
     return AdminOperationUserSummaryDTO(
         user_bid=user_bid,
         mobile=str(contact.get("mobile", "") or ""),
         email=str(contact.get("email", "") or ""),
         nickname=user.nickname or "",
-        user_status=_resolve_operator_user_status(user.state),
+        user_status=(
+            OPERATOR_USER_STATUS_CANCELLED
+            if bool(user.deleted)
+            else _resolve_operator_user_status(user.state)
+        ),
         user_role=_resolve_operator_user_role(
             is_creator=bool(user.is_creator),
             is_operator=bool(user.is_operator),
@@ -848,22 +860,29 @@ def _build_operator_user_summary(
         last_learning_at=last_learning_map.get(user_bid),
         created_at=user.created_at,
         updated_at=user.updated_at,
+        cancelled_at=user.cancelled_at,
+        cancellation_reason=str(cancellation.get("reason", "") or ""),
+        cancellation_operator_user_bid=str(
+            cancellation.get("operator_user_bid", "") or ""
+        ),
+        cancellation_operator_mobile=str(cancellation.get("operator_mobile", "") or ""),
+        cancellation_operator_nickname=str(
+            cancellation.get("operator_nickname", "") or ""
+        ),
     )
 
 
-def _load_operator_user_or_raise(user_bid: str) -> UserEntity:
+def _load_operator_user_or_raise(
+    user_bid: str, *, include_cancelled: bool = False
+) -> UserEntity:
     normalized_user_bid = str(user_bid or "").strip()
     if not normalized_user_bid:
         raise_param_error("user_bid is required")
 
-    user = (
-        UserEntity.query.filter(
-            UserEntity.user_bid == normalized_user_bid,
-            UserEntity.deleted == 0,
-        )
-        .order_by(UserEntity.id.desc())
-        .first()
-    )
+    query = UserEntity.query.filter(UserEntity.user_bid == normalized_user_bid)
+    if not include_cancelled:
+        query = query.filter(UserEntity.deleted == 0)
+    user = query.order_by(UserEntity.id.desc()).first()
     if user is None:
         raise_error("server.user.userNotFound")
     return user

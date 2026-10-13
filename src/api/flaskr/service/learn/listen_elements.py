@@ -1,9 +1,10 @@
+"""Adapt learning events into listen-mode elements."""
+
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterable
+from typing import TYPE_CHECKING
 
-from flask import Flask
 from flaskr.service.learn.learn_dtos import (
     GeneratedType,
     LearnElementRecordDTO,
@@ -27,10 +28,6 @@ from flaskr.service.learn.listen_element_run_persistence import (
 from flaskr.service.learn.listen_element_run_sidecar import (
     ListenElementRunSidecarMixin,
 )
-from flaskr.service.learn.listen_element_run_state import (
-    BlockMeta,
-    BlockState,
-)
 from flaskr.service.learn.listen_element_run_stream import (
     ListenElementRunStreamMixin,
 )
@@ -38,6 +35,15 @@ from flaskr.service.learn.type_state_machine import (
     TypeInput,
     TypeStateMachine,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from flask import Flask
+    from flaskr.service.learn.listen_element_run_state import (
+        BlockMeta,
+        BlockState,
+    )
 
 __all__ = [
     "ListenElementRunAdapter",
@@ -62,12 +68,30 @@ class ListenElementRunAdapter(
         outline_bid: str,
         user_bid: str,
         run_session_bid: str | None = None,
+        persist_only_final: bool = False,
     ) -> None:
+        """Initialize a legacy listen-mode adaptation run and ordering state.
+
+        Uses the supplied run session ID or generates one, resets event and element
+        sequence counters, and initializes the type state machine and element
+        tracking caches used by persisted and streamed events.
+        """
         self.app = app
         self.shifu_bid = shifu_bid
         self.outline_bid = outline_bid
         self.user_bid = user_bid
         self.run_session_bid = run_session_bid or uuid.uuid4().hex
+        # Whether a streaming element is written on every update or only once it is final.
+        #
+        # 1.0 writes each update as a new row holding the whole text so far, retiring the previous
+        # one -- a snapshot trail nothing ever reads back, since every read path filters on
+        # status == 1. It is affordable there because a script block is small. A 2.0 turn is a
+        # whole lesson segment: one measured turn of 13KB produced 6394 rows and 35MB of retired
+        # snapshots, against 4 rows and 21KB that the learner can actually see.
+        #
+        # Deferring costs the mid-stream snapshot, which only a learner refreshing during
+        # generation would have seen, and which the session restores anyway.
+        self.persist_only_final = persist_only_final
         self._run_event_seq = 0
         self._sequence_number = 0
         self._state_machine = TypeStateMachine()
@@ -85,6 +109,7 @@ class ListenElementRunAdapter(
     def process(
         self, events: Iterable[RunMarkdownFlowDTO]
     ) -> Iterable[RunElementSSEMessageDTO]:
+        """Adapt lesson run events into element SSE messages while advancing element state."""
         for event in events:
             if event.type == GeneratedType.CONTENT:
                 yield from self._handle_content(event)
@@ -167,6 +192,7 @@ def get_listen_element_record(
     preview_mode: bool,
     include_non_navigable: bool = False,
 ) -> LearnElementRecordDTO:
+    """Return listen element record."""
     return _get_listen_element_record(
         app=app,
         shifu_bid=shifu_bid,

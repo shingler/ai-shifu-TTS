@@ -1,4 +1,6 @@
-from flask import Flask, jsonify, make_response, request
+"""Expose callback HTTP routes."""
+
+from flask import Flask, Response, jsonify, make_response, request
 
 from flaskr.service.billing.customization import (
     build_provider_config_overrides,
@@ -8,6 +10,7 @@ from flaskr.service.billing.webhooks import (
     apply_billing_native_notification,
     handle_billing_pingxx_webhook,
 )
+from flaskr.service.common.models import AppError
 from flaskr.service.config import config_overrides
 from flaskr.service.order import (
     handle_stripe_webhook,
@@ -21,10 +24,14 @@ from flaskr.service.order.raw_snapshots import native_snapshot_model
 from .common import bypass_token_validation
 
 
-def register_callback_handler(app: Flask, path_prefix: str):
+def register_callback_handler(app: Flask, path_prefix: str) -> Flask:
+    """Register the callback routes on the Flask application."""
+
     @app.route("/api/order/webhooks/<provider_name>/<callback_token>", methods=["POST"])
     @bypass_token_validation
-    def scoped_payment_webhook(provider_name: str, callback_token: str):
+    def scoped_payment_webhook(
+        provider_name: str, callback_token: str
+    ) -> Response | tuple[Response, int]:
         context = resolve_provider_credential_context(
             app,
             provider=provider_name,
@@ -83,7 +90,7 @@ def register_callback_handler(app: Flask, path_prefix: str):
     # pingxx支付回调
     @app.route(path_prefix + "/pingxx-callback", methods=["POST"])
     @bypass_token_validation
-    def pingxx_callback():
+    def pingxx_callback() -> Response | tuple[Response, int]:
         body = request.get_json()
         app.logger.info("pingxx-callback: %s", body)
         event_type = body.get("type", "")
@@ -93,7 +100,11 @@ def register_callback_handler(app: Flask, path_prefix: str):
             app.logger.info("pingxx-callback: charge.succeeded order_no: %s", order_no)
             billing_result = handle_billing_pingxx_webhook(app, body)
             if not billing_result.matched:
-                success_buy_record_from_pingxx(app, charge_id, body)
+                try:
+                    success_buy_record_from_pingxx(app, charge_id, body)
+                except AppError:
+                    app.logger.exception("Pingxx callback failed")
+                    return jsonify({"code": "FAIL", "message": "processing error"}), 400
             # 处理支付成功逻辑
             # do something
 
@@ -103,7 +114,7 @@ def register_callback_handler(app: Flask, path_prefix: str):
 
     @app.route(path_prefix + "/alipay-notify", methods=["POST"])
     @bypass_token_validation
-    def alipay_notify():
+    def alipay_notify() -> Response:
         form_payload = request.form.to_dict(flat=True)
         app.logger.info("alipay-notify: %s", form_payload)
         provider = get_payment_provider("alipay")
@@ -140,7 +151,7 @@ def register_callback_handler(app: Flask, path_prefix: str):
 
     @app.route(path_prefix + "/wechatpay-notify", methods=["POST"])
     @bypass_token_validation
-    def wechatpay_notify():
+    def wechatpay_notify() -> Response | tuple[Response, int]:
         raw_body = request.get_data() or b""
         app.logger.info("wechatpay-notify: %s", raw_body)
         provider = get_payment_provider("wechatpay")
@@ -179,7 +190,7 @@ def register_callback_handler(app: Flask, path_prefix: str):
     return app
 
 
-def _plain_text_response(value: str):
+def _plain_text_response(value: str) -> Response:
     response = make_response(value)
     response.mimetype = "text/plain"
     return response
@@ -219,4 +230,5 @@ def _require_matching_integration(
         or order.creator_bid != creator_bid
         or order.payment_integration_bid != integration_bid
     ):
-        raise RuntimeError("Payment integration does not match order")
+        message = "Payment integration does not match order"
+        raise RuntimeError(message)

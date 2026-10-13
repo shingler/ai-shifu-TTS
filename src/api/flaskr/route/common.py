@@ -1,23 +1,26 @@
-import datetime
-import decimal
-import json
-import traceback
-from functools import wraps
+"""Register shared API handlers and re-export HTTP response helpers."""
 
-from flask import Flask, jsonify, request
+import traceback
+
+from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import HTTPException
 
+from flaskr.common.http import (
+    by_pass_login_func,
+    bypass_token_validation,
+    fmt,
+    make_common_response,
+)
 from flaskr.common.shifu_context import clear_shifu_context
 from flaskr.i18n import _, _translations, clear_language, set_language
 from flaskr.service.common import AppError
 
-by_pass_login_func = [
-    "flasgger.apispec_1",
-    "flasgger.apidocs",
-    "flasgger.static",
-    "login",
-    "invoke",
-    "update_lesson",
+__all__ = [
+    "by_pass_login_func",
+    "bypass_token_validation",
+    "fmt",
+    "make_common_response",
+    "register_common_handler",
 ]
 
 
@@ -57,33 +60,25 @@ def _extract_request_language() -> str | None:
     return _resolve_supported_language(raw_language)
 
 
-# Decorator that exempts a route from token validation
-def bypass_token_validation(func):
-    by_pass_login_func.append(func.__name__)
-
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        return func(*args, **kwargs)
-
-    return wrapper
-
-
 def register_common_handler(app: Flask) -> Flask:
+    """Register the common routes on the Flask application."""
+
     @app.errorhandler(AppError)
-    def handle_invalid_usage(error: AppError):
+    def handle_invalid_usage(error: AppError) -> Response:
         response = jsonify({"code": error.code, "message": error.message})
         response.status_code = 200
         return response
 
     @app.errorhandler(HTTPException)
-    def handle_invalid_http(error: HTTPException):
+    def handle_invalid_http(error: HTTPException) -> Response:
         app.logger.info(error)
         response = jsonify({"code": error.code, "message": error.description})
         response.status_code = 200
         return response
 
     @app.errorhandler(Exception)
-    def handle_invalid_exception(error: Exception):
+    def handle_invalid_exception(error: Exception) -> Response:
+        del error
         app.logger.error(traceback.format_exc())
         language = _extract_request_language()
         if language:
@@ -93,33 +88,10 @@ def register_common_handler(app: Flask) -> Flask:
         return response
 
     @app.teardown_request
-    def teardown_shifu_context(exception):
+    def teardown_shifu_context(exception: object) -> None:
         # Ensure shifu context does not leak between requests on the same worker thread
+        del exception
         clear_shifu_context()
         clear_language()
 
     return app
-
-
-def fmt(o):
-    if isinstance(o, datetime.datetime):
-        # Single serialization choke point for datetimes returned by APIs.
-        # Stored values are UTC (see now_utc()); treat naive values as UTC and
-        # convert aware values to UTC, always emitting ISO 8601 with a 'Z'
-        # suffix. Display-time timezone conversion is a pure frontend concern.
-        if o.tzinfo is None:
-            o = o.replace(tzinfo=datetime.UTC)
-        return o.astimezone(datetime.UTC).isoformat().replace("+00:00", "Z")
-    if isinstance(o, datetime.date):
-        return o.isoformat()
-    if isinstance(o, decimal.Decimal):
-        return str(o)
-    return o.__json__()
-
-
-def make_common_response(data):
-    if data is None:
-        data = {}
-    return json.dumps(
-        {"code": 0, "message": "success", "data": data}, default=fmt, ensure_ascii=False
-    )

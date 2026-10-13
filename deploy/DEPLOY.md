@@ -1,6 +1,7 @@
 # AI-Shifu-TTS 部署指南
 
 > 部署/运维中遇到报错，先查 [trouble-shoot.md](trouble-shoot.md)（按症状索引的排障手册）。
+> 日常升级（三环境：Windows 开发 / Rocky 8 服务器 A / Rocky 9 服务器 B）见 [UPGRADE.md](UPGRADE.md)。
 > Mac 本地局域网测试机见 [DEPLOY-MAC.md](DEPLOY-MAC.md)（仅差异点）。
 
 ## 架构

@@ -6,10 +6,10 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from flask import Flask
 from flaskr.dao import db
+from flaskr.dao.uow import app_context_scope, unit_of_work
 from flaskr.service.metering.models import BillUsageRecord
 from flaskr.util.datetime import now_utc, parse_naive_utc
 from flaskr.util.uuid import generate_id
@@ -26,11 +26,16 @@ from .ownership import resolve_usage_creator_bid
 from .primitives import quantize_credit_amount as _quantize_credit_amount
 from .primitives import to_decimal as _to_decimal
 
+if TYPE_CHECKING:
+    from flask import Flask
+
 _ZERO = Decimal(0)
 
 
 @dataclass(slots=True, frozen=True)
 class DailyAggregateJobResult:
+    """Capture rows processed by one daily billing aggregation job."""
+
     status: str
     stat_date: str
     creator_bid: str | None = None
@@ -47,6 +52,7 @@ class DailyAggregateJobResult:
     reason: str | None = None
 
     def to_task_payload(self) -> dict[str, Any]:
+        """Serialize this result for task processing."""
         payload = {
             "status": self.status,
             "stat_date": self.stat_date,
@@ -66,12 +72,15 @@ class DailyAggregateJobResult:
             payload["reason"] = self.reason
         return payload
 
-    def __getitem__(self, key: str) -> Any:
+    def __getitem__(self, key: str) -> object:
+        """Return a task-payload field by key."""
         return self.to_task_payload()[key]
 
 
 @dataclass(slots=True, frozen=True)
 class RebuildDailyAggregatesResult:
+    """Capture daily billing aggregates rebuilt for a date range."""
+
     status: str
     creator_bid: str | None
     shifu_bid: str | None
@@ -82,6 +91,7 @@ class RebuildDailyAggregatesResult:
     ledger_days: list[DailyAggregateJobResult] = field(default_factory=list)
 
     def to_task_payload(self) -> dict[str, Any]:
+        """Serialize this result for task processing."""
         ledger_processed_days = [
             item for item in self.ledger_days if item.status != "skipped"
         ]
@@ -110,7 +120,8 @@ class RebuildDailyAggregatesResult:
             },
         }
 
-    def __getitem__(self, key: str) -> Any:
+    def __getitem__(self, key: str) -> object:
+        """Return a task-payload field by key."""
         return self.to_task_payload()[key]
 
 
@@ -132,7 +143,7 @@ def aggregate_daily_usage_metrics(
         now=now,
     )
 
-    with app.app_context():
+    with app_context_scope(app), unit_of_work():
         usage_rows = (
             BillUsageRecord.query.filter(
                 BillUsageRecord.deleted == 0,
@@ -256,7 +267,6 @@ def aggregate_daily_usage_metrics(
                 )
             )
 
-        db.session.commit()
         return DailyAggregateJobResult(
             status="finalized" if finalize else "aggregated",
             stat_date=normalized_stat_date,
@@ -308,7 +318,7 @@ def aggregate_daily_ledger_summary(
         now=now,
     )
 
-    with app.app_context():
+    with app_context_scope(app), unit_of_work():
         query = CreditLedgerEntry.query.filter(
             CreditLedgerEntry.deleted == 0,
             CreditLedgerEntry.created_at >= window_started_at,
@@ -369,7 +379,6 @@ def aggregate_daily_ledger_summary(
                 )
             )
 
-        db.session.commit()
         return DailyAggregateJobResult(
             status="finalized" if finalize else "aggregated",
             stat_date=normalized_stat_date,
@@ -632,9 +641,10 @@ def _resolve_stat_date_range(
     start_date = parse_naive_utc(start_value, "%Y-%m-%d")
     end_date = parse_naive_utc(end_value, "%Y-%m-%d")
     if end_date < start_date:
-        raise ValueError("date_to must be greater than or equal to date_from")
+        message = "date_to must be greater than or equal to date_from"
+        raise ValueError(message)
     return start_date, end_date
 
 
-def _quantize_decimal(value: Any) -> Decimal:
+def _quantize_decimal(value: object) -> Decimal:
     return _quantize_credit_amount(value)

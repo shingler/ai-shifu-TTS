@@ -1,3 +1,5 @@
+"""Verify captcha HTTP route behavior."""
+
 import base64
 import json
 from io import BytesIO
@@ -6,7 +8,7 @@ from flasgger.utils import parse_docstring
 from PIL import Image
 
 
-def _post_json(client, path: str, payload: dict):
+def _post_json(client: object, path: str, payload: dict) -> object:
     resp = client.post(
         path,
         data=json.dumps(payload),
@@ -15,7 +17,7 @@ def _post_json(client, path: str, payload: dict):
     return resp, resp.get_json(force=True)
 
 
-def _get_captcha(client, app):
+def _get_captcha(client: object, app: object) -> object:
     app.config["ENV"] = "development"
     app.config["CAPTCHA_CODE_OVERRIDE"] = "0000"
     response = client.get("/api/user/captcha")
@@ -25,7 +27,7 @@ def _get_captcha(client, app):
     return body["data"]
 
 
-def _get_ticket(client, app):
+def _get_ticket(client: object, app: object) -> object:
     captcha = _get_captcha(client, app)
     response, body = _post_json(
         client,
@@ -40,7 +42,7 @@ def _get_ticket(client, app):
     return body["data"]["captcha_ticket"]
 
 
-def test_get_captcha_returns_image_payload(test_client, app):
+def test_get_captcha_returns_image_payload(test_client: object, app: object) -> None:
     captcha = _get_captcha(test_client, app)
 
     assert captcha["captcha_id"]
@@ -52,7 +54,7 @@ def test_get_captcha_returns_image_payload(test_client, app):
     assert captcha["expires_in"] == app.config["CAPTCHA_EXPIRE_TIME"]
 
 
-def test_captcha_verify_rejects_wrong_code(test_client, app):
+def test_captcha_verify_rejects_wrong_code(test_client: object, app: object) -> None:
     captcha = _get_captcha(test_client, app)
 
     response, body = _post_json(
@@ -68,7 +70,9 @@ def test_captcha_verify_rejects_wrong_code(test_client, app):
     assert body["code"] == 1009
 
 
-def test_captcha_verify_localizes_wrong_code_message(test_client, app):
+def test_captcha_verify_localizes_wrong_code_message(
+    test_client: object, app: object
+) -> None:
     captcha = _get_captcha(test_client, app)
 
     response = test_client.post(
@@ -89,7 +93,9 @@ def test_captcha_verify_localizes_wrong_code_message(test_client, app):
     assert body["message"] == "图形验证码错误"
 
 
-def test_captcha_verify_deletes_after_attempt_limit(test_client, app):
+def test_captcha_verify_deletes_after_attempt_limit(
+    test_client: object, app: object
+) -> None:
     original_attempts = app.config.get("CAPTCHA_MAX_VERIFY_ATTEMPTS")
     app.config["CAPTCHA_MAX_VERIFY_ATTEMPTS"] = 1
     try:
@@ -120,7 +126,10 @@ def test_captcha_verify_deletes_after_attempt_limit(test_client, app):
         app.config["CAPTCHA_MAX_VERIFY_ATTEMPTS"] = original_attempts
 
 
-def test_send_sms_code_requires_captcha_ticket(test_client, app):
+def test_send_sms_code_requires_captcha_ticket(
+    test_client: object, app: object
+) -> None:
+    _ = app
     response, body = _post_json(
         test_client,
         "/api/user/send_sms_code",
@@ -131,7 +140,7 @@ def test_send_sms_code_requires_captcha_ticket(test_client, app):
     assert body["code"] == 1009
 
 
-def test_send_sms_code_swagger_parameters_stay_valid_yaml(app):
+def test_send_sms_code_swagger_parameters_stay_valid_yaml(app: object) -> None:
     view = app.view_functions["send_sms_code_api"]
 
     _summary, _description, specification = parse_docstring(
@@ -147,7 +156,10 @@ def test_send_sms_code_swagger_parameters_stay_valid_yaml(app):
     ]
 
 
-def test_send_sms_code_localizes_missing_captcha_ticket_message(test_client, app):
+def test_send_sms_code_localizes_missing_captcha_ticket_message(
+    test_client: object, app: object
+) -> None:
+    _ = app
     response, body = _post_json(
         test_client,
         "/api/user/send_sms_code",
@@ -159,7 +171,9 @@ def test_send_sms_code_localizes_missing_captcha_ticket_message(test_client, app
     assert body["message"] == "图形验证码错误"
 
 
-def test_send_sms_code_consumes_ticket_once(test_client, app, monkeypatch):
+def test_send_sms_code_consumes_ticket_once(
+    test_client: object, app: object, monkeypatch: object
+) -> None:
     import flaskr.service.user.utils as user_utils
 
     monkeypatch.setattr(
@@ -194,8 +208,8 @@ def test_send_sms_code_consumes_ticket_once(test_client, app, monkeypatch):
 
 
 def test_console_send_sms_code_does_not_require_captcha_ticket(
-    test_client, monkeypatch
-):
+    test_client: object, monkeypatch: object
+) -> None:
     import flaskr.service.user.utils as user_utils
 
     monkeypatch.setattr(
@@ -215,7 +229,58 @@ def test_console_send_sms_code_does_not_require_captcha_ticket(
     assert body["data"]["expire_in"] > 0
 
 
-def test_console_send_sms_code_normalizes_cn_prefix(test_client, app, monkeypatch):
+def test_console_sms_uses_resolved_client_ip(
+    test_client: object, app: object, monkeypatch: object
+) -> None:
+    from types import SimpleNamespace
+
+    import flaskr.route.user as user_route
+
+    captured: list[str] = []
+
+    class CapturingProvider:
+        def send_challenge(self, _app: object, challenge: object) -> object:
+            captured.append(challenge.metadata["ip"])
+            return SimpleNamespace(expire_in=300)
+
+    app.config["TRUSTED_PROXY_CIDRS"] = "127.0.0.1/32, 203.0.113.0/24"
+    monkeypatch.setattr(user_route, "get_provider", lambda _name: CapturingProvider())
+
+    response = test_client.post(
+        "/api/user/console_send_sms_code",
+        json={"mobile": "13800138012"},
+        headers={"X-Forwarded-For": "192.0.2.88, 198.51.100.20, 203.0.113.7"},
+    )
+
+    assert response.get_json(force=True)["code"] == 0
+    assert captured == ["198.51.100.20"]
+
+
+def test_console_send_sms_code_accepts_configured_universal_code_without_provider(
+    test_client: object, app: object, monkeypatch: object
+) -> None:
+    import flaskr.service.user.utils as user_utils
+
+    monkeypatch.setattr(
+        user_utils,
+        "send_sms_code_ali",
+        lambda _app, _mobile, _code: None,
+    )
+    monkeypatch.setitem(app.config, "UNIVERSAL_VERIFICATION_CODE", "1024")
+
+    response, body = _post_json(
+        test_client,
+        "/api/user/console_send_sms_code",
+        {"mobile": "13800138004"},
+    )
+
+    assert response.status_code == 200
+    assert body["code"] == 0
+
+
+def test_console_send_sms_code_normalizes_cn_prefix(
+    test_client: object, app: object, monkeypatch: object
+) -> None:
     import flaskr.service.user.utils as user_utils
     from flaskr.service.user.models import UserVerifyCode
 

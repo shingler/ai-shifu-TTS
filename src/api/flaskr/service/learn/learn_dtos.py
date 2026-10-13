@@ -1,7 +1,9 @@
+"""Define learning-session DTOs and element payloads."""
+
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from flaskr.common.swagger import register_schema_to_swagger
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, PrivateAttr
@@ -9,27 +11,35 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, PrivateAttr
 
 @register_schema_to_swagger
 class LearnStatus(Enum):
+    """Enumerate supported learn status values."""
+
     NOT_STARTED = "not_started"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     LOCKED = "locked"
 
     def __json__(self) -> str:
+        """Return the serialized enum value."""
         return self.value
 
 
 @register_schema_to_swagger
 class OutlineType(Enum):
+    """Enumerate supported outline type values."""
+
     NORMAL = "normal"
     TRIAL = "trial"
     GUEST = "guest"
 
     def __json__(self) -> str:
+        """Return the serialized enum value."""
         return self.value
 
 
 @register_schema_to_swagger
 class GeneratedType(Enum):
+    """Enumerate supported generated type values."""
+
     CONTENT = "content"
     BREAK = "break"
     INTERACTION = "interaction"
@@ -44,11 +54,14 @@ class GeneratedType(Enum):
     ASK = "ask"
 
     def __json__(self) -> str:
+        """Return the serialized enum value."""
         return self.value
 
 
 @register_schema_to_swagger
 class ElementType(Enum):
+    """Enumerate supported element type values."""
+
     HTML = "html"
     SVG = "svg"
     DIFF = "diff"
@@ -71,30 +84,39 @@ class ElementType(Enum):
     _VIDEO = "video"
 
     def __json__(self) -> str:
+        """Return the serialized enum value."""
         return self.value
 
 
 @register_schema_to_swagger
 class ElementChangeType(Enum):
+    """Enumerate supported element change type values."""
+
     RENDER = "render"
     DIFF = "diff"
 
     def __json__(self) -> str:
+        """Return the serialized enum value."""
         return self.value
 
 
 @register_schema_to_swagger
 class LikeStatus(Enum):
+    """Enumerate supported like status values."""
+
     LIKE = "like"
     DISLIKE = "dislike"
     NONE = "none"
 
     def __json__(self) -> str:
+        """Return the serialized enum value."""
         return self.value
 
 
 @register_schema_to_swagger
 class BlockType(Enum):
+    """Enumerate supported block type values."""
+
     CONTENT = "content"
     INTERACTION = "interaction"
     ERROR_MESSAGE = "error_message"
@@ -102,22 +124,27 @@ class BlockType(Enum):
     ANSWER = "answer"
 
     def __json__(self) -> str:
+        """Return the serialized enum value."""
         return self.value
 
 
 @register_schema_to_swagger
 class VariableUpdateDTO(BaseModel):
-    variable_name: str = Field(..., description="variable name", required=False)
-    variable_value: str = Field(..., description="variable value", required=False)
+    """Represent the variable update API payload."""
+
+    variable_name: str = Field(..., description="variable name")
+    variable_value: str = Field(..., description="variable value")
 
     def __init__(
         self,
         variable_name: str,
         variable_value: str,
     ) -> None:
+        """Build the variable update payload."""
         super().__init__(variable_name=variable_name, variable_value=variable_value)
 
     def __json__(self) -> dict:
+        """Return the variable update as JSON-compatible data."""
         return {
             "variable_name": self.variable_name,
             "variable_value": self.variable_value,
@@ -126,12 +153,12 @@ class VariableUpdateDTO(BaseModel):
 
 @register_schema_to_swagger
 class OutlineItemUpdateDTO(BaseModel):
-    outline_bid: str = Field(..., description="outline item id", required=False)
-    title: str = Field(..., description="outline item name", required=False)
-    status: LearnStatus = Field(..., description="outline item status", required=False)
-    has_children: bool = Field(
-        ..., description="outline item has children", required=False
-    )
+    """Represent the outline item update API payload."""
+
+    outline_bid: str = Field(..., description="outline item id")
+    title: str = Field(..., description="outline item name")
+    status: LearnStatus = Field(..., description="outline item status")
+    has_children: bool = Field(..., description="outline item has children")
 
     def __init__(
         self,
@@ -140,6 +167,7 @@ class OutlineItemUpdateDTO(BaseModel):
         status: LearnStatus,
         has_children: bool,
     ) -> None:
+        """Build the outline item update payload."""
         super().__init__(
             outline_bid=outline_bid,
             title=title,
@@ -148,6 +176,7 @@ class OutlineItemUpdateDTO(BaseModel):
         )
 
     def __json__(self) -> dict:
+        """Return the outline item update as JSON-compatible data."""
         return {
             "outline_bid": self.outline_bid,
             "title": self.title,
@@ -158,18 +187,20 @@ class OutlineItemUpdateDTO(BaseModel):
 
 @register_schema_to_swagger
 class LearnShifuInfoDTO(BaseModel):
-    bid: str = Field(..., description="shifu id", required=False)
-    title: str = Field(..., description="shifu title", required=False)
-    description: str = Field(..., description="shifu description", required=False)
-    keywords: list[str] = Field(..., description="shifu keywords", required=False)
-    avatar: str = Field(..., description="shifu avatar", required=False)
-    price: str = Field(..., description="shifu price", required=False)
-    tts_enabled: bool = Field(default=False, description="tts enabled", required=False)
+    """Represent the learn shifu info API payload."""
+
+    bid: str = Field(..., description="shifu id")
+    title: str = Field(..., description="shifu title")
+    description: str = Field(..., description="shifu description")
+    keywords: list[str] = Field(..., description="shifu keywords")
+    avatar: str = Field(..., description="shifu avatar")
+    price: str = Field(..., description="shifu price")
+    tts_enabled: bool = Field(default=False, description="tts enabled")
     default_listen_mode_enabled: bool = Field(
         default=False,
         description="Default learner mode to listen when TTS is enabled",
-        required=False,
     )
+    is_owner: bool = Field(default=False, description="viewer owns shifu")
 
     def __init__(
         self,
@@ -181,7 +212,9 @@ class LearnShifuInfoDTO(BaseModel):
         price: str,
         tts_enabled: bool = False,
         default_listen_mode_enabled: bool = False,
+        is_owner: bool = False,
     ) -> None:
+        """Build the learner-facing course information payload."""
         super().__init__(
             bid=bid,
             title=title,
@@ -191,9 +224,11 @@ class LearnShifuInfoDTO(BaseModel):
             price=price,
             tts_enabled=tts_enabled,
             default_listen_mode_enabled=default_listen_mode_enabled,
+            is_owner=is_owner,
         )
 
     def __json__(self) -> dict:
+        """Return learner-facing course information as JSON-compatible data."""
         return {
             "bid": self.bid,
             "title": self.title,
@@ -203,21 +238,18 @@ class LearnShifuInfoDTO(BaseModel):
             "price": self.price,
             "tts_enabled": self.tts_enabled,
             "default_listen_mode_enabled": self.default_listen_mode_enabled,
+            "is_owner": self.is_owner,
         }
 
 
 class LearnBannerInfoDTO(BaseModel):
-    title: str = Field(..., description="banner title", required=False)
-    pop_up_title: str = Field(..., description="banner pop up title", required=False)
-    pop_up_content: str = Field(
-        ..., description="banner pop up content", required=False
-    )
-    pop_up_confirm_text: str = Field(
-        ..., description="banner pop up confirm text", required=False
-    )
-    pop_up_cancel_text: str = Field(
-        ..., description="banner pop up cancel text", required=False
-    )
+    """Represent the learn banner info API payload."""
+
+    title: str = Field(..., description="banner title")
+    pop_up_title: str = Field(..., description="banner pop up title")
+    pop_up_content: str = Field(..., description="banner pop up content")
+    pop_up_confirm_text: str = Field(..., description="banner pop up confirm text")
+    pop_up_cancel_text: str = Field(..., description="banner pop up cancel text")
 
     def __init__(
         self,
@@ -227,6 +259,7 @@ class LearnBannerInfoDTO(BaseModel):
         pop_up_confirm_text: str,
         pop_up_cancel_text: str,
     ) -> None:
+        """Build the learner banner payload."""
         super().__init__(
             title=title,
             pop_up_title=pop_up_title,
@@ -236,6 +269,7 @@ class LearnBannerInfoDTO(BaseModel):
         )
 
     def __json__(self) -> dict:
+        """Return the learner banner as JSON-compatible data."""
         return {
             "title": self.title,
             "pop_up_title": self.pop_up_title,
@@ -247,20 +281,23 @@ class LearnBannerInfoDTO(BaseModel):
 
 @register_schema_to_swagger
 class LearnOutlineItemInfoDTO(BaseModel):
-    bid: str = Field(..., description="outline id", required=False)
-    position: str = Field(..., description="outline position", required=False)
-    title: str = Field(..., description="outline title", required=False)
-    status: LearnStatus = Field(..., description="outline status", required=False)
-    type: OutlineType = Field(..., description="outline type", required=False)
-    is_paid: bool = Field(..., description="outline is paid", required=False)
+    """Represent the learn outline item info API payload."""
+
+    bid: str = Field(..., description="outline id")
+    position: str = Field(..., description="outline position")
+    title: str = Field(..., description="outline title")
+    status: LearnStatus = Field(..., description="outline status")
+    type: OutlineType = Field(..., description="outline type")
+    is_paid: bool = Field(..., description="outline is paid")
     has_content_update_for_current_user: bool = Field(
         default=False,
         description="Whether the published lesson content is newer than this user's latest learning progress",
-        required=False,
     )
-    children: list[LearnOutlineItemInfoDTO] = Field(
-        ..., description="outline children", required=False
+    follow_up_mode: Literal["text", "live_voice", "disabled"] = Field(
+        default="text",
+        description="Backend-resolved learner follow-up presentation mode",
     )
+    children: list[LearnOutlineItemInfoDTO] = Field(..., description="outline children")
 
     def __init__(
         self,
@@ -272,7 +309,9 @@ class LearnOutlineItemInfoDTO(BaseModel):
         is_paid: bool,
         children: list[LearnOutlineItemInfoDTO],
         has_content_update_for_current_user: bool = False,
+        follow_up_mode: Literal["text", "live_voice", "disabled"] = "text",
     ) -> None:
+        """Build a learner-facing outline item payload."""
         super().__init__(
             bid=bid,
             position=position,
@@ -282,9 +321,11 @@ class LearnOutlineItemInfoDTO(BaseModel):
             type=type,
             is_paid=is_paid,
             has_content_update_for_current_user=has_content_update_for_current_user,
+            follow_up_mode=follow_up_mode,
         )
 
     def __json__(self) -> dict:
+        """Return the learner outline item as JSON-compatible data."""
         return {
             "bid": self.bid,
             "position": self.position,
@@ -292,6 +333,7 @@ class LearnOutlineItemInfoDTO(BaseModel):
             "status": self.status.value,
             "is_paid": self.is_paid,
             "has_content_update_for_current_user": self.has_content_update_for_current_user,
+            "follow_up_mode": self.follow_up_mode,
             "children": self.children,
             "type": self.type.value,
         }
@@ -299,11 +341,11 @@ class LearnOutlineItemInfoDTO(BaseModel):
 
 @register_schema_to_swagger
 class LearnOutlineItemsWithBannerInfoDTO(BaseModel):
-    banner_info: LearnBannerInfoDTO | None = Field(
-        ..., description="banner info", required=False
-    )
+    """Represent the learn outline items with banner info API payload."""
+
+    banner_info: LearnBannerInfoDTO | None = Field(..., description="banner info")
     outline_items: list[LearnOutlineItemInfoDTO] = Field(
-        ..., description="outline items", required=True
+        ..., description="outline items"
     )
 
     def __init__(
@@ -311,12 +353,14 @@ class LearnOutlineItemsWithBannerInfoDTO(BaseModel):
         banner_info: LearnBannerInfoDTO | None,
         outline_items: list[LearnOutlineItemInfoDTO],
     ) -> None:
+        """Combine the learner banner and outline item payloads."""
         super().__init__(
             banner_info=banner_info,
             outline_items=outline_items,
         )
 
     def __json__(self) -> dict:
+        """Return the learner banner and outline collection as JSON-compatible data."""
         return {
             "banner_info": None
             if self.banner_info is None
@@ -363,9 +407,10 @@ class AudioSegmentDTO(BaseModel):
         position: int = 0,
         stream_element_number: int | None = None,
         stream_element_type: str | None = None,
-        av_contract: dict[str, Any] | None = None,
+        av_contract: dict[str, object] | None = None,
         subtitle_cues: list[SubtitleCueDTO] | None = None,
     ) -> None:
+        """Build the audio segment payload."""
         super().__init__(
             position=position,
             stream_element_number=stream_element_number,
@@ -379,6 +424,7 @@ class AudioSegmentDTO(BaseModel):
         )
 
     def __json__(self) -> dict:
+        """Return the audio segment as JSON-compatible data."""
         ret = {
             "position": self.position,
             "segment_index": self.segment_index,
@@ -431,9 +477,10 @@ class AudioCompleteDTO(BaseModel):
         position: int = 0,
         stream_element_number: int | None = None,
         stream_element_type: str | None = None,
-        av_contract: dict[str, Any] | None = None,
+        av_contract: dict[str, object] | None = None,
         subtitle_cues: list[SubtitleCueDTO] | None = None,
     ) -> None:
+        """Build the completed-audio payload."""
         super().__init__(
             position=position,
             stream_element_number=stream_element_number,
@@ -446,6 +493,7 @@ class AudioCompleteDTO(BaseModel):
         )
 
     def __json__(self) -> dict:
+        """Return completed-audio metadata as JSON-compatible data."""
         ret = {
             "position": self.position,
             "audio_url": self.audio_url,
@@ -465,27 +513,29 @@ class AudioCompleteDTO(BaseModel):
 
 @register_schema_to_swagger
 class ElementVisualDTO(BaseModel):
-    visual_type: str = Field(..., description="Visual payload type", required=False)
-    content: str = Field(..., description="Visual payload content", required=False)
+    """Represent the element visual API payload."""
+
+    visual_type: str = Field(..., description="Visual payload type")
+    content: str = Field(..., description="Visual payload content")
 
     def __init__(self, visual_type: str, content: str) -> None:
+        """Build the element visual payload."""
         super().__init__(visual_type=visual_type, content=content)
 
     def __json__(self) -> dict:
+        """Return the element visual as JSON-compatible data."""
         return {"visual_type": self.visual_type, "content": self.content}
 
 
 @register_schema_to_swagger
 class SubtitleCueDTO(BaseModel):
-    text: str = Field(..., description="Cue text", required=False)
-    start_ms: int = Field(..., description="Cue start in ms", required=False)
-    end_ms: int = Field(..., description="Cue end in ms", required=False)
-    segment_index: int = Field(
-        ..., description="TTS segment index for this cue", required=False
-    )
-    position: int = Field(
-        default=0, description="Audio position within the block", required=False
-    )
+    """Represent the subtitle cue API payload."""
+
+    text: str = Field(..., description="Cue text")
+    start_ms: int = Field(..., description="Cue start in ms")
+    end_ms: int = Field(..., description="Cue end in ms")
+    segment_index: int = Field(..., description="TTS segment index for this cue")
+    position: int = Field(default=0, description="Audio position within the block")
 
     def __init__(
         self,
@@ -495,6 +545,7 @@ class SubtitleCueDTO(BaseModel):
         segment_index: int,
         position: int = 0,
     ) -> None:
+        """Build the subtitle cue payload."""
         super().__init__(
             text=text or "",
             start_ms=int(start_ms or 0),
@@ -504,6 +555,7 @@ class SubtitleCueDTO(BaseModel):
         )
 
     def __json__(self) -> dict:
+        """Return the subtitle cue as JSON-compatible data."""
         return {
             "text": self.text or "",
             "start_ms": int(self.start_ms or 0),
@@ -515,16 +567,15 @@ class SubtitleCueDTO(BaseModel):
 
 @register_schema_to_swagger
 class ElementAudioDTO(BaseModel):
-    position: int = Field(
-        default=0, description="Audio position within the element", required=False
-    )
-    audio_url: str = Field(..., description="Audio URL", required=False)
-    audio_bid: str = Field(..., description="Audio business identifier", required=False)
-    duration_ms: int = Field(..., description="Audio duration in ms", required=False)
+    """Represent the element audio API payload."""
+
+    position: int = Field(default=0, description="Audio position within the element")
+    audio_url: str = Field(..., description="Audio URL")
+    audio_bid: str = Field(..., description="Audio business identifier")
+    duration_ms: int = Field(..., description="Audio duration in ms")
     subtitle_cues: list[SubtitleCueDTO] = Field(
         default_factory=list,
         description="Subtitle cue list aligned with the final audio",
-        required=False,
     )
 
     def __init__(
@@ -535,6 +586,7 @@ class ElementAudioDTO(BaseModel):
         position: int = 0,
         subtitle_cues: list[SubtitleCueDTO] | None = None,
     ) -> None:
+        """Build the element audio payload."""
         super().__init__(
             position=position,
             audio_url=audio_url,
@@ -544,6 +596,7 @@ class ElementAudioDTO(BaseModel):
         )
 
     def __json__(self) -> dict:
+        """Return the element audio as JSON-compatible data."""
         ret = {
             "position": int(self.position or 0),
             "audio_url": self.audio_url,
@@ -557,6 +610,8 @@ class ElementAudioDTO(BaseModel):
 
 @register_schema_to_swagger
 class ElementPayloadDTO(BaseModel):
+    """Represent the element payload API payload."""
+
     audio: ElementAudioDTO | None = Field(
         default=None, description="Final merged audio payload"
     )
@@ -582,6 +637,22 @@ class ElementPayloadDTO(BaseModel):
         default=None,
         description="Ask Q&A pairs embedded in anchor element",
     )
+    interaction_mode: Literal["text", "live_voice"] | None = Field(
+        default=None,
+        description="Transport used for this follow-up turn",
+    )
+    live_session_bid: str | None = Field(
+        default=None,
+        description="Stable Live voice session identifier",
+    )
+    live_turn_index: int | None = Field(
+        default=None,
+        description="Stable turn index within a Live voice session",
+    )
+    interrupted: bool | None = Field(
+        default=None,
+        description="Whether the model response was interrupted by the learner",
+    )
 
     def __init__(
         self,
@@ -590,9 +661,14 @@ class ElementPayloadDTO(BaseModel):
         anchor_element_bid: str | None = None,
         ask_element_bid: str | None = None,
         user_input: str | None = None,
-        diff_payload: list[dict[str, Any]] | None = None,
-        asks: list[dict[str, Any]] | None = None,
+        diff_payload: list[dict[str, object]] | None = None,
+        asks: list[dict[str, object]] | None = None,
+        interaction_mode: Literal["text", "live_voice"] | None = None,
+        live_session_bid: str | None = None,
+        live_turn_index: int | None = None,
+        interrupted: bool | None = None,
     ) -> None:
+        """Build the composite element payload."""
         super().__init__(
             audio=audio,
             previous_visuals=previous_visuals or [],
@@ -601,9 +677,14 @@ class ElementPayloadDTO(BaseModel):
             user_input=user_input,
             diff_payload=diff_payload,
             asks=asks,
+            interaction_mode=interaction_mode,
+            live_session_bid=live_session_bid,
+            live_turn_index=live_turn_index,
+            interrupted=interrupted,
         )
 
     def __json__(self) -> dict:
+        """Return the composite element payload as JSON-compatible data."""
         ret = {
             "audio": self.audio.__json__() if self.audio is not None else None,
             "previous_visuals": [
@@ -621,11 +702,21 @@ class ElementPayloadDTO(BaseModel):
             ret["user_input"] = self.user_input
         if self.asks is not None:
             ret["asks"] = self.asks
+        if self.interaction_mode is not None:
+            ret["interaction_mode"] = self.interaction_mode
+        if self.live_session_bid is not None:
+            ret["live_session_bid"] = self.live_session_bid
+        if self.live_turn_index is not None:
+            ret["live_turn_index"] = self.live_turn_index
+        if self.interrupted is not None:
+            ret["interrupted"] = self.interrupted
         return ret
 
 
 @register_schema_to_swagger
 class ElementDTO(BaseModel):
+    """Represent the element API payload."""
+
     model_config = ConfigDict(populate_by_name=True)
 
     run_session_bid: str | None = Field(
@@ -683,6 +774,7 @@ class ElementDTO(BaseModel):
 
     @property
     def content_text(self) -> str:
+        """Return the element's learner-visible text."""
         return self.content
 
     @content_text.setter
@@ -704,6 +796,7 @@ class ElementDTO(BaseModel):
     )
 
     def apply_patch(self, patch: ElementDTO) -> None:
+        """Apply an incremental patch to this element."""
         for field_name in self._PATCH_FIELDS:
             setattr(self, field_name, getattr(patch, field_name))
 
@@ -720,6 +813,7 @@ class ElementDTO(BaseModel):
         return segments
 
     def __json__(self) -> dict:
+        """Return the element as JSON-compatible data."""
         ret = {
             "event_type": self.event_type,
             "element_bid": self.element_bid,
@@ -753,6 +847,8 @@ class ElementDTO(BaseModel):
 
 @register_schema_to_swagger
 class AudioBackfillReadyDTO(BaseModel):
+    """Represent the audio backfill ready API payload."""
+
     generated_block_bid: str = Field(
         ..., description="Generated block ready for persisted audio backfill"
     )
@@ -762,6 +858,7 @@ class AudioBackfillReadyDTO(BaseModel):
     )
 
     def __json__(self) -> dict:
+        """Return audio-backfill readiness as JSON-compatible data."""
         return {
             "generated_block_bid": self.generated_block_bid,
             "element_bids": self.element_bids,
@@ -770,6 +867,8 @@ class AudioBackfillReadyDTO(BaseModel):
 
 @register_schema_to_swagger
 class RunElementSSEMessageDTO(BaseModel):
+    """Represent the run element SSE message API payload."""
+
     type: str = Field(..., description="Run event type")
     event_type: str = Field(..., description="Run event type mirror")
     generated_block_bid: str | None = Field(
@@ -794,6 +893,7 @@ class RunElementSSEMessageDTO(BaseModel):
     ) = Field(..., description="Run event content")
 
     def __json__(self) -> dict:
+        """Return the run element SSE message as JSON-compatible data."""
         ret = {
             "type": self.type,
             "event_type": self.event_type,
@@ -814,20 +914,20 @@ class RunElementSSEMessageDTO(BaseModel):
 
 @register_schema_to_swagger
 class RunMarkdownFlowDTO(BaseModel):
+    """Represent the run markdown flow API payload."""
+
     _mdflow_stream_parts: list[tuple[str, str, int]] = PrivateAttr(default_factory=list)
 
-    outline_bid: str = Field(..., description="outline id", required=False)
-    generated_block_bid: str = Field(
-        ..., description="generated block id", required=False
-    )
-    type: GeneratedType = Field(..., description="generated type", required=False)
+    outline_bid: str = Field(..., description="outline id")
+    generated_block_bid: str = Field(..., description="generated block id")
+    type: GeneratedType = Field(..., description="generated type")
     content: (
         str
         | VariableUpdateDTO
         | OutlineItemUpdateDTO
         | AudioSegmentDTO
         | AudioCompleteDTO
-    ) = Field(..., description="generated content", required=True)
+    ) = Field(..., description="generated content")
     anchor_element_bid: str = Field(
         default="",
         description="Anchor element bid for ASK events",
@@ -845,6 +945,7 @@ class RunMarkdownFlowDTO(BaseModel):
         | AudioCompleteDTO,
         anchor_element_bid: str = "",
     ) -> None:
+        """Build the MarkdownFlow execution payload."""
         super().__init__(
             outline_bid=outline_bid,
             generated_block_bid=generated_block_bid,
@@ -856,6 +957,7 @@ class RunMarkdownFlowDTO(BaseModel):
     def set_mdflow_stream_parts(
         self, parts: list[tuple[str, str, int]] | None
     ) -> RunMarkdownFlowDTO:
+        """Attach incremental MarkdownFlow stream parts."""
         normalized_parts: list[tuple[str, str, int]] = []
         for item in parts or []:
             if not isinstance(item, tuple) or len(item) != 3:
@@ -874,9 +976,11 @@ class RunMarkdownFlowDTO(BaseModel):
         return self
 
     def get_mdflow_stream_parts(self) -> list[tuple[str, str, int]]:
+        """Return attached MarkdownFlow stream parts."""
         return list(self._mdflow_stream_parts)
 
     def __json__(self) -> dict:
+        """Return the MarkdownFlow execution payload as JSON-compatible data."""
         ret = {
             "outline_bid": self.outline_bid,
             "generated_block_bid": self.generated_block_bid,
@@ -891,6 +995,8 @@ class RunMarkdownFlowDTO(BaseModel):
 
 
 class PlaygroundPreviewRequest(BaseModel):
+    """Represent the playground preview request API payload."""
+
     content: str | None = Field(
         default=None, description="Markdown-Flow document content"
     )
@@ -914,26 +1020,20 @@ class PlaygroundPreviewRequest(BaseModel):
     interaction_error_prompt: str | None = Field(
         default=None, description="Interaction error prompt override"
     )
-    model: str | None = Field(
-        default=None, description="Target LLM model used during preview"
-    )
-    temperature: float | None = Field(
-        default=None,
-        ge=0.0,
-        le=2.0,
-        description="LLM temperature override used during preview",
-    )
     visual_mode: bool = Field(
         default=False,
         description="Whether to enable MarkdownFlow visual mode for preview",
     )
 
     def get_document(self) -> str:
+        """Return the requested playground document."""
         return self.content or ""
 
 
 @register_schema_to_swagger
 class LearnElementRecordDTO(BaseModel):
+    """Represent the learn element record API payload."""
+
     elements: list[ElementDTO] = Field(
         default_factory=list, description="Listen-mode final element snapshots"
     )
@@ -951,6 +1051,7 @@ class LearnElementRecordDTO(BaseModel):
         events: list[RunElementSSEMessageDTO] | None = None,
         last_progress_updated_at: str | None = None,
     ) -> None:
+        """Build the recorded learner-element payload."""
         super().__init__(
             elements=elements or [],
             events=events,
@@ -958,6 +1059,7 @@ class LearnElementRecordDTO(BaseModel):
         )
 
     def __json__(self) -> dict:
+        """Return the learner element record as JSON-compatible data."""
         ret = {
             "elements": [
                 item.__json__() if isinstance(item, BaseModel) else item
@@ -976,17 +1078,21 @@ class LearnElementRecordDTO(BaseModel):
 
 @register_schema_to_swagger
 class RunStatusDTO(BaseModel):
-    is_running: bool = Field(..., description="is running", required=False)
-    running_time: int = Field(..., description="running time", required=False)
+    """Represent the run status API payload."""
+
+    is_running: bool = Field(..., description="is running")
+    running_time: int = Field(..., description="running time")
 
     def __init__(
         self,
         is_running: bool,
         running_time: int,
     ) -> None:
+        """Build the run status payload."""
         super().__init__(is_running=is_running, running_time=running_time)
 
     def __json__(self) -> dict:
+        """Return the run status as JSON-compatible data."""
         return {
             "is_running": self.is_running,
             "running_time": self.running_time,
@@ -995,10 +1101,12 @@ class RunStatusDTO(BaseModel):
 
 @register_schema_to_swagger
 class GeneratedInfoDTO(BaseModel):
-    position: int = Field(..., description="generated block position", required=False)
-    outline_name: str = Field(..., description="outline item name", required=False)
+    """Represent the generated info API payload."""
+
+    position: int = Field(..., description="generated block position")
+    outline_name: str = Field(..., description="outline item name")
     is_trial_lesson: bool = Field(
-        ..., description="whether the outline item is a trial lesson", required=False
+        ..., description="whether the outline item is a trial lesson"
     )
 
     def __init__(
@@ -1007,6 +1115,7 @@ class GeneratedInfoDTO(BaseModel):
         outline_name: str,
         is_trial_lesson: bool,
     ) -> None:
+        """Build generated-outline metadata."""
         super().__init__(
             position=position,
             outline_name=outline_name,
@@ -1014,6 +1123,7 @@ class GeneratedInfoDTO(BaseModel):
         )
 
     def __json__(self) -> dict:
+        """Return generated-outline metadata as JSON-compatible data."""
         return {
             "position": self.position,
             "outline_name": self.outline_name,

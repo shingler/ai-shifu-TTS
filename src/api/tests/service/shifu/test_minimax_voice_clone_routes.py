@@ -1,10 +1,14 @@
+"""Verify MiniMax voice clone HTTP route behavior."""
+
 from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
 from types import SimpleNamespace
+from unittest.mock import Mock
 
+import pytest
 from flaskr.dao import db
 from flaskr.service.billing.consts import (
     BILLING_METRIC_TTS_REQUEST_COUNT,
@@ -23,6 +27,9 @@ from flaskr.service.common.models import ERROR_CODE
 from flaskr.service.metering.consts import BILL_USAGE_SCENE_PREVIEW, BILL_USAGE_TYPE_TTS
 from flaskr.service.shifu.models import DraftShifu
 from flaskr.service.user.consts import USER_STATE_REGISTERED
+from werkzeug.datastructures import FileStorage
+from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.test import EnvironBuilder
 
 
 def _creator_user(user_bid: str = "creator-route") -> UserInfo:
@@ -111,20 +118,22 @@ def _seed_course_and_wallet(
     db.session.commit()
 
 
-def _prepare_minimax_tables(app) -> None:
+def _prepare_minimax_tables(app: object) -> None:
     from flaskr.service.tts.models import TTSMiniMaxClonedVoice
 
     with app.app_context():
         TTSMiniMaxClonedVoice.__table__.create(db.engine, checkfirst=True)
 
 
-def _auth(monkeypatch, user_bid: str = "creator-route") -> None:
+def _auth(monkeypatch: object, user_bid: str = "creator-route") -> None:
     user = _creator_user(user_bid)
     monkeypatch.setattr("flaskr.route.user.validate_user", lambda *_args: user)
     monkeypatch.setattr("flaskr.service.shifu.route.validate_user", lambda *_args: user)
 
 
-def test_minimax_voice_clone_cost_is_zero_without_rate(app, test_client, monkeypatch):
+def test_minimax_voice_clone_cost_is_zero_without_rate(
+    app: object, test_client: object, monkeypatch: object
+) -> None:
     _prepare_minimax_tables(app)
     _auth(monkeypatch)
     monkeypatch.setattr(
@@ -152,7 +161,9 @@ def test_minimax_voice_clone_cost_is_zero_without_rate(app, test_client, monkeyp
     assert payload["data"]["billing_enabled"] is True
 
 
-def test_minimax_validate_custom_voice_id_route(app, test_client, monkeypatch):
+def test_minimax_validate_custom_voice_id_route(
+    app: object, test_client: object, monkeypatch: object
+) -> None:
     _prepare_minimax_tables(app)
     _auth(monkeypatch)
 
@@ -168,10 +179,10 @@ def test_minimax_validate_custom_voice_id_route(app, test_client, monkeypatch):
 
 
 def test_minimax_voice_clone_submit_creates_queued_voice(
-    app,
-    test_client,
-    monkeypatch,
-):
+    app: object,
+    test_client: object,
+    monkeypatch: object,
+) -> None:
     from flaskr.service.tts.models import (
         TTS_MINIMAX_CLONE_STATUS_QUEUED,
         TTSMiniMaxClonedVoice,
@@ -187,13 +198,18 @@ def test_minimax_voice_clone_submit_creates_queued_voice(
         "flaskr.service.billing.primitives.is_billing_enabled",
         lambda: True,
     )
+
+    def enqueue_clone(app: object, *, voice_bid: str) -> bool:
+        del app, voice_bid
+        return True
+
     monkeypatch.setattr(
         "flaskr.service.tts.minimax_voice_clone._enqueue_minimax_clone_task",
-        lambda _app, *, voice_bid: True,
+        enqueue_clone,
     )
     monkeypatch.setattr(
         "flaskr.service.tts.minimax_voice_clone._store_resource_bytes",
-        lambda app, **kwargs: SimpleNamespace(
+        lambda _app, **kwargs: SimpleNamespace(
             resource_bid=f"res-{kwargs['resource_kind']}",
             url=f"/resource/{kwargs['resource_kind']}",
             object_key=f"key/{kwargs['resource_kind']}",
@@ -232,10 +248,10 @@ def test_minimax_voice_clone_submit_creates_queued_voice(
 
 
 def test_minimax_voice_clone_submit_rejects_insufficient_credits(
-    app,
-    test_client,
-    monkeypatch,
-):
+    app: object,
+    test_client: object,
+    monkeypatch: object,
+) -> None:
     from flaskr.service.tts.models import TTSMiniMaxClonedVoice
 
     _prepare_minimax_tables(app)
@@ -276,11 +292,147 @@ def test_minimax_voice_clone_submit_rejects_insufficient_credits(
         )
 
 
+def test_minimax_voice_clone_rejects_oversized_source_before_submission(
+    test_client: object,
+    monkeypatch: object,
+) -> None:
+    from flaskr.service.tts import api as tts_api
+
+    _auth(monkeypatch)
+    submit = Mock()
+    monkeypatch.setattr(tts_api, "MINIMAX_CLONE_SOURCE_MAX_BYTES", 4)
+    monkeypatch.setattr(tts_api, "submit_minimax_voice_clone", submit)
+
+    response = test_client.post(
+        "/api/shifu/tts/minimax/voices/clone",
+        data={
+            "source_audio": (BytesIO(b"12345"), "recording.webm"),
+        },
+        headers={"Token": "test-token"},
+        content_type="multipart/form-data",
+    )
+
+    assert (
+        response.get_json(force=True)["code"] == ERROR_CODE["server.common.paramsError"]
+    )
+    submit.assert_not_called()
+
+
+def test_minimax_voice_clone_rejects_oversized_prompt_before_submission(
+    test_client: object,
+    monkeypatch: object,
+) -> None:
+    from flaskr.service.tts import api as tts_api
+
+    _auth(monkeypatch)
+    submit = Mock()
+    monkeypatch.setattr(tts_api, "MINIMAX_CLONE_SOURCE_MAX_BYTES", 4)
+    monkeypatch.setattr(tts_api, "MINIMAX_CLONE_PROMPT_MAX_BYTES", 3)
+    monkeypatch.setattr(tts_api, "submit_minimax_voice_clone", submit)
+
+    response = test_client.post(
+        "/api/shifu/tts/minimax/voices/clone",
+        data={
+            "source_audio": (BytesIO(b"1234"), "recording.webm"),
+            "prompt_audio": (BytesIO(b"1234"), "prompt.webm"),
+        },
+        headers={"Token": "test-token"},
+        content_type="multipart/form-data",
+    )
+
+    assert (
+        response.get_json(force=True)["code"] == ERROR_CODE["server.common.paramsError"]
+    )
+    submit.assert_not_called()
+
+
+def test_minimax_voice_clone_rejects_oversized_total_request(
+    app: object,
+    test_client: object,
+    monkeypatch: object,
+) -> None:
+    _auth(monkeypatch)
+    submit = Mock()
+    clone_view = app.view_functions["clone_minimax_tts_voice_api"]
+    monkeypatch.setattr(clone_view, "_sensitive_body_max_bytes", 64)
+    from flaskr.service.tts import api as tts_api
+
+    monkeypatch.setattr(tts_api, "submit_minimax_voice_clone", submit)
+
+    response = test_client.post(
+        "/api/shifu/tts/minimax/voices/clone",
+        data={
+            "source_audio": (BytesIO(b"1"), "recording.webm"),
+        },
+        headers={"Token": "test-token"},
+        content_type="multipart/form-data",
+    )
+
+    assert response.get_json(force=True)["code"] == 413
+    submit.assert_not_called()
+
+
+def test_known_oversized_clone_body_is_rejected_without_reading_stream(
+    app: object,
+    monkeypatch: object,
+) -> None:
+    clone_view = app.view_functions["clone_minimax_tts_voice_api"]
+    monkeypatch.setattr(clone_view, "_sensitive_body_max_bytes", 64)
+    stream = BytesIO(b"x" * 100)
+    environment = EnvironBuilder(
+        path="/api/shifu/tts/minimax/voices/clone",
+        method="POST",
+        input_stream=stream,
+        content_length=100,
+        content_type="multipart/form-data; boundary=test",
+    ).get_environ()
+
+    with app.request_context(environment), pytest.raises(RequestEntityTooLarge):
+        app.preprocess_request()
+
+    assert stream.tell() == 0
+
+
+def test_unknown_length_clone_body_reads_only_one_overflow_byte(
+    app: object,
+    monkeypatch: object,
+) -> None:
+    clone_view = app.view_functions["clone_minimax_tts_voice_api"]
+    monkeypatch.setattr(clone_view, "_sensitive_body_max_bytes", 64)
+    stream = BytesIO(b"x" * 100)
+    environment = EnvironBuilder(
+        path="/api/shifu/tts/minimax/voices/clone",
+        method="POST",
+        input_stream=stream,
+        content_type="multipart/form-data; boundary=test",
+    ).get_environ()
+    environment.pop("CONTENT_LENGTH", None)
+    environment["wsgi.input_terminated"] = True
+
+    with app.request_context(environment), pytest.raises(RequestEntityTooLarge):
+        app.preprocess_request()
+
+    assert stream.tell() == 65
+
+
+def test_bounded_audio_read_stops_after_one_overflow_byte() -> None:
+    from flaskr.service.common.models import AppError
+    from flaskr.service.shifu.route import _read_bounded_upload
+
+    stream = BytesIO(b"x" * 100)
+    upload = FileStorage(stream=stream, filename="recording.webm")
+
+    with pytest.raises(AppError):
+        _read_bounded_upload(upload, max_bytes=4)
+
+    assert stream.tell() == 5
+
+
 def test_minimax_voice_routes_only_expose_current_owner_voices(
-    app,
-    test_client,
-    monkeypatch,
-):
+    app: object,
+    test_client: object,
+    monkeypatch: object,
+) -> None:
     from flaskr.service.tts.models import (
         TTS_MINIMAX_CLONE_STATUS_FAILED,
         TTS_MINIMAX_CLONE_STATUS_READY,

@@ -1,11 +1,17 @@
+"""Verify password HTTP route behavior."""
+
 import json
 import time
+import uuid
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import jwt
 
 
-def _post_json(client, path: str, payload: dict, headers: dict | None = None):
+def _post_json(
+    client: object, path: str, payload: dict, headers: dict | None = None
+) -> object:
     resp = client.post(
         path,
         data=json.dumps(payload),
@@ -15,7 +21,56 @@ def _post_json(client, path: str, payload: dict, headers: dict | None = None):
     return resp, json.loads(resp.data)
 
 
-def test_reset_password_does_not_create_new_user(test_client, app):
+def test_password_login_commit_failure_does_not_populate_token_cache(
+    app: object, test_client: object, monkeypatch: object
+) -> None:
+    import flaskr.route.user as user_route
+    from flaskr.dao import db
+    from flaskr.service.user.models import UserToken
+    from flaskr.service.user.token_store import token_store
+
+    token = f"password-failed-{uuid.uuid4().hex}"
+    user_id = uuid.uuid4().hex
+
+    class FailingCommitProvider:
+        def verify(self, route_app: object, _request: object) -> object:
+            token_store.save(
+                route_app,
+                user_id=user_id,
+                token=token,
+                ttl_seconds=60,
+            )
+            return SimpleNamespace(
+                user=SimpleNamespace(user_id=user_id, language="en-US"),
+                token=SimpleNamespace(token=token),
+                is_new_user=False,
+                metadata={},
+            )
+
+    def fail_commit() -> None:
+        message = "simulated password login commit failure"
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(
+        user_route, "get_provider", lambda _name: FailingCommitProvider()
+    )
+    monkeypatch.setattr(db.session, "commit", fail_commit)
+
+    _response, body = _post_json(
+        test_client,
+        "/api/user/login_password",
+        {"identifier": "user@example.com", "password": "password"},
+    )
+    assert body["code"] == -1
+
+    with app.app_context():
+        assert UserToken.query.filter_by(token=token).count() == 0
+        assert token_store._cache.get(token_store._cache_key(app, token)) is None
+
+
+def test_reset_password_does_not_create_new_user(
+    test_client: object, app: object
+) -> None:
     from flaskr.service.user.models import UserInfo as UserEntity
 
     phone = "15500009999"
@@ -41,7 +96,9 @@ def test_reset_password_does_not_create_new_user(test_client, app):
         assert UserEntity.query.filter_by(user_identify=phone).count() == 0
 
 
-def test_set_password_requires_login_and_verification_code(test_client, app):
+def test_set_password_requires_login_and_verification_code(
+    test_client: object, app: object
+) -> None:
     from flaskr.service.user import phone_flow
 
     phone = "15500001111"
@@ -85,7 +142,9 @@ def test_set_password_requires_login_and_verification_code(test_client, app):
     assert body2["code"] == 1017  # server.user.passwordAlreadySet
 
 
-def test_password_login_after_setting_password(test_client, app):
+def test_password_login_after_setting_password(
+    test_client: object, app: object
+) -> None:
     from flaskr.service.user import phone_flow
 
     phone = "15500002222"
@@ -117,11 +176,13 @@ def test_password_login_after_setting_password(test_client, app):
     assert body["data"]["userInfo"]["mobile"] == phone
 
 
-def test_password_login_merges_authenticated_guest_learner_profile(test_client, app):
+def test_password_login_merges_authenticated_guest_learner_profile(
+    test_client: object, app: object
+) -> None:
     from flaskr.dao import db
     from flaskr.service.profile.learner_profile import (
         PROFILE_ONBOARDING_SCENE_KEY,
-        PROFILE_ONBOARDING_VERSION,
+        PROFILE_ONBOARDING_STATE_VERSION,
         load_learner_profile_state,
     )
     from flaskr.service.user import phone_flow
@@ -152,7 +213,7 @@ def test_password_login_merges_authenticated_guest_learner_profile(test_client, 
             UserOnboardingState(
                 user_bid=guest_user_id,
                 scene_key=PROFILE_ONBOARDING_SCENE_KEY,
-                version=PROFILE_ONBOARDING_VERSION,
+                version=PROFILE_ONBOARDING_STATE_VERSION,
                 status="completed",
                 trigger_source="settings",
                 completed_at=profile_updated_at,
@@ -244,7 +305,9 @@ def test_password_login_merges_authenticated_guest_learner_profile(test_client, 
         assert target_state.trigger_source == "settings"
 
 
-def test_password_login_never_merges_from_a_registered_account(test_client, app):
+def test_password_login_never_merges_from_a_registered_account(
+    test_client: object, app: object
+) -> None:
     from flaskr.dao import db
     from flaskr.service.user import phone_flow
     from flaskr.service.user.models import UserInfo
@@ -293,7 +356,9 @@ def test_password_login_never_merges_from_a_registered_account(test_client, app)
         assert stored_target.nickname == "Existing target"
 
 
-def test_password_login_ignores_invalid_and_expired_optional_tokens(test_client, app):
+def test_password_login_ignores_invalid_and_expired_optional_tokens(
+    test_client: object, app: object
+) -> None:
     from flaskr.dao import db
     from flaskr.service.user import phone_flow
     from flaskr.service.user.models import UserInfo
@@ -353,7 +418,7 @@ def test_password_login_ignores_invalid_and_expired_optional_tokens(test_client,
         assert stored_target.nickname == "Stable target"
 
 
-def test_sms_login_route_logs_in_with_phone_code(test_client):
+def test_sms_login_route_logs_in_with_phone_code(test_client: object) -> None:
     phone = "15500003333"
 
     resp, body = _post_json(
@@ -373,7 +438,9 @@ def test_sms_login_route_logs_in_with_phone_code(test_client):
     assert body["data"]["userInfo"]["mobile"] == phone
 
 
-def test_sms_login_route_does_not_rebind_authenticated_account_phone(test_client, app):
+def test_sms_login_route_does_not_rebind_authenticated_account_phone(
+    test_client: object, app: object
+) -> None:
     from flaskr.service.user import phone_flow
     from flaskr.service.user.models import AuthCredential
     from flaskr.service.user.models import UserInfo as UserEntity
@@ -419,7 +486,96 @@ def test_sms_login_route_does_not_rebind_authenticated_account_phone(test_client
         ]
 
 
-def test_sms_login_route_normalizes_cn_prefix(test_client, app):
+def test_email_login_route_logs_in_with_email_code(
+    test_client: object, monkeypatch: object
+) -> None:
+    from flaskr.service.user import email_flow
+
+    email = "learner@example.com"
+    admin_grants: list[tuple[str, str | None]] = []
+
+    def _record_admin_grant(
+        _app: object,
+        user_id: str,
+        _language: str,
+        login_context: str | None,
+    ) -> bool:
+        admin_grants.append((user_id, login_context))
+        return True
+
+    monkeypatch.setattr(
+        email_flow,
+        "ensure_admin_creator_and_demo_permissions",
+        _record_admin_grant,
+    )
+
+    resp, body = _post_json(
+        test_client,
+        "/api/user/login_email",
+        {
+            "email": f"  {email.upper()}  ",
+            "code": "9999",
+            "language": "en-US",
+            "login_context": "admin",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert body["code"] == 0
+    assert body["data"]["token"]
+    assert body["data"]["userInfo"]["email"] == email
+    assert admin_grants == [(body["data"]["userInfo"]["user_id"], "admin")]
+
+
+def test_email_login_route_does_not_rebind_authenticated_account_email(
+    test_client: object, app: object
+) -> None:
+    from flaskr.service.user import email_flow
+    from flaskr.service.user.models import AuthCredential
+    from flaskr.service.user.models import UserInfo as UserEntity
+
+    original_email = "original@example.com"
+    next_email = "next@example.com"
+
+    with app.app_context():
+        original_token, _created, _ctx = email_flow.verify_email_code(
+            app, user_id=None, email=original_email, code="9999"
+        )
+        original_user_bid = original_token.userInfo.user_id
+
+    resp, body = _post_json(
+        test_client,
+        "/api/user/login_email",
+        {
+            "email": next_email,
+            "code": "9999",
+            "language": "en-US",
+            "login_context": "admin",
+        },
+        headers={"Token": original_token.token},
+    )
+
+    assert resp.status_code == 200
+    assert body["code"] == 0
+    assert body["data"]["userInfo"]["email"] == next_email
+    assert body["data"]["userInfo"]["user_id"] != original_user_bid
+
+    with app.app_context():
+        original_entity = UserEntity.query.filter_by(user_bid=original_user_bid).first()
+        assert original_entity is not None
+        assert original_entity.user_identify == original_email
+
+        original_credentials = AuthCredential.query.filter_by(
+            user_bid=original_user_bid,
+            provider_name="email",
+            deleted=0,
+        ).all()
+        assert [credential.identifier for credential in original_credentials] == [
+            original_email
+        ]
+
+
+def test_sms_login_route_normalizes_cn_prefix(test_client: object, app: object) -> None:
     from flaskr.service.user.models import AuthCredential
     from flaskr.service.user.models import UserInfo as UserEntity
 
@@ -452,7 +608,7 @@ def test_sms_login_route_normalizes_cn_prefix(test_client, app):
         assert credential is not None
 
 
-def test_sms_login_referral_metadata_helper_hashes_client_context():
+def test_sms_login_referral_metadata_helper_hashes_client_context() -> None:
     from flaskr.service.referral.service import extract_referral_post_auth_fields
 
     fields = extract_referral_post_auth_fields(

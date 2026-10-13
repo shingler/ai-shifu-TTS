@@ -1,0 +1,9 @@
+{
+  "__namespace__": "component.menus",
+  "navigationMenus": {
+    "adminConsole": "الدخول إلى لوحة الإدارة",
+    "createCourse": "إنشاء دورة",
+    "language": "اللغة",
+    "personalInfo": "التخصيص"
+  }
+}

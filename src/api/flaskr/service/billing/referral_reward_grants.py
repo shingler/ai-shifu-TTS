@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import TYPE_CHECKING
 
-from flask import Flask
 from flaskr.dao import db
+from flaskr.dao.uow import (
+    app_context_scope,
+    require_transaction_owner,
+    unit_of_work,
+)
 from flaskr.service.common.models import raise_param_error
 from flaskr.util.datetime import now_utc
 from flaskr.util.uuid import generate_id
@@ -47,6 +50,11 @@ from .wallets import (
     sync_credit_bucket_status,
 )
 
+if TYPE_CHECKING:
+    from datetime import datetime
+
+    from flask import Flask
+
 REFERRAL_REWARD_GRANT_TYPE = "referral_reward"
 REFERRAL_REWARD_SCENE = "referral"
 REFERRAL_REWARD_PROGRAM = "referral_reward"
@@ -56,7 +64,7 @@ REFERRAL_REWARD_GRANT_SOURCE = "reward"
 REFERRAL_REWARD_VALIDITY_PRESET = "1m"
 
 
-def _normalize_referral_reward_amount(value: Any) -> Decimal:
+def _normalize_referral_reward_amount(value: object) -> Decimal:
     normalized = str(value or "").strip()
     if not normalized or not normalized.isdigit():
         raise_param_error("amount")
@@ -73,7 +81,7 @@ def _serialize_metadata_datetime(value: datetime | None) -> str:
     return value.isoformat() if value is not None else ""
 
 
-def _is_referral_reward_metadata(metadata: Any) -> bool:
+def _is_referral_reward_metadata(metadata: object) -> bool:
     if not isinstance(metadata, dict):
         return False
     return str(metadata.get("grant_type") or "").strip() == REFERRAL_REWARD_GRANT_TYPE
@@ -133,6 +141,7 @@ def load_referral_reward_summary(
     creator_bid: str,
     as_of: datetime | None = None,
 ) -> ReferralRewardSummary:
+    """Load referral reward summary."""
     with app.app_context():
         scan_at = as_of or now_utc()
         buckets = _load_active_referral_reward_buckets(
@@ -197,7 +206,10 @@ def grant_referral_reward_credits_to_user(
     grant_channel: str = "operator_user_management",
 ) -> ManualCreditGrantResult:
     """Grant referral reward credits and extend the referral reward pool."""
-    with app.app_context():
+    # Same idempotency contract as the manual grant: the IntegrityError must
+    # surface here, not at a caller's commit.
+    require_transaction_owner("referral reward credit grant", app)
+    with app_context_scope(app):
         normalized_user_bid = _normalize_bid(user_bid)
         normalized_operator_user_bid = _normalize_bid(operator_user_bid)
         normalized_request_id = _normalize_bid(request_id)
@@ -222,6 +234,44 @@ def grant_referral_reward_credits_to_user(
         if existing_result is not None:
             return existing_result
 
+        try:
+            return _grant_referral_reward_credits_once(
+                app,
+                user_bid=normalized_user_bid,
+                operator_user_bid=normalized_operator_user_bid,
+                note=normalized_note,
+                grant_channel=grant_channel,
+                granted_amount=granted_amount,
+                granted_at=granted_at,
+                ledger_key=ledger_key,
+            )
+        except IntegrityError:
+            # A concurrent grant with the same request id won; the unit of
+            # work rolled ours back, so answer with the winner's result.
+            existing_result = _load_existing_referral_reward_result(
+                creator_bid=normalized_user_bid,
+                ledger_key=ledger_key,
+            )
+            if existing_result is not None:
+                return existing_result
+            raise
+
+
+def _grant_referral_reward_credits_once(
+    app: Flask,
+    *,
+    user_bid: str,
+    operator_user_bid: str,
+    note: str,
+    grant_channel: str,
+    granted_amount: Decimal,
+    granted_at: datetime,
+    ledger_key: str,
+) -> ManualCreditGrantResult:
+    normalized_user_bid = user_bid
+    normalized_operator_user_bid = operator_user_bid
+    normalized_note = note
+    with unit_of_work():
         _expire_credit_wallet_buckets_in_session(
             app,
             creator_bid=normalized_user_bid,
@@ -344,22 +394,12 @@ def grant_referral_reward_credits_to_user(
             updated_at=granted_at,
         )
         db.session.add(ledger_entry)
-        try:
-            db.session.commit()
-        except IntegrityError:
-            db.session.rollback()
-            existing_result = _load_existing_referral_reward_result(
-                creator_bid=normalized_user_bid,
-                ledger_key=ledger_key,
-            )
-            if existing_result is not None:
-                return existing_result
-            raise
-
+        db.session.flush()
+        # Joins this unit of work; the enqueue is deferred to its commit.
         stage_credit_granted_notification(
             app,
             ledger_bid=ledger_entry.ledger_bid,
-            commit=True,
+            commit=False,
             enqueue=True,
         )
         return ManualCreditGrantResult(
