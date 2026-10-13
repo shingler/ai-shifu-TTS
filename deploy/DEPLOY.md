@@ -2,6 +2,7 @@
 
 > 部署/运维中遇到报错，先查 [trouble-shoot.md](trouble-shoot.md)（按症状索引的排障手册）。
 > 日常升级（三环境：Windows 开发 / Rocky 8 服务器 A / Rocky 9 服务器 B）见 [UPGRADE.md](UPGRADE.md)。
+> v2.3.4 专用升级清单（含前端目录改名等特殊步骤）见 [UPGRADE-v2.3.4-2026-10-13.md](UPGRADE-v2.3.4-2026-10-13.md)。
 > Mac 本地局域网测试机见 [DEPLOY-MAC.md](DEPLOY-MAC.md)（仅差异点）。
 
 ## 架构
