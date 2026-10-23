@@ -1,36 +1,47 @@
 # AI-Shifu-TTS 部署指南
 
 > 部署/运维中遇到报错，先查 [trouble-shoot.md](trouble-shoot.md)（按症状索引的排障手册）。
-> 日常升级（三环境：Windows 开发 / Rocky 8 服务器 A / Rocky 9 服务器 B）见 [UPGRADE.md](UPGRADE.md)。
-> v2.3.4 专用升级清单（含前端目录改名等特殊步骤）见 [UPGRADE-v2.3.4-2026-10-13.md](UPGRADE-v2.3.4-2026-10-13.md)。
+> 日常升级（本地 Windows + 生产服务器 B）见 [UPGRADE.md](UPGRADE.md)。
+> v2.3.4 专用升级清单（含前端目录改名、数据库预修、架构变更实录）见
+> [UPGRADE-v2.3.4-2026-10-13.md](UPGRADE-v2.3.4-2026-10-13.md)。
 > Mac 本地局域网测试机见 [DEPLOY-MAC.md](DEPLOY-MAC.md)（仅差异点）。
 
 ## 架构
 
+单台应用服务器上的进程拓扑：
+
 ```
-浏览器 :80 → Nginx → /_next/static/  → 直接读磁盘（缓存 30 天）
+浏览器 → Nginx → /_next/static/  → 直接读磁盘（缓存 30 天）
               ├─ /api/i18n、/api/config → Next.js (standalone) :5000
               ├─ /api/*                 → Flask (gunicorn) :5800（SSE，3600s 超时）
+              │                           └─ /api/storage/ 由 Flask 从本机磁盘出文件
               └─ 其余所有               → Next.js (standalone) :5000
 ```
 
-需要 3 个进程：Nginx + gunicorn + Next.js。
+需要 3 个进程：Nginx + gunicorn + Next.js。MySQL / Redis **可以不在本机**——
+`.env` 里 `SQLALCHEMY_DATABASE_URI` / `REDIS_HOST` 指向数据服务机器即可。
 
-两个变体（见文末章节，可组合）：
+当前生产实例（2026-10-23 起）即此形态：**服务器 B（Rocky 9）** 跑全部应用
+（nginx 入口 :8090），**服务器 A** 只提供 MySQL + redis 数据服务。上传存储
+`src/api/storage/` 必须在**跑 Flask 的机器**上（storage 路由读本地盘），换应用机
+时要把存储目录一并迁走，见 UPGRADE-v2.3.4 文档。
+
+两个变体（见文末章节）：
 
 - **A：[Apache 占用 80 端口](#变体-aapache-占用-80-端口apache-80--nginx-88)** —
   Apache :80 整体转发 → Nginx :88，内部路由不变
 - **B：[CentOS 7（Node 20）](#变体-bcentos-7node-20turbopack-构建--npm-start-运行)** —
-  turbopack 构建 + `npm start` 运行
+  **历史参考**：v2.3.4 起后端依赖装不上（见章首警示），仅适用于 v2.2.x 及更早
 
 ## 依赖
 
 | 依赖 | 版本 |
 |------|------|
-| Node.js | 22.x（CentOS 7 老机器只能 20.x，见变体 B） |
+| Node.js | 22.x |
 | Python | 3.11+ |
-| MySQL | 8.x |
-| Redis | 7.x |
+| glibc | ≥ 2.28（litellm ≥1.9x 的编译 wheel 要求，见 trouble-shoot §15） |
+| MySQL | 8.x（可远程；当前生产数据服务实为 5.7） |
+| Redis | 7.x（可远程） |
 | uv | 最新 |
 | Nginx | 最新 |
 
@@ -44,9 +55,12 @@
 ```bash
 git clone <repo> /home/xingle/ai-shifu-TTS && cd /home/xingle/ai-shifu-TTS
 
+# 数据服务在本机时：
 sudo systemctl enable --now mysql redis
-
 mysql -u root -e "CREATE DATABASE IF NOT EXISTS \`ai-shifu\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+
+# 数据服务在另一台机器时（当前生产形态）：本机跳过上面，确保那台机器的
+# MySQL/redis 可从本机访问（账号授权 + 内网互通），步骤 2 里 .env 指过去。
 ```
 
 ### 2. 配置环境变量
@@ -61,9 +75,9 @@ cp docker/.env.example.full src/web/.env   # 两份内容相同
 | 变量 | 改什么 |
 |------|--------|
 | `SECRET_KEY` | 随机值：`python -c "import secrets; print(secrets.token_urlsafe(32))"` |
-| `SQLALCHEMY_DATABASE_URI` | 设 MySQL 密码；`ai-shifu-mysql` → `127.0.0.1` |
-| LLM key | 至少一个，如 `OPENAI_API_KEY` |
-| `REDIS_HOST` | `ai-shifu-redis` → `127.0.0.1` |
+| `SQLALCHEMY_DATABASE_URI` | 设 MySQL 密码；数据服务不在本机时 `127.0.0.1` 改为数据机地址 |
+| `LLM_MODEL_1_ID` + LLM key | v2.3.4 起模型为编号槽位制，model 1 必填（如 `GLM-5-Turbo`）且至少一个 key（如 `OPENAI_API_KEY`） |
+| `REDIS_HOST` | 数据服务不在本机时改为数据机地址 |
 | `LOCAL_STORAGE_ROOT` | `<项目>/storage`（目录在步骤 3 前建好：`mkdir -p storage`） |
 | `I18N_ROOT` / `SHARED_I18N_ROOT` | 指向 `<项目>/src/i18n`（构建与运行都需要） |
 
@@ -85,7 +99,7 @@ export FLASK_APP=app.py
 ```bash
 cd src/web
 npm install
-npm run build        # CentOS 7 / Node 20 机器改用变体 B，webpack 会 segfault
+npm run build
 ```
 
 静态资源由 Nginx 直接服务（步骤 5），build 后**无需**复制到 standalone 目录。
@@ -98,7 +112,8 @@ sudo cp deploy/nginx/ai-shifu.conf /etc/nginx/conf.d/ai-shifu.conf
 
 改两处再 reload：
 
-- `server_name`：域名，或保持 `_`
+- `server_name`：域名，或保持 `_`；监听端口按需改（当前生产 B 用 8090，避开
+  机器上已有 80 服务）
 - `location /_next/static/` 的 `alias`：指向 `<项目>/src/web/.next/static/`
 
 ```bash
@@ -126,7 +141,8 @@ I18N_ROOT="$(pwd)/../i18n" node .next/standalone/server.js
 | `ai-shifu-api` | `deploy/systemd/ai-shifu-api.service` | gunicorn :5800 |
 | `ai-shifu-frontend` | `deploy/systemd/ai-shifu-frontend.service` | standalone server.js :5000 |
 
-**7.1 运行用户**（CentOS/RHEL 没有 `www-data`，完整说明见 trouble-shoot §1）：
+**7.1 运行用户**（CentOS/RHEL 没有 `www-data`，完整说明见 trouble-shoot §1；
+拷贝模板后忘改 `User=` 会 217 循环重启，2026-10-23 实战踩过）：
 
 ```bash
 sudo useradd -r -m -d /home/ai-shifu -s /sbin/nologin ai-shifu
@@ -138,9 +154,12 @@ sudo chmod 755 /home/xingle                # home 默认 700，运行用户要�
 再软链（详见 trouble-shoot §3/§4）：
 
 ```bash
+sudo cp -a /root/.nvm/versions/node/v22.x.x /opt/node-v22.x.x   # nvm 目录自包含，整拷
+sudo chmod -R a+rX /opt/node-v22.x.x
 sudo ln -sf /opt/node-v22.x.x/bin/node /usr/local/bin/node
 sudo ln -sf /opt/node-v22.x.x/bin/npm  /usr/local/bin/npm
 sudo ln -sf /opt/node-v22.x.x/bin/npx  /usr/local/bin/npx
+sudo -u ai-shifu /usr/local/bin/node -v   # 必须以运行用户验证（/root 下的 nvm 它穿不透）
 ```
 
 **7.3 安装启动**：
@@ -183,7 +202,6 @@ sudo -u ai-shifu .venv/bin/flask db upgrade
 
 # 前端（有前端改动时）
 cd src/web && sudo -u ai-shifu npm install && sudo -u ai-shifu npm run build
-# 变体 B 机器走变体章节的 turbopack 流程
 
 sudo systemctl restart ai-shifu-api ai-shifu-frontend
 ```
@@ -214,7 +232,12 @@ sudo systemctl restart ai-shifu-api ai-shifu-frontend
 `flushpackets=on`（SSE 不被 Apache 缓冲）；真实客户端 IP 经 `X-Forwarded-For`
 透传（`ai-shifu-88.conf` 已处理）。
 
-## 变体 B：CentOS 7（Node 20，turbopack 构建 + npm start 运行）
+## 变体 B：CentOS 7（Node 20，turbopack 构建 + npm start 运行）【历史参考】
+
+> **警示（2026-10-23）**：v2.3.4 起 `litellm ≥1.9x` 只发布 `manylinux_2_28` 编译
+> wheel（要求 glibc ≥ 2.28），CentOS 7（glibc 2.17）**装不上后端依赖**
+> （trouble-shoot §15）。本变体仅适用于 v2.2.x 及更早版本；原实战机器（服务器 A）
+> 已转为纯数据服务，应用栈迁至 Rocky 9。新部署请用 glibc ≥ 2.28 的机器走主方案。
 
 场景：CentOS 7（glibc 2.17）装不上 Node 22，只能 Node 20。可与变体 A 组合，
 后端不受影响。
@@ -254,6 +277,7 @@ glibc ≥ 2.28（Rocky 9 等）后回归主方案。
 |------|------|----------|
 | 80 | Nginx（主方案）/ Apache（变体 A） | 浏览器直接访问 |
 | 88 | Nginx（仅变体 A） | 仅本机，Apache 转发 |
+| 8090 | Nginx（当前生产 B 实例所用，避开机器上已有 80） | 浏览器直接访问 |
 | 5800 | Flask | 仅本机，Nginx 代理 |
 | 5000 | Next.js（端口可换，与 Nginx upstream 同步） | 仅本机，Nginx 代理 |
-| 3306 / 6379 | MySQL / Redis | 仅本机 |
+| 3306 / 6379 | MySQL / Redis | 本机或数据服务机（仅应用机可访问） |

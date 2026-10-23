@@ -1,8 +1,9 @@
 # AI-Shifu-TTS 部署排障手册
 
-记录实际部署中踩过的坑，按「症状」索引。场景以 CentOS 7（glibc 2.17、
-systemd 219、Apache :80 → Nginx :88、systemd 托管）为主，多数坑在其他
-发行版上同样会出现。
+记录实际部署中踩过的坑，按「症状」索引。早期场景是 CentOS 7（glibc 2.17、
+systemd 219、Apache :80 → Nginx :88、systemd 托管）；2026-10-23 起生产迁至
+Rocky 9（服务器 B，nginx 直连），CentOS 7 相关条目降级为历史参考。
+多数坑在其他发行版上同样会出现。
 
 ## 症状速查表
 
@@ -21,6 +22,7 @@ systemd 219、Apache :80 → Nginx :88、systemd 托管）为主，多数坑在�
 | 页面空白，`/_next/static` 404 | build 后静态文件没被服务（standalone 拷贝缺失 / nginx alias 路径错） | [12](#12-页面空白_nextstatic-大面积-404) |
 | build 报 `EACCES .next/trace` | 旧构建产物属主是 root | [11](#11-build-报-eacces--nexttrace--旧产物属主是-root) |
 | 反复 `ModuleNotFoundError` | `uv pip sync` 卸载了 requirements 之外的依赖 | [10](#10-反复-modulenotfounderror--pip-sync-的删除语义) |
+| `pip install` 报 `metadata-generation-failed`（litellm） | glibc < 2.28 命不中 `manylinux_2_28` wheel，退回 sdist 编译又被墙 | [15](#15-pip-install-报-metadata-generation-failedlitellm) |
 | 改了 service / nginx 配置不生效 | 忘了 `daemon-reload` / `reload` | [8](#8-改了配置不生效) |
 
 ---
@@ -356,6 +358,32 @@ systemd 在 `[Service]` 加 `Environment=I18N_ROOT=<项目>/src/i18n`（模板�
 systemd 通知协议，但个别发行版/版本组合下通知不通，systemd 一直等。
 
 **修复**：service 改 `Type=simple` 后 `daemon-reload` + restart。
+
+## 15. `pip install` 报 `metadata-generation-failed`（litellm）
+
+**症状**：`pip install -r requirements.txt` 在 litellm 上报
+`error: metadata-generation-failed`；升级 pip、换镜像源都无效（2026-10-23
+服务器 A 实战）。
+
+**根因**：litellm ≥1.9x 是带 Rust 扩展的原生包，PyPI 只发布
+`manylinux_2_28` 编译 wheel（要求 glibc ≥ 2.28）加 sdist。老 glibc 机器
+（CentOS 7 / glibc 2.17）命中不了 wheel，pip 退回 sdist 源码编译；sdist 的
+构建后端 maturin 会自动下载 Rust 工具链（static.rust-lang.org，国内不通），
+卡死在下载后报元数据生成失败。
+
+**判断**：`ldd --version`。glibc ≥ 2.28 不该看到此错（先怀疑镜像）；不够才会
+走 sdist。注意 pip 判定 glibc 用的是进程内 `gnu_get_libc_version()`，与 PATH
+里的 ldd 无关——"新版 pip 仍选 sdist"本身就是 glibc 不够的独立证据。
+
+**修复**：
+
+1. 首选：换 glibc ≥ 2.28 的机器装依赖（Rocky 8/9 等）。2026-10-23 实战直接
+   把应用栈迁到 Rocky 9，老机转为纯数据服务。
+2. 若必须在老机器装：以运行用户预装 Rust（rustup 走清华镜像
+   `RUSTUP_DIST_SERVER=https://mirrors.tuna.tsinghua.edu.cn/rustup`），带
+   `~/.cargo/bin` 的 PATH 跑 pip（maturin 检测到 cargo 就不自己下载）；
+   crates.io 也不通时 `~/.cargo/config.toml` 配 `sparse+https://rsproxy.cn/index/`。
+   完整实录见 [UPGRADE-v2.3.4-2026-10-13.md](UPGRADE-v2.3.4-2026-10-13.md) 坑 1。
 
 ## 通用教训
 
